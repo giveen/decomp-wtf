@@ -152,8 +152,14 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
 
         root = _root(cfg, work)
         subst = {"{src}": f"{root}/func.c", "{obj}": f"{root}/func.o", "{include}": f"{root}/include"}
-        argv = [subst.get(a, a) for a in cfg.cmd]
-        argv = [a.replace("{include}", subst["{include}"]) for a in argv]
+
+        def expand(arg: str) -> str:
+            # placeholders may be joined to flags (/Fo{obj}, -I{include}) or stand alone (-o {obj})
+            for key, value in subst.items():
+                arg = arg.replace(key, value)
+            return arg
+
+        argv = [expand(a) for a in cfg.cmd]
         try:
             with _SLOTS:
                 proc = _exec(cfg, work, argv, cfg.timeout,

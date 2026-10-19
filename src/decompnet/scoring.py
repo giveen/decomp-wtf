@@ -75,7 +75,7 @@ def disassemble(fn: FunctionObj) -> list[Insn]:
             ops = _mips_symbolize(ops, mips_names[rel.offset])
         elif rel is not None:
             off = rel.addend
-            if fn.arch == "x86_64" and rel.type in (2, 4):
+            if fn.arch == "x86_64" and rel.type in (2, 4) and fn.format != "coff":
                 # PC-relative: addend = field_offset - (bytes from reloc field to end of insn)
                 off += (ins.address + ins.size) - rel.offset
             target = f"<{rel.symbol}{f'{off:+#x}' if off else ''}>"

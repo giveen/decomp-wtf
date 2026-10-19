@@ -400,9 +400,14 @@ class ForkEngine:
         """What a public decomp says about AI and contributions (forks/policy.py), before it's forked."""
         from ..forks import policy
 
-        m = _REPO.match(repo.strip())
+        repo = repo.strip()
+        m = _REPO.match(repo)
         if not m:
-            raise NetworkError("give a GitHub/GitLab/Codeberg repository URL (https://github.com/owner/repo)")
+            local = Path(repo).expanduser()
+            if local.is_dir() and (local / ".git").exists():  # a checkout on this computer
+                return {"repo": str(local.resolve()), **policy.check(str(local.resolve()))}
+            raise NetworkError("give a GitHub/GitLab/Codeberg repository URL (https://github.com/owner/repo) "
+                               "or the path of a git checkout on this computer")
         return {"repo": m.group(1), **policy.check(m.group(1))}
 
     def clone(self, repo: str, *, name: str = "", platform: str = "", version: str | None = None, log=print) -> str:

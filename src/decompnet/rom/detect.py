@@ -7,10 +7,11 @@ from dataclasses import dataclass, field
 import struct
 from pathlib import Path
 
-from . import chd, gba, n64, overlays, ps2, psx
+from . import chd, gba, n64, overlays, pe, ps2, psx
 from .n64 import RomError
 
-PLATFORMS = {"n64": "Nintendo 64", "psx": "PlayStation", "ps2": "PlayStation 2", "gba": "Game Boy Advance"}
+PLATFORMS = {"n64": "Nintendo 64", "psx": "PlayStation", "ps2": "PlayStation 2", "gba": "Game Boy Advance",
+             "windows": "Windows"}
 SMALL = 64 * 1024 * 1024  # ROMs and programs are read whole; disc images are read from disk
 
 
@@ -36,6 +37,9 @@ def _program(data: bytes, name: str = "") -> Picked | None:
     if ps2.is_mips_elf(data):
         elf, info = ps2.read_elf(data, name)
         return Picked("ps2", elf, "game.elf", info, False)
+    if pe.is_pe(data):
+        image = pe.read(data, name)
+        return Picked("windows", data, "game.exe", image.info, False)
     return None
 
 
@@ -47,7 +51,10 @@ def identify(src: bytes | Path, name: str = "") -> Picked:
         if path.stat().st_size <= SMALL:
             return identify(path.read_bytes(), name)
         with open(path, "rb") as f:
-            head = f.read(8)
+            head = f.read(0x1000)
+        if pe.is_pe(head):  # Windows games are often larger than the in-memory ROM limit
+            return identify(path.read_bytes(), name)
+        head = head[:8]
         if chd.is_chd(head):  # a compressed disc image: read in place, a hunk at a time
             with chd.Chd(path) as disc:
                 if psx.is_disc(disc):

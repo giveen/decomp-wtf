@@ -56,8 +56,8 @@ Point the AI agent you already use at a game you own. **decomp.wtf** hands it th
 compiles every attempt with the game's **original compiler**, and checks the result **byte for byte**. Score 0, or
 it doesn't count. There are two ways in:
 
-- **Start from scratch.** Drop in a game for N64, PlayStation 1 or 2, GameCube, Wii, Game Boy Advance or DS: a
-  ROM, a disc image or the program file. decomp.wtf finds every function and your agents take it from there. The
+- **Start from scratch.** Drop in a game for N64, PlayStation 1 or 2, GameCube, Wii, Game Boy Advance, DS or
+  Windows: a ROM, a disc image, a program file or a PC `.exe`/`.dll`. decomp.wtf finds every function and your agents take it from there. The
   result is a project that rebuilds your game byte for byte: the base for ports and mods. GameCube, Wii and N64
   are the [recommended](#platforms) platforms; the rest are in beta.
 - **Continue a public decomp.** Pick one of the [245 projects on decomp.dev](https://decomp.dev) for GameCube, Wii,
@@ -312,7 +312,8 @@ the game.
 | **PlayStation 2** | Beta | ✓ disc or ELF | EE-GCC 2.96 | ✓ export | ✓ |
 | **Game Boy Advance** | Beta | ✓ ROM | agbcc | ✓ export | ✓ |
 | **Nintendo DS** | Beta | ✓ ROM (.nds) | CodeWarrior for DS 1.2 – DSi 1.6 | ✓ ds-decomp | ✓ |
-| **3DS · PSP · Switch · PC · Xbox · Xbox 360** | coming | | | | ✓ |
+| **Windows (PC)** | Beta | ✓ .exe / .dll (x86, x86-64) | MinGW-w64 · clang-cl · your own MSVC | — | ✓ |
+| **3DS · PSP · Switch · Xbox · Xbox 360** | coming | | | | ✓ |
 
 **Recommended platforms: GameCube, Wii and Nintendo 64.** They're the most tested path from dropping in a game to a
 full decomp you can port and mod:
@@ -335,11 +336,26 @@ needs. Public decomps of any platform run in their own project's build, so their
 generated [dtk-template](https://github.com/encounter/dtk-template) project, [ds-decomp](https://github.com/AetiasHax/ds-decomp)
 analyses DS ROMs (ARM9, ITCM, DTCM, overlays) inside a generated project of the same kind, and Game Boy Advance
 ROMs are split by [luvdis](https://github.com/aarant/luvdis) plus decomp.wtf's own pass for code nothing calls.
-Code beyond the main program is found too: N64 code the game loads later (placed at its address from its own
+Windows executables and DLLs are split with decomp.wtf's PE reader (`pe.py`), from `.pdata`, the COFF symbol table,
+exports, the entry point and call targets. Code beyond the main program is found too: N64 code the game loads later (placed at its address from its own
 calls, including code run through the TLB and code Rare and Nintendo shipped compressed), and the PlayStation 1 and
 2 overlays in a disc's other files. Every attempt is
-compiled with the game's compiler and checked byte for byte: linked at its address in the original (MIPS, ARM)
+compiled with the game's compiler and checked byte for byte: linked at its address in the original (MIPS, ARM, x86)
 or judged by objdiff inside the project's own build (GameCube, Wii, DS).
+
+**Windows games.** A 32-bit or 64-bit PE executable or DLL is split into functions the same way a ROM is: exact
+boundaries from the x86-64 exception directory (`.pdata`) and the executable's own symbol table where it has one,
+then exports, the entry point and every direct call target. Each function is matched by compiling your C to COFF
+and comparing the bytes the compiler emits with the original's, with the address fields blanked on both sides:
+a call or RIP-relative load has to point at the same function or global, exactly like the MIPS and ARM matchers.
+`inspect_binary` asks [REA](https://rea.tools) (when it's installed and configured) for that function's Ghidra
+pseudocode, signature and callers; without REA you still get decomp.wtf's assembly and cross references. Matching
+a real game byte for byte needs the compiler that built it: `mingw-x86_64`, `mingw-x86`, `clang-cl-x86_64` and
+`clang-cl-x86` are system toolchains, and a project's own `[compiler] cmd` can point at MSVC (for example under
+wine). Windows targets import and match; rebuilding the PE from source isn't implemented yet, so *Export project*
+is off for them. REA is optional: put `rea` on PATH (or set `DECOMP_REA` to its command, e.g. `DECOMP_REA="/opt/rea/scripts/rea.mjs mcp"`) and configure its Ghidra/IDA/Hopper provider; `inspect_binary` then returns its pseudocode
+and callers. `DECOMP_REA_DRAFTS=1` also lets claims start from its pseudocode (slower: a cold analysis can take
+minutes, which is why it's off by default).
 
 **The base for ports and mods.** *Export project* writes a normal decomp tree (matched functions as C, the rest as
 assembly from splat or luvdis, a linker script and `build.py`) and proves it rebuilds your game byte for byte.
@@ -378,7 +394,8 @@ uv run pytest
 
 | Path | What it is |
 | :-- | :-- |
-| `src/decompnet/rom/` | ROM reading (`n64.py`, `psx.py`), splitting with splat (`split.py`), the symbol table and the matcher (`match.py`). |
+| `src/decompnet/rom/` | Input reading (`n64.py`, `psx.py`, and `pe.py` for Windows executables), splitting with splat (`split.py`), the symbol table and the matchers (`match.py`, `match_arm.py`, `match_x86.py`). |
+| `src/decompnet/coffobj.py`, `rea.py` | COFF objects from Windows compilers, and the optional REA MCP bridge used for x86 pseudocode and cross references. |
 | `src/decompnet/app/` | The app: `engine.py` (ROM projects), `forkengine.py` (forks of public decomps), `tools.py` (MCP tools and agent prompt), `agents.py` (running agents), `server.py` (GUI API and MCP), `collab.py` (rooms), `static/` (GUI), `guide/` (agent know-how). |
 | `src/decompnet/forks/` | Fork mode: the decomp.dev catalog, project detection and setup, objdiff, source editing, m2c and Ghidra drafts, linking and file splits for dtk-template projects (`project.py`, `dtksplits.py`), and data diffs (`datadiff.py`). |
 | `src/decompnet/network.py` | The coordination core the engine builds on: claims, attempts, notes, the shared header. |
@@ -413,7 +430,8 @@ on Linux. `decomp update` (or the app's Settings) installs the newest commit by 
 
 [splat](https://github.com/ethteck/splat) and [spimdisasm](https://github.com/Decompollaborate/spimdisasm) split
 ROMs, [objdiff](https://github.com/encounter/objdiff) judges forks, [m2c](https://github.com/matt-kempster/m2c) and
-[Ghidra](https://github.com/NationalSecurityAgency/ghidra) write first drafts, the
+[Ghidra](https://github.com/NationalSecurityAgency/ghidra) write first drafts (and [REA](https://rea.tools) supplies
+Windows pseudocode, callers and strings over MCP when it's installed), the
 [decompals](https://github.com/decompals) recompiled period compilers do the building, and
 [decomp.dev](https://decomp.dev) lists the public projects. The look-alike finder follows the idea of
 [coddog](https://github.com/ethteck/coddog); [decomp-toolkit](https://github.com/encounter/decomp-toolkit),

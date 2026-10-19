@@ -44,13 +44,14 @@ PLATFORM_GUIDES = {
     "n64": ["mips"], "ps": ["mips", "psx"], "ps2": ["mips", "ps2"], "psp": ["mips"],
     "gc": ["ppc", "mwcc", "cpp"], "wii": ["ppc", "mwcc", "cpp"], "nds": ["arm", "mwcc"], "3ds": ["arm", "cpp"],
     "gba": ["arm", "agbcc"], "switch": ["aarch64", "cpp"], "win32": ["x86", "cpp"], "xbox": ["x86", "cpp"],
-    "xbox360": ["ppc", "cpp"],
+    "xbox360": ["ppc", "cpp"], "windows": ["x86", "cpp"],
 }
 
 INSTRUCTIONS = """\
-decomp.wtf: you are decompiling a game ROM that the user owns into C that compiles to exactly the same
-machine code. Your C is compiled with the game's original compiler, linked at the function's real address
-and compared with the ROM: score 0 means byte-identical, and the function is saved as matched.
+decomp.wtf: you are decompiling a game the user owns (a ROM, a disc program or a Windows executable) into C
+that compiles to exactly the same machine code. Your C is compiled with the game's original compiler, linked at
+the function's real address and compared with the original: score 0 means byte-identical, and the function is
+saved as matched.
 Start with project_info, then claim_function -> compile_and_diff (repeat). guide(topic) has know-how.
 Everything runs on the user's computer. The game's code is the user's: never publish it anywhere.
 """
@@ -185,6 +186,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "rename_symbol": lambda net, agent, slug, old, new, message="": net.rename_symbol(agent, slug, old, new, message),
     "split_function": lambda net, agent, slug, function, at, new_name="":
         net.split_function(agent, slug, function, at, new_name),
+    "inspect_binary": lambda net, agent, slug, function, what="": net.inspect_binary(slug, function, what),
+    "search_binary": lambda net, agent, slug, query: net.search_binary(slug, query),
     "read_data": lambda net, agent, slug, what, length=64: (net.forks.read_data(agent, slug, what, length)
                                                             if net.fork_slug(slug) else net.read_data(slug, what, length)),
     "list_functions": lambda net, agent, slug, status="open", limit=40: net.list_functions(slug, status, limit),
@@ -318,6 +321,24 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         """Split a function the disassembler merged with the next one (e.g. after a function that never
         returns). `at` is the address where the second function starts."""
         return await run(ctx, "split_function", function=function, at=at, new_name=new_name)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def inspect_binary(ctx: Context, function: str, what: str = "") -> str:
+        """Windows projects: ask REA (Ghidra/IDA/Hopper) for this function's pseudocode, signature and
+        callers, plus decomp.wtf's own assembly and cross references. Needs REA installed and configured;
+        without it you get the assembly and references decomp.wtf already has.
+
+        Args:
+            function: name or address (0x140001000)
+            what: all (default), info, pseudocode, assembly, callers, callees, references
+        """
+        return await run(ctx, "inspect_binary", function=function, what=what)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def search_binary(ctx: Context, query: str) -> str:
+        """Windows projects: find strings and procedure names in the game (REA's inventories when it is set
+        up, decomp.wtf's symbol table otherwise). Useful before naming a function or a global."""
+        return await run(ctx, "search_binary", query=query)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def read_data(ctx: Context, what: str, length: int = 64) -> str:

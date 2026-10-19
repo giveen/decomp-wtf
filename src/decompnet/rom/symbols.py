@@ -23,6 +23,7 @@ class Symbol:
     address: int
     size: int = 0
     kind: str = "data"  # func | data | string | jtbl | bss
+    preview: str = ""  # for strings and data rows in the GUI
 
 
 class SymbolTable:
@@ -38,11 +39,15 @@ class SymbolTable:
         self._starts = sorted(self.by_addr)
 
     def add(self, sym: Symbol, reindex: bool = True) -> None:
-        old = self.by_addr.get(sym.address)
-        if old is not None and old.name != sym.name:
-            self.by_name.pop(old.name, None)
+        # Keep every name: Windows images routinely give one address an exported name, a symbol-table
+        # name and a linker alias (__data_start__), and all of them have to resolve.
         self.by_name[sym.name] = sym
-        self.by_addr[sym.address] = sym
+        old = self.by_addr.get(sym.address)
+        # One address, several names: keep the most useful as the display name (g_counter over the linker's
+        # __data_start__, a function over an alias) while every alias still resolves.
+        rank = lambda s: (not s.name.startswith("__"), s.kind == "func", len(s.name))
+        if old is None or rank(sym) > rank(old):
+            self.by_addr[sym.address] = sym
         if reindex:
             self._reindex()
 

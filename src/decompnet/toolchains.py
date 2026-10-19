@@ -56,6 +56,7 @@ class Toolchain:
     binary_name: str = ""  # main executable of a tool, without .exe
     pip_extra: list[str] = field(default_factory=list)  # extra requirements for a git tool's environment
     requires_java: int = 0  # minimum Java version (Ghidra)
+    system: bool = False  # a compiler already on the host (MinGW, MSVC under wine), not a downloaded package
 
     @property
     def proprietary(self) -> bool:
@@ -76,7 +77,7 @@ class Toolchain:
     @property
     def supported(self) -> bool:
         """Whether this toolchain can be installed on this computer (on Windows, Linux ones through WSL 2)."""
-        return bool(self.git) or bool(self.parts_for()) or self.via_wsl
+        return self.system or bool(self.git) or bool(self.parts_for()) or self.via_wsl
 
 
 def current_platform() -> str:
@@ -136,6 +137,9 @@ def path(tid: str, linux: bool | None = None) -> Path:
 
 
 def installed(tid: str, linux: bool | None = None) -> dict | None:
+    tc = get(tid)
+    if tc.system:
+        return {"system": True, "id": tid} if tc.cmd and shutil.which(tc.cmd[0]) else None
     m = path(tid, linux) / MANIFEST
     return json.loads(m.read_text(encoding="utf-8")) if m.exists() else None
 
@@ -341,6 +345,9 @@ def ensure(tid: str, log=print) -> Path:
     """Install a free tool on first use and return its folder. Proprietary ones must be installed explicitly."""
     if installed(tid) is None:
         tc = get(tid)
+        if tc.system:
+            raise ToolchainError(f"{tc.name} isn't on PATH: install it with your system package manager "
+                                 f"(or set the command in the project's [compiler] section)")
         if tc.proprietary:
             raise ToolchainError(f"{tc.name} is proprietary: install it from Setup if you accept its license")
         install(tid, log=log)

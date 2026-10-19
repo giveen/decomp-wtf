@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 import time
@@ -63,14 +65,18 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
     if "toolchain" in c:
         tc = toolchains.get(c["toolchain"])
         linux = tc.via_wsl  # Windows: a Linux toolchain, run inside WSL 2
-        if linux and not (ok := wsl.status())[0]:
-            raise toolchains.ToolchainError(f"{tc.name} is a Linux program: on Windows it runs in WSL 2. {ok[1]}")
-        dirs = toolchains.runtime_dirs(tc.id)
-        tc_dir = wsl.path(dirs[0]) if linux else str(dirs[0])
-        ro_paths += [str(d) for d in dirs]
-        if "runtime-i386" in tc.requires and not linux:  # in WSL its programs bring the runtime themselves
-            runtime32 = str(toolchains.require("runtime-i386"))
-        flags = c.get("flags", tc.flags)
+        tc_dir = ""
+        if tc.system:  # already on the host (MinGW, cl under wine): nothing to download or mount
+            flags = c.get("flags", tc.flags)
+        else:
+            if linux and not (ok := wsl.status())[0]:
+                raise toolchains.ToolchainError(f"{tc.name} is a Linux program: on Windows it runs in WSL 2. {ok[1]}")
+            dirs = toolchains.runtime_dirs(tc.id)
+            tc_dir = wsl.path(dirs[0]) if linux else str(dirs[0])
+            ro_paths += [str(d) for d in dirs]
+            if "runtime-i386" in tc.requires and not linux:  # in WSL its programs bring the runtime themselves
+                runtime32 = str(toolchains.require("runtime-i386"))
+            flags = c.get("flags", tc.flags)
         if c.get("cmd"):
             base = c["cmd"]
         elif tc.cmd:  # a full template ({flags} expands to the flags)
@@ -78,11 +84,19 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
         else:
             base = [*tc.cc, *flags, "-I{include}", "{src}", "-o", "{obj}"]
         cmd = [a.replace("{tc}", tc_dir) for a in base]
-        for dep in tc.requires:  # {tc:<id>} is another toolchain this one needs
+        for dep in ([] if tc.system else tc.requires):  # {tc:<id>} is another toolchain this one needs
             where = toolchains.path(dep, linux)
             cmd = [a.replace(f"{{tc:{dep}}}", wsl.path(where) if linux else str(where)) for a in cmd]
     else:
         cmd = list(c["cmd"])
+    if "toolchain" in c and toolchains.get(c["toolchain"]).system and cmd:
+        # A host compiler may be an alternatives symlink outside the sandbox's /usr: run its real path.
+        found = shutil.which(cmd[0])
+        if found:
+            link = os.readlink(found) if os.path.islink(found) else ""
+            # Resolve only an alternatives link (it points into /etc, which the sandbox doesn't mount).
+            # Other symlinks inside /usr are fine mounted, and clang-cl depends on being invoked by that name.
+            cmd[0] = str(Path(found).resolve()) if link.startswith("/etc/") else found
     return CompilerConfig(
         cmd=cmd,
         timeout=float(c.get("timeout", 15)),

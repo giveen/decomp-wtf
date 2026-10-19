@@ -23,7 +23,20 @@ MACHINES = {"EM_X86_64": "x86_64", "EM_386": "x86", "EM_MIPS": "mips", "EM_PPC":
 # (arch, reloc type) -> (byte offset from r_offset, length, big-endian bitmask to clear)
 # Anything not listed masks the 4 bytes at r_offset, which is right for most absolute/PC32 relocs.
 _MASKS: dict[tuple[str, int], tuple[int, int, int]] = {
-    ("x86_64", 1): (0, 8, 0xFFFFFFFFFFFFFFFF),  # R_X86_64_64
+    ("x86_64", 1): (0, 8, 0xFFFFFFFFFFFFFFFF),  # R_X86_64_64 / IMAGE_REL_AMD64_ADDR64
+    ("x86_64", 2): (0, 4, 0xFFFFFFFF),  # R_X86_64_PC32
+    ("x86_64", 4): (0, 4, 0xFFFFFFFF),  # R_X86_64_PLT32 / IMAGE_REL_AMD64_REL32
+    ("x86_64", 5): (0, 4, 0xFFFFFFFF),  # IMAGE_REL_AMD64_REL32_1
+    ("x86_64", 6): (0, 4, 0xFFFFFFFF),  # IMAGE_REL_AMD64_REL32_2
+    ("x86_64", 7): (0, 4, 0xFFFFFFFF),  # IMAGE_REL_AMD64_REL32_3
+    ("x86_64", 8): (0, 4, 0xFFFFFFFF),  # IMAGE_REL_AMD64_REL32_4
+    ("x86_64", 9): (0, 4, 0xFFFFFFFF),  # IMAGE_REL_AMD64_REL32_5
+    ("x86_64", 10): (0, 4, 0xFFFFFFFF),  # R_X86_64_32 / IMAGE_REL_AMD64_ADDR32
+    ("x86_64", 11): (0, 4, 0xFFFFFFFF),  # R_X86_64_32S
+    ("x86", 1): (0, 4, 0xFFFFFFFF),  # R_386_32
+    ("x86", 2): (0, 4, 0xFFFFFFFF),  # R_386_PC32
+    ("x86", 6): (0, 4, 0xFFFFFFFF),  # IMAGE_REL_I386_DIR32
+    ("x86", 20): (0, 4, 0xFFFFFFFF),  # IMAGE_REL_I386_REL32
     ("mips", 4): (0, 4, 0x03FFFFFF),  # R_MIPS_26
     ("mips", 5): (0, 4, 0x0000FFFF),  # R_MIPS_HI16
     ("mips", 6): (0, 4, 0x0000FFFF),  # R_MIPS_LO16
@@ -68,6 +81,7 @@ class FunctionObj:
     big_endian: bool
     code: bytes
     relocs: list[Reloc] = field(default_factory=list)
+    format: str = ""  # "elf", "coff" or "": how PC-relative reloc addends are encoded
 
     def normalized(self) -> bytes:
         return mask_relocs(self.code, self.relocs, self.arch, self.big_endian)
@@ -284,4 +298,4 @@ def extract_function(data: bytes, name: str) -> FunctionObj | None:
                 addend = _encode(arch, r, residual)
         relocs.append(Reloc(r["off"], r["type"], sym_name, addend))
     relocs.sort(key=lambda r: r.offset)
-    return FunctionObj(name=name, arch=arch, big_endian=big_endian, code=code, relocs=relocs)
+    return FunctionObj(name=name, arch=arch, big_endian=big_endian, code=code, relocs=relocs, format="elf")

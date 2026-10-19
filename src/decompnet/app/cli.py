@@ -355,6 +355,25 @@ def host(args) -> int:
     return share(args)
 
 
+def fork_cmd(args) -> int:
+    """Work on an existing decomp project's source tree: decomp.wtf copies the checkout, builds with the project's
+    own toolchain and lets agents edit its real source files."""
+    from .bridge import ensure_app
+
+    path = Path(args.path).expanduser()
+    if not path.is_dir():
+        raise SystemExit(f"no folder at {path}")
+    if not (path / ".git").exists():
+        raise SystemExit(f"{path} isn't a git checkout. Run `cd {path} && git init && git add -A && "
+                         f"git commit -m 'import existing source'`, then run this again.")
+    info = ensure_app(home_dir())
+    print(f"forking {path}")
+    result = _wait(_api("/api/fork", {"repo": str(path.resolve()), "name": args.name})["job"], "forking")
+    print(f"project: {result['slug']}")
+    print(f"open: http://127.0.0.1:{info['port']}/?k={info['secret']}#/p/{result['slug']}")
+    return 0
+
+
 def join(args) -> int:
     """Join a team's room with your own copy of the game (decomp.wtf starts in the background if needed)."""
     from .bridge import ensure_app
@@ -454,6 +473,9 @@ def main(argv: list[str] | None = None) -> int:
     ho.add_argument("--public", action="store_true", help="anyone with the address can join (default: invite link)")
     ho.add_argument("--approve", action="store_true", help="you let each new member in")
     ho.add_argument("--service", action="store_true", help="also run decomp.wtf as a service that starts with the computer")
+    fk = sub.add_parser("fork", help="work on an existing decomp project source tree (a git checkout)")
+    fk.add_argument("path", help="the project's folder on this computer")
+    fk.add_argument("--name", default="", help="what to call it (default: the folder's name)")
     jo = sub.add_parser("join", help="join a team's room with your own copy of the game")
     jo.add_argument("link", help="the invite link (or the room's address for a public room)")
     jo.add_argument("game", help="your copy of the same game")
@@ -470,7 +492,7 @@ def main(argv: list[str] | None = None) -> int:
         from .bridge import main as bridge
         return bridge(args.name)
     return {"setup": setup, "stop": stop, "shortcut": shortcut, "connect": connect_agents, "share": share,
-            "host": host, "join": join, "service": service_cmd, "url": url_cmd, "update": update_cmd,
+            "host": host, "join": join, "fork": fork_cmd, "service": service_cmd, "url": url_cmd, "update": update_cmd,
             "install-info": install_info}.get(args.cmd, run)(args)
 
 

@@ -26,7 +26,7 @@ from pathlib import Path
 from .. import scoring, seeds, similarity, toolchains
 from ..elfobj import FunctionObj
 from ..network import Agent, Network, NetworkError, _hash_token
-from ..rom import detect, match, split
+from ..rom import detect, match, pe, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 
 DEFAULT_TOOLCHAIN = {"KMC": "gcc-2.7.2-kmc", "IDO": "ido-7.1", "PSYQ": "gcc-2.7.2-psx", "EEGCC": "ee-gcc-2.96",
@@ -36,8 +36,12 @@ DEFAULT_TOOLCHAIN = {"KMC": "gcc-2.7.2-kmc", "IDO": "ido-7.1", "PSYQ": "gcc-2.7.
 # of project as decomp.dev's, linked file by file as it's finished; N64: tested on real games, rebuilt byte for byte).
 # beta: works and is tested on homemade games, less so on real ones yet.
 PLATFORM_STATUS = {"gc": "recommended", "wii": "recommended", "n64": "recommended",
-                   "psx": "beta", "ps2": "beta", "gba": "beta", "nds": "beta"}
+                   "psx": "beta", "ps2": "beta", "gba": "beta", "nds": "beta", "windows": "beta"}
 COMPILERS = {
+    "mingw-x86_64": "Windows games (x86-64), with the GCC on this machine",
+    "mingw-x86": "Windows games (32-bit x86), with the GCC on this machine",
+    "clang-cl-x86_64": "Windows games (x86-64), with LLVM's MSVC-compatible clang-cl",
+    "clang-cl-x86": "Windows games (32-bit x86), with LLVM's MSVC-compatible clang-cl",
     "gcc-2.7.2-kmc": "many third-party N64 games",
     "ido-7.1": "most later first-party N64 games",
     "ido-5.3": "early N64 games (1996-97)",
@@ -48,7 +52,8 @@ COMPILERS = {
 }
 SHORT_NAMES = {"gcc-2.7.2-kmc": "KMC GCC 2.7.2", "ido-7.1": "IDO 7.1", "ido-5.3": "IDO 5.3",
                "gcc-2.7.2-psx": "GCC 2.7.2 (PS1)", "gcc-2.8.1-psx": "GCC 2.8.1 (PS1)", "ee-gcc-2.96": "EE-GCC 2.96",
-               "agbcc": "agbcc"}
+               "agbcc": "agbcc", "mingw-x86_64": "MinGW-w64 GCC (x86-64)", "mingw-x86": "MinGW-w64 GCC (x86)",
+               "clang-cl-x86_64": "clang-cl (x86-64)", "clang-cl-x86": "clang-cl (x86)"}
 # CodeWarrior versions in the `mwcc` pack (GameCube, Wii) and the `mwccarm` pack (DS), for games started from scratch.
 MW_VERSIONS = {
     "gc": ["GC/1.0", "GC/1.1", "GC/1.1p1", "GC/1.2.5", "GC/1.2.5n", "GC/1.3", "GC/1.3.2", "GC/1.3.2r", "GC/2.0",
@@ -70,10 +75,17 @@ TOOLS = {
     "mwccarm": "CodeWarrior for DS, the compilers of DS games (proprietary)",
     "dsd": "ds-decomp: analyses DS ROMs and rebuilds them",
 }
+WINDOWS_NOTE = """
+/* Windows globals: define them here WITHOUT `extern` (for example `int g_counter;`). With `extern`, MinGW
+ * assumes the name may come from a DLL and loads it through an extra pointer, which never matches the
+ * game's direct RIP-relative access. Imported functions are the exception: declare those
+ * `__declspec(dllimport)`, which is exactly the indirect call through the import table the game makes. */
+"""
+
 # Functions this small are handed out in batches (claim_function count): agents match most on the first try.
 BATCH_INSNS = 48
 PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": ["gcc-2.7.2-psx", "gcc-2.8.1-psx"],
-                      "ps2": ["ee-gcc-2.96"], "gba": ["agbcc"]}
+                      "ps2": ["ee-gcc-2.96"], "gba": ["agbcc"], "windows": ["mingw-x86_64", "mingw-x86", "clang-cl-x86_64", "clang-cl-x86"]}
 _AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")
 _ADDRESS = re.compile(r"^(?:0x)?([0-9A-Fa-f]{8})$")
 
@@ -298,9 +310,20 @@ class RomNetwork(Network):
         cfg = self.cfg(proj)
         return match.target_from_split(rf, syms.resolve, cfg.get("big_endian", True), cfg.get("gp", 0))
 
+    def _x86_target(self, fn, proj):
+        from ..rom import match_x86
+
+        cfg = self.cfg(proj)
+        return match_x86.X86Target(fn["name"], cfg.get("arch", "x86_64"), fn["target"],
+                                   match_x86.X86Target.relocs_from_json(json.loads(fn["relocs"] or "[]")))
+
     def _target_obj(self, fn, proj):
         if not self.is_rom(proj):
             return super()._target_obj(fn, proj)
+        if self.cfg(proj).get("platform") == "windows":
+            from ..rom import match_x86
+
+            return match_x86.target_obj(self._x86_target(fn, proj), self.symbols(proj["id"]))
         if self.cfg(proj).get("platform") == "gba":
             return FunctionObj(fn["name"], "thumb", False, fn["target"], [])
         return match.canonical_target(self._rom_target(fn), self.symbols(proj["id"]))
@@ -308,6 +331,11 @@ class RomNetwork(Network):
     def _evaluate(self, fn, proj, obj: bytes):
         if not self.is_rom(proj):
             return super()._evaluate(fn, proj, obj)
+        if self.cfg(proj).get("platform") == "windows":
+            from ..rom import match_x86
+
+            res = match_x86.link(obj, fn["name"], self._x86_target(fn, proj), self.symbols(proj["id"]))
+            return res.candidate, res.exact if res.candidate is not None else None, res.problems
         if self.cfg(proj).get("platform") == "gba":
             from ..rom import match_arm
 
@@ -372,6 +400,8 @@ class RomNetwork(Network):
             f"{info['region']}), {size}, looks built with {info['compiler_guess']}")
         if picked.platform == "gba":
             return self._import_gba(picked, slug, workdir, toolchain, flags, log)
+        if picked.platform == "windows":
+            return self._import_windows(picked, slug, workdir, toolchain, flags, log)
         if picked.overlays:
             log(f"{len(picked.overlays)} overlay{'s' if len(picked.overlays) != 1 else ''} on the disc: "
                 + ", ".join(f"{o[0]} at 0x{o[2]:08X}" for o in picked.overlays[:6]) + (", ..." if len(picked.overlays) > 6 else ""))
@@ -481,6 +511,54 @@ class RomNetwork(Network):
         log(f"ready: {len(fns)} functions to decompile")
         return slug
 
+    def _import_windows(self, picked, slug: str, workdir: Path, toolchain: str | None, flags: list[str] | None,
+                        log) -> str:
+        """Windows: functions from .pdata/exports/symbols/call targets, matched against a compiled object by
+        the x86 matcher. The target is the game's own PE image, so every function's bytes and addresses are final."""
+        image = pe.read(picked.data, picked.filename)
+        info = picked.info  # the name the user picked (not the canonical game.exe the copy is stored as)
+        toolchain = toolchain or ("mingw-x86_64" if image.arch == "x86_64" else "mingw-x86")
+        tc = toolchains.get(toolchain)
+        if toolchains.installed(toolchain) is None:
+            log(f"{tc.name} isn't on this computer: functions import and can be inspected, but compiling needs it "
+                f"(install it, or set another [compiler] for the project)")
+        cfg = {
+            "kind": "rom", "platform": "windows", "arch": image.arch, "big_endian": False, "gp": 0,
+            "rom": {**info, "file": picked.filename, "program": picked.filename},
+            "segments": image.segments,
+            "compiler": {"toolchain": toolchain, "flags": flags or [], "timeout": 20},
+            "legal": {"basis": "personal-copy", "license": "personal use only",
+                      "statement": "imported by the owner of this copy of the game, who confirmed it was legally obtained",
+                      "confirmed_at": time.time()},
+            "context": {"file": None},
+        }
+        names: set[str] = set()
+        now = time.time()
+        with self.store.tx() as db:
+            pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
+                             (slug, info["title"], f"{image.arch} · {len(image.functions)} functions · "
+                                                   f"{info['compiler_guess']}", image.arch, 0, str(workdir),
+                              json.dumps(cfg))).lastrowid
+            for f in image.functions:
+                name = f.name
+                if name in names:
+                    name = f"{name}_{f.vram:08X}"
+                names.add(name)
+                db.execute(
+                    "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (pid, name, len(f.code), f.n_insns, f.code, json.dumps([list(r) for r in f.refs]),
+                     f.asm.replace(f.name, name), None, f.section, f.vram, f.rom))
+            for sym in image.symbols:
+                db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,preview) "
+                           "VALUES(?,?,?,?,?,?)", (pid, sym.name, sym.address, sym.size, sym.kind, sym.preview or None))
+            db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
+                       "VALUES(?,?,?,?,?,?,?)", (pid, 1, BASE_HEADER.format(title=info["title"]) + WINDOWS_NOTE,
+                                                  None, "basic types", now, ""))
+            self._event(db, pid, None, "import", f"{len(image.functions)} functions from {info['title']}")
+        log(f"ready: {len(image.functions)} functions to decompile")
+        return slug
+
     def _community_layout(self, data: bytes | Path, name: str = "") -> Path | None:
         """The file, when the game starts as a community-layout project: a GameCube/Wii program (DOL) or disc image
         (dtk-template), or a DS ROM (ds-decomp). Bytes are saved to a file first."""
@@ -526,8 +604,22 @@ class RomNetwork(Network):
 
     # ------------------------------------------------------------------ drafts
 
+    def _rea_seed(self, fn, proj) -> str | None:
+        """A decompiler draft for Windows targets, through REA when it is set up (see rea.py)."""
+        if fn["seed"] is not None:
+            return fn["seed"]
+        from .. import rea
+
+        text = rea.draft(self.workspace / self.cfg(proj)["rom"]["program"], fn)
+        if text:
+            with self.store.tx() as db:
+                db.execute("UPDATE functions SET seed=? WHERE id=?", (text, fn["id"]))
+        return text
+
     def _seed_for(self, fn, proj) -> str | None:
         """m2c draft, made the first time someone opens the function (imports stay fast)."""
+        if self.cfg(proj).get("platform") == "windows":
+            return self._rea_seed(fn, proj)
         if fn["seed"] is not None or not seeds.available():
             return fn["seed"]
         tc = self.cfg(proj)["compiler"]["toolchain"]
@@ -583,7 +675,8 @@ class RomNetwork(Network):
         starts = {f["vram"] for f in funcs}
         calls, called_by, uses, used_by = {}, {}, {}, {}
         for f in funcs:
-            for off, rtype, addr in json.loads(f["relocs"]):
+            for row in json.loads(f["relocs"]):
+                off, rtype, addr = row[0], row[1], row[2]
                 if f["vram"] <= addr < f["vram"] + f["size"]:
                     continue
                 if addr in starts:
@@ -706,6 +799,52 @@ class RomNetwork(Network):
                          + (f", best score {r['best_score']}" if r["best_score"] is not None else "")
                          + (f", claimed by {r['claimed_by']}" if r["claimed_by"] else "") for r in rows)
 
+    def inspect_binary(self, project: str | None, function: str, what: str = "") -> str:
+        """Windows targets: REA's dossier for a function (pseudocode, signature, callers), or decomp.wtf's own
+        assembly and cross references when REA isn't installed."""
+        fn = self._function(function, project)
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        cfg = self.cfg(proj)
+        if cfg.get("platform") != "windows":
+            raise NetworkError("inspect_binary is for Windows PE projects: use get_function for this one")
+        binary = Path(proj["root"]) / cfg["rom"]["program"]
+        syms = self.symbols(proj["id"])
+        try:
+            from .. import rea
+
+            text = rea.inspect(binary, fn, syms, what)
+        except Exception as e:  # REA is optional: never turn a missing analyzer into a failed claim
+            text = f"(REA is not available: {e})"
+        x = self.xrefs(proj)
+        lines = [text, "", "### decomp.wtf's view", self._asm_text(fn, proj)]
+        calls = sorted(x["calls"].get(fn["vram"], ()))
+        callers = sorted(x["called_by"].get(fn["vram"], ()))
+        if calls:
+            lines.append("calls: " + ", ".join(syms.label(a) for a in calls[:30]))
+        if callers:
+            lines.append("called by: " + ", ".join(syms.label(a) for a in callers[:30]))
+        return "\n".join(lines)
+
+    def search_binary(self, project: str | None, query: str) -> str:
+        """Strings and procedure names in a Windows target: REA's inventories when available, else what
+        decomp.wtf knows (symbol and function names)."""
+        proj = self._project(project)
+        cfg = self.cfg(proj)
+        if cfg.get("platform") != "windows":
+            raise NetworkError("search_binary is for Windows PE projects")
+        try:
+            from .. import rea
+
+            return rea.search(Path(proj["root"]) / cfg["rom"]["program"], query, self.symbols(proj["id"]))
+        except Exception as e:  # REA is optional
+            syms = self.symbols(proj["id"])
+            rows = [f"- symbol {s.name} at 0x{s.address:08X}" for s in syms.by_name.values() if query.lower() in s.name.lower()]
+            funcs = self.store.all("SELECT name, vram FROM functions WHERE project_id=? AND name LIKE ? LIMIT 40",
+                                   proj["id"], f"%{query}%")
+            rows += [f"- function {r['name']} at 0x{r['vram']:08X}" for r in funcs]
+            return (f"(REA is not available: {e})\n" + "\n".join(rows[:60])) if rows else \
+                f"(REA is not available: {e}) decomp.wtf knows no symbol matching {query!r}."
+
     def read_data(self, project: str | None, what: str, length: int = 64) -> str:
         self._rom_only(project, "read_data")
         proj = self._project(project)
@@ -750,6 +889,9 @@ class RomNetwork(Network):
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
         if not self.is_rom(proj):
             raise NetworkError("split_function is for ROM projects")
+        if self.cfg(proj).get("platform") == "windows":
+            raise NetworkError("split_function isn't needed on Windows: PE function boundaries come from the "
+                               "executable (.pdata, its symbol table and call targets)")
         if fn["status"] == "matched":
             raise NetworkError(f"{fn['name']} is matched; it can't be split")
         m = _ADDRESS.match(str(at).strip())
@@ -902,6 +1044,9 @@ class RomNetwork(Network):
                 db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
                            (proj["id"], new, s.address, s.size, s.kind))
             db.execute("UPDATE functions SET name=? WHERE project_id=? AND (name=? OR vram=?)", (new, proj["id"], old, addr))
+            if self.cfg(proj).get("platform") == "windows":  # its listing was generated once, with the old label
+                db.execute("UPDATE functions SET asm=replace(replace(asm, ?, ?), ?, ?) WHERE project_id=? AND vram=?",
+                           (f"glabel {old}", f"glabel {new}", f"endlabel {old}", f"endlabel {new}", proj["id"], addr))
             for u, header in changed.items():
                 version = self._next_version(db, proj["id"])
                 db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
@@ -1257,6 +1402,9 @@ class RomNetwork(Network):
         from ..rom.export_gba import export_gba
 
         proj = self._project(slug)
+        if self.cfg(proj).get("platform") == "windows":
+            raise NetworkError("exporting a Windows game isn't implemented yet: matching and REA inspection work, "
+                               "but there is no rebuildable PE project to write")
         export = export_gba if self.cfg(proj).get("platform") == "gba" else export_rom
         res = export(self, slug, Path(proj["root"]) / "source", log=log)
         with self.store.tx() as db:  # shown on the project page: what's in the tree and whether it rebuilds
@@ -1310,6 +1458,7 @@ class RomNetwork(Network):
             "folder": proj["root"],
             "export": cfg.get("export"),
             "exportable": cfg.get("platform", "n64") in ("n64", "psx", "ps2", "gba"),
+            "binary": cfg.get("rom", {}).get("program") if cfg.get("platform") == "windows" else None,
             "room": self._room_info(proj["slug"]),
         }
 
@@ -1539,6 +1688,8 @@ class RomNetwork(Network):
             if fn is None or fn["status"] != "open" or db.execute("SELECT 1 FROM claims WHERE function_id=?", (fid,)).fetchone():
                 return "skip"
             db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fid, agent.id, now, now + 300))
+        if self.cfg(proj).get("platform") == "windows":
+            return "skip"  # m2c has no x86 target; a draft comes from REA (inspect_binary) instead
         try:
             self._seed_for(fn, proj)  # the readable draft, for the agents that come after
             ctx = self._context(proj["id"], fn["unit"])

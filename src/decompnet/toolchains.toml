@@ -507,3 +507,57 @@ description = "Game Boy Advance disassembler: finds the functions in a ROM and w
 git = "https://github.com/aarant/luvdis"
 commit = "ec3a4e3ee3afe3e9b4a9c7ae8fffc65e1ea2096c"
 pip_extra = ["setuptools<70"]
+
+# ---------------------------------------------------------------- Windows (PC) games
+# These are compilers already on the machine: no archive is downloaded, so `system = true` skips the
+# toolchain store. MinGW-w64 is in every Linux distribution (and in MSYS2 / WSL); real games need the
+# compiler that built them (MSVC) for an exact match, which can be supplied with a project's own
+# [compiler] cmd as usual.
+
+[mingw-x86_64]
+name = "MinGW-w64 GCC (x86-64 Windows target)"
+kind = "compiler"
+license = "GPL-2.0-or-later"
+source = "system x86_64-w64-mingw32-gcc"
+description = "GCC for 64-bit Windows, used to match x86-64 PC games. Finds the compiler on PATH."
+system = true
+platform = "Windows"
+arch = "x86_64"
+cmd = ["x86_64-w64-mingw32-gcc", "-c", "-O2", "-ffreestanding", "-ffunction-sections", "-fdata-sections",
+       "-fno-asynchronous-unwind-tables", "-fno-unwind-tables", "-fno-stack-protector", "-fno-ident",
+       "-fno-pic", "-fno-pie", "-mno-stack-arg-probe", "-I{include}", "{src}", "-o", "{obj}"]
+
+[mingw-x86]
+name = "MinGW-w64 GCC (32-bit Windows target)"
+kind = "compiler"
+license = "GPL-2.0-or-later"
+source = "system i686-w64-mingw32-gcc"
+description = "GCC for 32-bit Windows, used to match x86 PC games. Finds the compiler on PATH."
+system = true
+platform = "Windows"
+arch = "x86"
+cmd = ["i686-w64-mingw32-gcc", "-c", "-O2", "-ffreestanding", "-ffunction-sections", "-fdata-sections",
+       "-fno-asynchronous-unwind-tables", "-fno-unwind-tables", "-fno-stack-protector", "-fno-ident",
+       "-fno-pic", "-fno-pie", "-mno-stack-arg-probe", "-I{include}", "{src}", "-o", "{obj}"]
+
+[clang-cl-x86_64]
+name = "Clang (clang-cl, x86-64 Windows target)"
+kind = "compiler"
+license = "Apache-2.0 WITH LLVM-exception"
+source = "system clang-cl"
+description = "LLVM's MSVC-compatible driver, often a closer match for code built with MSVC. Finds clang-cl on PATH."
+system = true
+platform = "Windows"
+arch = "x86_64"
+cmd = ["clang-cl", "/c", "/O2", "/GS-", "/TC", "/I{include}", "/Fo{obj}", "--", "{src}"]
+
+[clang-cl-x86]
+name = "Clang (clang-cl, 32-bit Windows target)"
+kind = "compiler"
+license = "Apache-2.0 WITH LLVM-exception"
+source = "system clang-cl (i686)"
+description = "LLVM's 32-bit MSVC-compatible driver for x86 PC games. Finds clang-cl on PATH."
+system = true
+platform = "Windows"
+arch = "x86"
+cmd = ["clang-cl", "--target=i686-pc-windows-msvc", "/c", "/O2", "/GS-", "/TC", "/I{include}", "/Fo{obj}", "--", "{src}"]
