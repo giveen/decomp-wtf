@@ -1705,7 +1705,7 @@ function renderSessions(sessions) {
   const box = $("sessions");
   const board = new Map((S.stats?.agents || []).map((r) => [r.agent, r]));
   const running = sessions.filter((s) => ["starting", "working", "waiting"].includes(s.state));
-  $("stopAll").hidden = running.length < 2;
+  $("stopAll").hidden = running.length === 0;  // one agent needs it too, and the route stops every helper here
   box.innerHTML = sessions.map((s) => {
     const claim = S.claims.find((c) => c.agent === s.agent);
     const dot = s.state === "error" ? "err" : s.state === "working" ? "on" : s.state === "stopped" ? "" : "work";
