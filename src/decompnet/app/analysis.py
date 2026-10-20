@@ -1,8 +1,9 @@
 """Analysis projects: REA targets that are not matching-decompilation games.
 
 A matching project asks "what C compiles to these bytes?". An analysis project asks a wider question, and its work
-items are procedures (or tasks the user adds): each agent claims one, reads it through REA, and records what it
-learned. There is no compiler and no score; a work item is done when an agent writes its findings.
+items are procedures, files inside an archive, or tasks the user adds: each agent claims one, reads it through
+REA or directly from the archive, and records what it learned. There is no compiler and no score; a work item is
+done when an agent writes its findings.
 
 The project reuses the same tables and dashboard as a game: functions are claims, notes are notes, and
 status "matched" means "analyzed" for this kind of project.
@@ -10,7 +11,11 @@ status "matched" means "analyzed" for this kind of project.
 
 from __future__ import annotations
 
+import posixpath
 import re
+import tarfile
+import zipfile
+from pathlib import Path
 from typing import Any
 
 
@@ -168,6 +173,101 @@ def summarize(rows: Any, limit: int = 30) -> str:
             out.append(str(row))
     more = f" … {len(rows) - limit} more" if len(rows) > limit else ""
     return ", ".join(out) + more
+
+
+# Archives whose contents can become work items. Android packages use the Android inspector, not this table.
+ARCHIVE_SUFFIXES = (".zip", ".jar", ".whl", ".ipa", ".tar", ".tgz", ".tar.gz")
+
+
+def is_archive(path: str | Path) -> bool:
+    lower = str(path).lower()
+    return lower.endswith(ARCHIVE_SUFFIXES)
+
+
+def artifact_inventory(value: Any) -> dict | None:
+    """The inventory inside inspect_artifact's normalized result (it lives in a substep's evidence)."""
+    seen: set[int] = set()
+
+    def find(node: Any, depth: int) -> dict | None:
+        if depth > 8 or not isinstance(node, (dict, list)) or id(node) in seen:
+            return None
+        seen.add(id(node))
+        if isinstance(node, dict) and isinstance(node.get("occurrences"), list) and isinstance(node.get("nodes"), list):
+            return node
+        for child in (node.values() if isinstance(node, dict) else node):
+            if isinstance(child, (dict, list)):
+                found = find(child, depth + 1)
+                if found is not None:
+                    return found
+        return None
+
+    return find(value, 0)
+
+
+def artifact_entries(inventory: dict) -> list[dict]:
+    """Regular files in an artifact inventory as work items, with the inventory facts the agent needs."""
+    nodes = {n.get("artifact_id"): n for n in inventory.get("nodes") or [] if isinstance(n, dict)}
+    out: list[dict] = []
+    for occ in inventory.get("occurrences") or []:
+        if not isinstance(occ, dict) or occ.get("entry_kind") != "file":
+            continue
+        path = str(occ.get("logical_path") or "").strip()
+        if not path or path == ".":
+            continue
+        node = nodes.get(occ.get("artifact_id")) or {}
+        out.append({
+            "name": path, "kind": "artifact-entry", "address": 0,
+            "size": int(occ.get("declared_size") or node.get("size") or 0),
+            "unit": posixpath.dirname(path),
+            "path": path, "sha256": str(node.get("sha256") or ""),
+            "entry_kind": str(occ.get("entry_kind") or "file"),
+            "artifact_kind": str(occ.get("artifact_kind") or ""),
+            "artifact_format": str(occ.get("artifact_format") or ""),
+            "compressed_size": occ.get("compressed_size"),
+            "executable": bool(occ.get("executable")), "encrypted": bool(occ.get("encrypted")),
+        })
+    out.sort(key=lambda item: item["path"])
+    return out
+
+
+def read_archive_entry(path: str | Path, name: str, offset: int = 0, length: int = 4096) -> bytes | None:
+    """Read at most `length` bytes of one regular entry, without extracting the archive."""
+    offset, length = max(0, int(offset)), max(1, min(int(length), 65536))
+    try:
+        if zipfile.is_zipfile(path):
+            with zipfile.ZipFile(path) as archive:
+                info = archive.getinfo(name)
+                if info.is_dir():
+                    return b""
+                with archive.open(info) as handle:
+                    handle.seek(offset)
+                    return handle.read(length)
+        if tarfile.is_tarfile(path):
+            with tarfile.open(path) as archive:
+                member = archive.getmember(name)
+                if not member.isfile():
+                    return b""
+                handle = archive.extractfile(member)
+                if handle is None:
+                    return None
+                handle.seek(offset)
+                return handle.read(length)
+    except (OSError, KeyError, tarfile.TarError, zipfile.BadZipFile):
+        return None
+    return None
+
+
+def preview_bytes(data: bytes | None, limit: int = 4096) -> str:
+    """A bounded text or hex view of an archive entry for the agent's brief."""
+    if data is None:
+        return "(couldn't read this entry from the archive)"
+    if not data:
+        return "(empty)"
+    sample = data[:limit]
+    text = sample.split(b"\0", 1)[0]
+    if len(text) >= 3 and all(32 <= c < 127 or c in (9, 10, 13) for c in text):
+        return text.decode("ascii", "replace")
+    return sample[:512].hex(" ")
 
 
 def safe_name(name: str, address: int | None = None) -> str:

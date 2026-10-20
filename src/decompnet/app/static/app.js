@@ -192,7 +192,7 @@ async function showHome() {
       continue;
     }
     const meta = p.kind === "analysis"
-      ? `${esc(p.platform_name || "Binary")} · REA · ${(p.functions || 0).toLocaleString()} work items`
+      ? `${esc(p.platform_name || "Binary")} · REA${p.entries ? ` · ${Number(p.entries).toLocaleString()} entries` : ""} · ${(p.functions || 0).toLocaleString()} work items`
       : p.kind === "fork"
       ? `${p.origin === "scratch" ? "from scratch" : "public decomp"}${p.version ? " · " + esc(p.version) : ""}${p.ready ? "" : " · needs setup"}`
       : `${esc(p.rom?.game_code || "")}${p.rom?.region ? " · " + esc(p.rom.region) : ""} · ${esc(p.compiler?.name || "")}`;
@@ -273,7 +273,7 @@ const PLATFORM_NAME = { n64: "Nintendo 64", psx: "PlayStation", ps2: "PlayStatio
 const PC_PLATFORMS = new Set(["windows", "linux", "binary"]);
 const isNativeProject = (ov) => !!ov && !!(ov.binary || PC_PLATFORMS.has(ov.platform));
 function ownCopyText(info) {
-  if (info.platform === "binary") return "I'm authorized to analyze this file. The results stay with me for my own use.";
+  if (info.platform === "binary" || info.platform === "archive") return "I'm authorized to analyze this file. The results stay with me for my own use.";
   if (PC_PLATFORMS.has(info.platform)) return "This is my own copy of this program, or a binary I'm authorized to analyze. The results stay with me for my own use.";
   return "This is my own copy of this game, obtained legally (for example, dumped from my own console or cartridge). The results stay with me for my own use.";
 }
@@ -352,7 +352,7 @@ function notSupported(head, file) {
   if (["sfc", "smc"].includes(ext)) return "That's a Super Nintendo ROM. SNES games were written in assembly, not compiled from C, so there's no C source to match.";
   if (["nes", "gb", "gbc", "md", "gen", "sms", "gg", "pce"].includes(ext)) return "Games for that console were written in assembly, not compiled from C, so there's no C source to match.";
   if (ext === "cue") return "That's the .cue sheet: pick the .bin file next to it (the track with the game's data, usually Track 1).";
-  if (["zip", "7z", "rar"].includes(ext)) return "That's an archive: unpack it first, then drop the game file inside.";
+  if (["7z", "rar"].includes(ext)) return "That's an archive format this app can't inventory yet: use a ZIP, or unpack it and drop the file inside.";
   if (ext === "apk") return "Android apps aren't supported yet.";
   if (ext === "pbp" || ext === "cso") return "That's a PSP file. PSP games aren't supported yet.";
   return null;
@@ -378,8 +378,13 @@ async function pickFiles(files) {
 
 async function pickFile(file, companions = []) {
   const head = new Uint8Array(await file.slice(0, 0x9400).arrayBuffer());
+  const ext = (file.name.match(/\.([^.]+)$/) || [])[1]?.toLowerCase() || "";
   let info = identifyHead(head, file), buf = file, binary = false;
-  if (!info) {
+  const archive = !info && ["zip", "jar", "whl", "ipa", "tar", "tgz"].includes(ext);
+  if (archive) {
+    binary = true;
+    info = { title: file.name, platform: "archive", order: `${ext.toUpperCase()} archive`, size: file.size, code: "", region: "" };
+  } else if (!info) {
     const why = notSupported(head, file);
     if (why) return toast(esc(why), "err");
     if (file.size > 64 * 1024 * 1024) return toast("This file is too large to open through the browser: use its path instead.", "err");
@@ -397,14 +402,18 @@ async function pickFile(file, companions = []) {
   $("ownText").textContent = ownCopyText(info);
   $("analyse").textContent = "Start decompiling";
   if (binary) {
-    $("romFacts").innerHTML = [["File", file.name], ["Format", "REA analysis"], ["Size", MB(file.size)], ["Agents", "work through its functions"],
+    const isArchive = info.platform === "archive";
+    $("romFacts").innerHTML = [["File", file.name], ["Format", isArchive ? info.order : "REA analysis"], ["Size", MB(file.size)],
+      ["Agents", isArchive ? "one work item per file" : "work through its functions"],
       ...(companions.length ? [["With", companions.map((f) => f.name).join(", ")]] : [])]
       .map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("");
     $("romStatus").hidden = false;
     $("romStatus").className = "plat-status";
-    $("romStatus").innerHTML = `<b>REA analysis.</b> This isn't a game this app can split or match, so REA opens it: its functions become work items, and agents read them and record findings. Matching needs the original compiler and build.`;
+    $("romStatus").innerHTML = isArchive
+      ? `<b>Archive analysis.</b> REA inventories every file in this archive. Each file becomes a work item, and agents read it and record findings.`
+      : `<b>REA analysis.</b> This isn't a game this app can split or match, so REA opens it: its functions become work items, and agents read them and record findings. Matching needs the original compiler and build.`;
     $("ownText").textContent = "I'm authorized to analyze this file. The results stay with me for my own use.";
-    $("analyse").textContent = "Analyze with REA";
+    $("analyse").textContent = isArchive ? "Analyze archive" : "Analyze with REA";
     $("compilerRow").hidden = true;
     $("compilerNote").hidden = true;
     $("mwConsent").hidden = true;
@@ -618,7 +627,7 @@ async function openProject(slug, tab = "overview") {
   const analysis = S.ov.kind === "analysis";
   const native = isNativeProject(S.ov);
   $("mapTitle").textContent = analysis ? "Work map" : fork ? "Function map" : native ? "Function map" : "ROM map";
-  $("mapHint").textContent = analysis ? "Every square is a procedure or task. Click one to read it." : fork ? "Every square is a function, grouped by source file. Click one to see it." : native ? "Every square is a function, in the binary's order. Click one to see it." : "Every square is a function, in ROM order. Click one to see it.";
+  $("mapHint").textContent = analysis ? "Every square is a procedure, file, or task. Click one to read it." : fork ? "Every square is a function, grouped by source file. Click one to see it." : native ? "Every square is a function, in the binary's order. Click one to see it." : "Every square is a function, in ROM order. Click one to see it.";
   $("thAddr").textContent = fork ? "File" : "Address";
   $("thInsns").textContent = analysis ? "Size" : "Instructions";
   $("fnSearch").placeholder = analysis ? "Find a work item or address  ( / )" : "Find a function, address or file  ( / )";
@@ -968,7 +977,8 @@ function renderCompilerNotice(ov) {
     const t = (ov.analysis || {}).target || {};
     n.hidden = false;
     n.className = "notice";
-    n.innerHTML = `<span><b>${esc(ov.platform_name || "Binary")}</b> · ${esc(t.path || "")} — REA reads this target; agents claim its procedures and record findings. No compiler is needed.</span>`;
+    const what = (ov.analysis?.artifact || {}).entries ? "each file is a work item" : "agents claim its procedures";
+    n.innerHTML = `<span><b>${esc(ov.platform_name || "Binary")}</b> · ${esc(t.path || "")} — REA reads this target; ${esc(what)} and agents record findings. No compiler is needed.</span>`;
     return;
   }
   const unc = ov.kind === "fork" && ov.ready ? ov.uncovered : null;
@@ -2399,7 +2409,8 @@ function renderList() {
     const best = st === "matched" ? `<span class="ok">100%</span>` : p == null ? `<span class="dim">–</span>` : pctText(p);
     const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">${analysis ? "analyzed" : "matched"}</span>` : st === "library" ? `<span class="st" title="library/CRT code: not the program's own">${esc(f.library || "library")}</span>` : st === "asm" ? `<span class="st" title="hand-written assembly: no C compiles to it">assembly</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
       : st === "tried" ? `<span class="st tried">tried</span>` : `<span class="st">${analysis ? "to do" : "to do"}</span>`;
-    const where = analysis ? (f.vram ? hex8(f.vram) : "task") : fork ? esc(f.unit || "") : hex8(f.vram);
+    const where = analysis ? (f.vram ? hex8(f.vram) : f.kind === "artifact-entry" ? "file" : "task")
+      : fork ? esc(f.unit || "") : hex8(f.vram);
     const measure = analysis ? (f.size ? bytes(f.size) : "—") : f.insns.toLocaleString();
     return `<tr data-fn="${esc(f.name)}" class="${S.fn === f.name ? "sel" : ""}" tabindex="0"><td class="mono dim">${where}</td>
       <td class="mono name">${(S.ov && (S.ov.priority || []).includes(f.name)) ? `<span class="star" title="agents take it next">★</span>` : ""}${esc(f.name)}</td><td class="r mono">${measure}</td>

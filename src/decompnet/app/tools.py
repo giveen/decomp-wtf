@@ -62,14 +62,16 @@ The target is the user's: never publish it or its code anywhere.
 ANALYSIS_PROMPT = """\
 You are a reverse-engineering agent in decomp.anything, working on {title}. This is an analysis project: the target
 is read through REA, and your job is to understand it and leave precise findings for the next agent. There is no
-compiler and no match score.
+compiler and no match score. Archive projects expose each regular file as a work item.
 
 Repeat for up to {count} work items, then stop:
-1. claim_function() gives you the next procedure or task, with REA's dossier: pseudocode, assembly, callers and
-   referenced strings/names. If it is the survey item, you get the target overview and memory map.
+1. claim_function() gives you the next work item: a procedure, a file inside an archive, or a task. Procedure
+   items include REA's dossier: pseudocode, assembly, callers and referenced strings/names. Archive entries show
+   their path, hash and a bounded preview; read more with read_artifact_entry(entry, offset, length). If it is
+   the survey item, you get the target overview and memory map.
 2. Go deeper with rea_tool(tool, arguments): search_strings, search_procedures, analyze_function, xrefs,
-   procedure_callers/callees, list_segments, read_bytes, inspect_native_api. search_facts searches the project's
-   work items by name, string or address. Search first when you need context.
+   procedure_callers/callees, list_segments, read_bytes, inspect_native_api, inspect_artifact. search_facts
+   searches the project's work items by name, string or address. Search first when you need context.
 3. Write findings with add_note(text, function) while you work, and finish the item with
    complete_function(function, summary): what it does, inputs/outputs, calls, data and anything surprising.
 4. release_function(function, notes) if it needs someone else; notes are required.
@@ -252,6 +254,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
         net.complete_analysis(agent, slug, function, summary),
     "rea_tool": lambda net, agent, slug, tool, arguments=None:
         _rea_tool(net, agent, slug, tool, arguments),
+    "read_artifact_entry": lambda net, agent, slug, entry, offset=0, length=256:
+        net.analysis_read_entry(slug, entry, offset, length),
     "release_function": lambda net, agent, slug, function, notes: net.release(agent, function, notes, slug),
     "get_context": lambda net, agent, slug, function="": net.get_context(slug, function or None),
     "edit_context": lambda net, agent, slug, old, new, message, function="":
@@ -288,10 +292,10 @@ HANDLERS: dict[str, Callable[..., str]] = {
 ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "import_debug_info",
             "export_debug_info", "compare_version"}
 FORK_ONLY = {"edit_file", "file_status", "split_file"}
-ANALYSIS_ONLY = {"complete_function", "rea_tool"}
+ANALYSIS_ONLY = {"complete_function", "rea_tool", "read_artifact_entry"}
 ANALYSIS_TOOLS = {"project_info", "claim_function", "get_function", "release_function", "complete_function",
-                  "rea_tool", "inspect_binary", "search_binary", "read_data", "list_functions", "add_note",
-                  "search_notes", "guide", "read_file", "search_code", "search_facts"}
+                  "rea_tool", "read_artifact_entry", "inspect_binary", "search_binary", "read_data",
+                  "list_functions", "add_note", "search_notes", "guide", "read_file", "search_code", "search_facts"}
 
 
 def _hot_text(rows) -> str:
@@ -411,6 +415,17 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         if not isinstance(args, dict):
             raise ToolError("arguments must be a JSON object")
         return await run(ctx, "rea_tool", tool=tool, arguments=args)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def read_artifact_entry(ctx: Context, entry: str, offset: int = 0, length: int = 256) -> str:
+        """Archive analysis projects: read one file entry in place, without extracting the archive.
+
+        Args:
+            entry: exact archive path, as shown by the work item (for example locale/en-US.json)
+            offset: byte offset inside the entry
+            length: bytes to read, up to 8192
+        """
+        return await run(ctx, "read_artifact_entry", entry=entry, offset=offset, length=length)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def release_function(ctx: Context, function: str, notes: str) -> str:
