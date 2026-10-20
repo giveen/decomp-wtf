@@ -1,13 +1,15 @@
-"""REA's binary-analysis tools, available to decomp.wtf agents on Windows targets.
+"""REA's analysis tools, for decomp.wtf agents on PC targets and for the RE console.
 
 REA (https://rea.tools) is a separate MCP server that inspects native binaries with Ghidra, IDA,
-Hopper or Rizin: function inventories, pseudocode, cross references, strings, call graphs. This
-module speaks MCP to ``rea mcp`` over stdio and exposes a small, path-scoped allowlist. Nothing
-here is required for matching: without REA, PE games still import and are judged byte for byte.
+Hopper or Rizin (function inventories, pseudocode, cross references, strings, call graphs), and
+Android, .NET, JavaScript/Electron, web and firmware targets. This module speaks MCP to ``rea mcp``
+over stdio. Agents get a small read-only allowlist (`ALLOWED`); the console, driven by the user, can
+call any tool. Nothing here is required for matching: without REA, PC programs still import and are
+judged byte for byte.
 
-Setup (optional): install REA (``npm install -g rea-agents``) and configure its provider, then
-either leave ``rea`` on PATH or set ``DECOMP_REA`` to the command (for example
-``DECOMP_REA="/opt/rea/scripts/rea.mjs mcp"``). ``DECOMP_REA=off`` disables the bridge.
+Setup (optional): the console's REA settings (saved in rea.json next to the database), or
+``DECOMP_REA`` set to the command (``DECOMP_REA="npx -y rea-agents@6.4.0 mcp"``), or ``rea`` on PATH,
+or an ``rea`` server registered with Claude Code (~/.claude.json). ``DECOMP_REA=off`` disables it.
 """
 
 from __future__ import annotations
@@ -16,12 +18,18 @@ import atexit
 import json
 import os
 import queue
+import re
 import shlex
 import shutil
 import subprocess
 import threading
 import time
 from pathlib import Path
+
+PACKAGE = "rea-agents@6.4.0"  # the version tested with decomp.wtf
+PROVIDERS = ("ghidra", "hopper", "ida", "rizin")
+CONFIG: Path | None = None  # rea.json, set by the app at start
+_SECRET = re.compile(r"key|token|secret|password|auth|cookie|credential", re.I)
 
 # Only read-only analysis. Nothing that opens files by arbitrary path after the initial target,
 # executes code, writes annotations, or touches the network.
@@ -36,35 +44,112 @@ class ReaError(RuntimeError):
     pass
 
 
-def command() -> list[str] | None:
-    """How to start REA's MCP server, or None when it isn't configured on this machine."""
+def _claude_code() -> dict | None:
+    """An `rea` MCP server the user registered with Claude Code: the same command and environment."""
+    try:
+        data = json.loads((Path.home() / ".claude.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    servers = [data.get("mcpServers") or {}, *((p or {}).get("mcpServers") or {} for p in (data.get("projects") or {}).values())]
+    for found in servers:
+        rea = found.get("rea") if isinstance(found, dict) else None
+        if isinstance(rea, dict) and rea.get("command"):
+            env = {k: str(v) for k, v in (rea.get("env") or {}).items()}
+            return {"command": [str(rea["command"]), *map(str, rea.get("args") or [])], "env": env}
+    return None
+
+
+def settings() -> dict:
+    """How REA starts: {command, env, provider, source}. Saved console settings first, then DECOMP_REA,
+    `rea` on PATH, Claude Code's registration, and npx with the tested version."""
+    saved: dict = {}
+    if CONFIG is not None and CONFIG.exists():
+        try:
+            saved = json.loads(CONFIG.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            saved = {}
+    out = {"command": None, "env": {}, "provider": saved.get("provider", "ghidra"), "source": None}
     env = os.environ.get("DECOMP_REA", "").strip()
     if env.lower() in ("off", "0", "false", "no"):
-        return None
+        return out | {"source": "off"}
+    if saved.get("command"):
+        return out | {"command": list(saved["command"]), "env": dict(saved.get("env") or {}), "source": "saved"}
     if env:
-        return shlex.split(env)
+        return out | {"command": shlex.split(env), "source": "DECOMP_REA"}
     found = shutil.which("rea") or shutil.which("rea-agents")
     if found:
-        return [found, "mcp"]
-    if os.environ.get("DECOMP_REA_ALLOW_NPX") == "1" and shutil.which("npx"):
-        return ["npx", "-y", "rea-agents@latest", "mcp"]
-    return None
+        return out | {"command": [found, "mcp"], "source": "PATH"}
+    claude = _claude_code()
+    if claude:
+        return out | claude | {"source": "Claude Code"}
+    if shutil.which("npx"):
+        return out | {"command": ["npx", "-y", PACKAGE, "mcp"], "source": "npx"}
+    return out
+
+
+def save(command: list[str] | str, env: dict | None = None, provider: str = "ghidra") -> dict:
+    """Keep the console's REA settings (used by the agents' bridge too)."""
+    if CONFIG is None:
+        raise ReaError("decomp.wtf has no settings folder")
+    argv = shlex.split(command) if isinstance(command, str) else [str(a) for a in command]
+    if provider and provider not in PROVIDERS:
+        raise ReaError(f"provider must be one of {', '.join(PROVIDERS)}")
+    clean = {str(k).strip(): str(v) for k, v in (env or {}).items() if str(k).strip()}
+    CONFIG.write_text(json.dumps({"command": argv, "env": clean, "provider": provider}, indent=1), encoding="utf-8")
+    return settings()
+
+
+def public(cfg: dict | None = None) -> dict:
+    """Settings safe to show in the page: values of variables that look like secrets are hidden."""
+    cfg = cfg or settings()
+    return {**cfg, "env": {k: ("•••" if _SECRET.search(k) else v) for k, v in cfg["env"].items()}}
+
+
+def command() -> list[str] | None:
+    """How to start REA's MCP server, or None when it isn't configured on this machine."""
+    return settings()["command"]
+
+
+def unwrap(result):
+    """REA wraps every answer in an evidence record; the answer itself is its normalized_result."""
+    if isinstance(result, dict) and "normalized_result" in result and "operation" in result:
+        return result["normalized_result"]
+    return result
+
+
+def _error(text: str) -> str:
+    """REA's error JSON as a sentence: the message, and what to do about it when it says."""
+    try:
+        err = json.loads(text).get("error") or {}
+    except (ValueError, AttributeError):
+        return text.strip()
+    message = str(err.get("message") or text).strip()
+    action = str((err.get("remediation") or {}).get("action") or "").strip()
+    return message if not action or action == message else f"{message} {action}"
 
 
 class Client:
     """A minimal MCP client: initialize, then tools/call by name."""
 
-    def __init__(self, argv: list[str] | None = None, timeout: float = 600):
-        argv = argv or command()
+    def __init__(self, argv: list[str] | None = None, timeout: float = 600, env: dict | None = None,
+                 provider: str | None = None):
+        cfg = settings() if argv is None else {"command": argv, "env": env or {}, "provider": provider}
+        argv = cfg["command"]
         if not argv:
-            raise ReaError("REA isn't set up (install rea-agents, put `rea` on PATH or set DECOMP_REA)")
+            raise ReaError("REA isn't set up: set its command in the RE console's settings (or install rea-agents)")
+        extra = {**cfg.get("env", {}), **(env or {})}
+        if cfg.get("provider") and "REA_ANALYSIS_PROVIDER" not in extra:
+            extra["REA_ANALYSIS_PROVIDER"] = cfg["provider"]
         self.argv, self.timeout = argv, timeout
         self._id = 0
         self._lock = threading.Lock()
         self._lines: queue.Queue[str | None] = queue.Queue()
-        self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                     text=True, encoding="utf-8", errors="replace", bufsize=1,
-                                     env={**os.environ, "NO_COLOR": "1"})
+        try:
+            self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                         text=True, encoding="utf-8", errors="replace", bufsize=1,
+                                         env={**os.environ, **extra, "NO_COLOR": "1"})
+        except OSError as e:
+            raise ReaError(f"REA couldn't start ({' '.join(argv)}): {e}") from e
         threading.Thread(target=self._read, daemon=True).start()
         self._initialize()
 
@@ -113,20 +198,39 @@ class Client:
                                      "clientInfo": {"name": "decomp.wtf", "version": "1"}}, timeout=30)
         self._send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
 
-    def call(self, tool: str, arguments: dict | None = None, timeout: float | None = None):
-        if tool not in ALLOWED:
+    def call(self, tool: str, arguments: dict | None = None, timeout: float | None = None, *,
+             any_tool: bool = False, envelope: bool = False):
+        """A tool's answer (its normalized_result). `any_tool`: the console, past the agents' allowlist;
+        `envelope`: the whole evidence record (provider, confidence, limitations) instead of the answer."""
+        if tool not in ALLOWED and not any_tool:
             raise ReaError(f"REA tool {tool!r} is not on decomp.wtf's allowlist")
         result = self._request("tools/call", {"name": tool, "arguments": arguments or {}}, timeout=timeout)
         if result.get("isError"):
             text = " ".join(c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict))
-            raise ReaError(text.strip() or f"REA's {tool} failed")
+            raise ReaError(_error(text) or f"REA's {tool} failed")
         if "structuredContent" in result:
-            return result["structuredContent"]
-        text = "".join(c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict))
-        try:
-            return json.loads(text)
-        except ValueError:
-            return text
+            value = result["structuredContent"]
+        else:
+            text = "".join(c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict))
+            try:
+                value = json.loads(text)
+            except ValueError:
+                value = text
+        return value if envelope else unwrap(value)
+
+    def tools(self) -> list[dict]:
+        """REA's whole catalog: name, title, description, input schema and hints, for every tool."""
+        out, cursor = [], None
+        for _ in range(50):
+            page = self._request("tools/list", {"cursor": cursor} if cursor else {}, timeout=60)
+            out += page.get("tools") or []
+            cursor = page.get("nextCursor")
+            if not cursor:
+                break
+        return out
+
+    def alive(self) -> bool:
+        return self.proc.poll() is None
 
     def close(self) -> None:
         try:

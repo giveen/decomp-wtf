@@ -80,7 +80,7 @@ const S = {
   scores: new Map(), claims: [], flash: new Map(), timer: null, statsTimer: null, lastMapFetch: 0, fn: null, stats: null,
   projects: [],
 };
-const VIEWS = ["home", "catalog", "project", "agentsPage", "toolsPage", "settingsPage"];
+const VIEWS = ["home", "catalog", "project", "agentsPage", "toolsPage", "settingsPage", "consolePage"];
 const TABS = ["overview", "functions", "agents", "activity", "team", "source", "settings"];
 
 /* The project folder in the computer's file manager (decomp.wtf in Docker says where it is instead). */
@@ -108,6 +108,7 @@ function route() {
     else if (h === "#/agents") showAgentsPage();
     else if (h === "#/tools") showToolsPage();
     else if (h === "#/settings") showSettingsPage();
+    else if (h === "#/console" || h.startsWith("#/console?")) showConsole();
     else showHome();
   }
   markNav();
@@ -131,7 +132,7 @@ function setWidths(root) { root.querySelectorAll("[data-w]").forEach((el) => { e
 
 function markNav() {
   const h = location.hash || "#/";
-  const route = h.startsWith("#/p/") ? "project" : (h.replace("#/", "") || "home");
+  const route = h.startsWith("#/p/") ? "project" : (h.replace("#/", "").split("?")[0] || "home");
   document.querySelectorAll(".nav [data-route]").forEach((a) => a.classList.toggle("on", a.dataset.route === route));
   document.querySelectorAll(".nav-proj").forEach((a) => a.classList.toggle("on", a.dataset.slug === S.slug && route === "project"));
 }
@@ -1863,6 +1864,13 @@ document.querySelectorAll("#diffWhich [data-which]").forEach((b) => {
   };
 });
 
+$("fnConsole").onclick = () => {
+  const d = S.fnDetail;
+  if (!d || !S.ov.binary) return;
+  const path = `${S.ov.folder.replace(/[\\/]$/, "")}/${S.ov.binary}`;
+  location.hash = `#/console?path=${encodeURIComponent(path)}&fn=0x${d.vram.toString(16)}`;
+};
+
 let fnBusy = false;
 async function refreshFn(first) {
   if (fnBusy || !S.fn) return;
@@ -1875,6 +1883,7 @@ async function refreshFn(first) {
       ? `${d.unit} · ${d.insns} instructions${d.match_percent != null ? ` · ${d.match_percent >= 100 ? "100" : (Math.floor(d.match_percent * 10) / 10).toFixed(1)}% now` : ""}`
       : `${hex8(d.vram)} · ROM 0x${d.rom_offset.toString(16).toUpperCase()} · ${d.insns} instructions`;
     $("fnName").textContent = d.name;
+    $("fnConsole").hidden = !S.ov.binary;  // PC programs: REA reads the program itself
     fnBadge(d);
     const pinned = (S.ov.priority || []).includes(d.name);
     $("fnPin").hidden = S.ov.kind === "fork" || d.status !== "open";

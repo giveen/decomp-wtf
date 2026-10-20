@@ -10,6 +10,17 @@ If you do use it or build on it, please only use it on games you own, don't shar
 
 Thanks to everyone who tried it, reported bugs and sent fixes.
 
+### What this fork adds
+
+- **[RE console](#re-console):** a graphical front end for [REA](https://rea.tools)'s 170 tools. Open a program, app
+  or page and browse its functions, strings and memory map, with pseudocode next to assembly, control-flow and call
+  graphs, a form for every tool and a terminal for every call.
+- **[Linux programs](#platforms):** x86 and x86-64 ELF executables and libraries import and match like Windows `.exe`
+  files, with the GCC and Clang on your machine.
+- **Windows (PC) targets** with a relocation-aware x86 matcher, and the optional REA bridge for agents.
+- **[Reference folders](#agents):** name a folder in a project's agent instructions, and helpers can read and search it.
+- **opencode 2** support for helpers and `decomp connect`.
+
 ---
 
 <p align="center">
@@ -33,6 +44,8 @@ Thanks to everyone who tried it, reported bugs and sent fixes.
   <a href="#agents"><b>Agents</b></a>
   &nbsp;·&nbsp;
   <a href="#decompile-together"><b>Decompile together</b></a>
+  &nbsp;·&nbsp;
+  <a href="#re-console"><b>RE console</b></a>
 </p>
 
 <p align="center">
@@ -56,13 +69,15 @@ Point the AI agent you already use at a game you own. **decomp.wtf** hands it th
 compiles every attempt with the game's **original compiler**, and checks the result **byte for byte**. Score 0, or
 it doesn't count. There are two ways in:
 
-- **Start from scratch.** Drop in a game for N64, PlayStation 1 or 2, GameCube, Wii, Game Boy Advance, DS or
-  Windows: a ROM, a disc image, a program file or a PC `.exe`/`.dll`. decomp.wtf finds every function and your agents take it from there. The
+- **Start from scratch.** Drop in a game for N64, PlayStation 1 or 2, GameCube, Wii, Game Boy Advance, DS,
+  Windows or Linux: a ROM, a disc image, a program file, a PC `.exe`/`.dll` or a Linux ELF program. decomp.wtf finds every function and your agents take it from there. The
   result is a project that rebuilds your game byte for byte: the base for ports and mods. GameCube, Wii and N64
   are the [recommended](#platforms) platforms; the rest are in beta.
 - **Continue a public decomp.** Pick one of the [245 projects on decomp.dev](https://decomp.dev) for GameCube, Wii,
   PlayStation 1 and 2, N64, GBA, DS, Switch, PC, Xbox 360 and more, add your own copy of its game, and your agents
   carry on where the community left off, in the project's real source code.
+- **Just look inside.** The [RE console](#re-console) opens any program, app or web page with REA: functions,
+  pseudocode, flow graphs, strings, and every one of its tools. Nothing has to match.
 
 On GameCube and Wii the goal is what real decomps aim for: every file **linked**, so the game is built from its C and
 still comes out byte for byte. That's the starting point for a native PC port.
@@ -245,6 +260,8 @@ GameCube and Wii projects (dtk-template) decomp.wtf takes care of the steps betw
 | **Agent toolkit** | A data inspector, a call graph, splitting merged functions, and guides for MIPS, PowerPC, ARM, x86, AArch64, IDO, GCC, Metrowerks, agbcc, PSY-Q, C++ and objdiff. |
 | **Decompile together** | A team of any size, each with their own copy and agents: one host, public or private rooms, hosted by you (home PC or server, `decomp host`). Only the work is shared, never the game. |
 | **Rebuildable export** | A decomp project that rebuilds your game byte for byte, ready for ports and mods and for any other tool or agent. |
+| **RE console** | REA's analysis tools in the app: functions, pseudocode beside assembly, control-flow and call graphs, strings, a memory map, a form for every tool and a terminal. [More](#re-console). |
+| **Reference folders** | Name a folder in a project's agent instructions (a matched decomp of the same game, notes, symbol lists) and helpers can read and search it. Each brief shows that folder's lines for the function's address. |
 | **Every major disc format** | ROMs, PlayStation discs, GameCube and Wii discs (ISO, GCM, RVZ, WIA, WBFS, CISO, GCZ) and program files, streamed from disk. |
 
 ## Agents
@@ -254,15 +271,22 @@ GameCube and Wii projects (dtk-template) decomp.wtf takes care of the steps betw
 | **Claude Code** | Runs headless against the app's local MCP server. |
 | **Codex CLI** | Same, with approvals limited to decomp.wtf's tools. |
 | **Antigravity CLI** | Same, through the workspace's own MCP config. Google's successor to Gemini CLI (`agy`), which it retired in June 2026. |
-| **opencode** | Same, with any provider you've set up: DeepSeek, Qwen, Kimi and more. |
+| **opencode** | Same, with any provider you've set up: DeepSeek, Qwen, Kimi and more. opencode 1 and 2 both work: for opencode 2, decomp.wtf writes its V2 config, turns Code Mode off and runs it `--standalone`. |
 | **API key** | A built-in agent loop for any OpenAI-compatible API: DeepSeek, OpenRouter, OpenAI, or a model on your own computer with llama.cpp, Ollama or LM Studio. It keeps the conversation within the model's context. |
 | **The agent you talk to** | `decomp connect` (or the Claude Code plugin above): it drives decomp.wtf from your own terminal and can start helpers. |
 | **Anything else** | Point any MCP client (Cursor, Claude Desktop, your own) at `decomp mcp`, or at the app with **Connect another agent**. |
 
-Agents only get decomp.wtf's tools: no shell, and no access to your files beyond a fork's own source tree. The app installs missing agents for you
+Agents only get decomp.wtf's tools: no shell, and no access to your files beyond a fork's own source tree and any reference folders you name. The app installs missing agents for you
 and tells you how to sign in. You pay your own provider; in our tests a small function cost Claude Code about 8 cents.
 Big functions take many more attempts, and cheaper models often get stuck on them on register allocation, so expect
 the easy part of a game to go fast and the rest to take real time.
+
+**Reference folders.** In a project's **Instructions for agents**, write the full path of a folder (for example
+*"Look in /home/you/re/game-decomp for names"*). Helpers on that project can then `read_file` and `search_code`
+there. It works well for a matched decomp of the same game built with a different compiler, or for symbol lists and
+notes. Reads stay inside the folder: symlinks out of it, dotfiles, `.git`, `build` and `orig` folders, binaries and
+your home folder itself are refused. Each function's brief also lists the folder's lines that mention its address.
+Folders named in a room you joined are ignored.
 
 **Local models.** Start the model with at least 16K tokens of context (llama.cpp: `-c 16384`; Ollama:
 `OLLAMA_CONTEXT_LENGTH=16384`, or it quietly cuts the start of each request off; LM Studio: Context Length), choose
@@ -302,6 +326,48 @@ No ROM bytes or assembly ever cross the wire: everyone reads the code from their
 the host's. The decompiled code of a commercial game belongs to its rights holder: share it only with people who own
 the game.
 
+## RE console
+
+**RE console** in the sidebar is a graphical front end for [REA](https://rea.tools) (Reverse Engineer Anything): its
+whole tool catalog for native programs, Android apps, .NET assemblies, JavaScript and Electron apps, web pages,
+firmware and plain files. Nothing has to be a game, and nothing has to match.
+
+- **Open a target** by its path. Native code is analysed by Ghidra, Hopper or IDA (pick the engine next to the path).
+  The sidebar lists its functions, strings and memory segments, and the overview shows counts, a memory map and the
+  largest functions.
+- **A function** opens as pseudocode next to its assembly, with names you can click and jumps that highlight their
+  target. It also has:
+  - a **flow graph** of its basic blocks: jumps, fall-throughs and loops in different colors; zoom, pan, and click
+    a block to see its instructions
+  - a **callers and callees** graph
+  - the strings and names it uses
+  - everything else REA says about it
+- **Every tool has a form**, built from REA's own schema and filled in with its example. Results come back as
+  tables, code or a JSON tree, with the engine, its confidence and the limitations REA states. The **Tools** list
+  groups all 170 tools by kind; the start cards cover APKs, web pages, JavaScript and Electron apps, .NET assemblies,
+  firmware and plain files.
+- **A terminal** logs every call; click a line to see its result again. You can also type commands: `open PATH`,
+  `fn ADDRESS`, `tools WORD`, or any tool as `TOOL key=value` or `TOOL {json}`, with Tab completion and history.
+- **Two ways into matching:**
+  - **Decompile it** turns an open Windows or Linux program into a byte-matching project.
+  - In a PC project, a function's **RE console** button opens that function here.
+
+**Setup.** The console finds REA by itself when it can, in this order:
+1. the console's own saved settings
+2. `DECOMP_REA`
+3. `rea` on PATH
+4. an `rea` server you registered with Claude Code (`~/.claude.json`), with its environment
+5. `npx -y rea-agents@6.4.0 mcp`
+
+**REA settings** in the console sets the command, the native engine and environment variables such as
+`GHIDRA_INSTALL_DIR`, `JAVA_HOME` or `HOPPER_LAUNCHER_PATH`. They're saved in `.decomp/rea.json`, and the agents'
+`inspect_binary` uses them too. Values of variables that look like secrets are never sent to the page.
+
+**Safety.** The console runs its own REA process, so it never switches the target the agents are reading. Most tools
+only read. Tools that run or drive a program, browser or device, change a device, connect to pages, or write files run
+only after you confirm. The app enforces this, not only the page. Everything REA shows about a program is treated as
+untrusted text.
+
 ## Platforms
 
 | Platform | Status | From scratch | Compilers | Rebuildable project | Public decomps |
@@ -313,6 +379,7 @@ the game.
 | **Game Boy Advance** | Beta | ✓ ROM | agbcc | ✓ export | ✓ |
 | **Nintendo DS** | Beta | ✓ ROM (.nds) | CodeWarrior for DS 1.2 – DSi 1.6 | ✓ ds-decomp | ✓ |
 | **Windows (PC)** | Beta | ✓ .exe / .dll (x86, x86-64) | MinGW-w64 · clang-cl · your own MSVC | — | ✓ |
+| **Linux (PC)** | Beta | ✓ ELF programs and .so (x86, x86-64) | the GCC, G++, Clang and Clang++ on your machine · your own | — | — |
 | **3DS · PSP · Switch · Xbox · Xbox 360** | coming | | | | ✓ |
 
 **Recommended platforms: GameCube, Wii and Nintendo 64.** They're the most tested path from dropping in a game to a
@@ -353,9 +420,22 @@ pseudocode, signature and callers; without REA you still get decomp.wtf's assemb
 a real game byte for byte needs the compiler that built it: `mingw-x86_64`, `mingw-x86`, `clang-cl-x86_64` and
 `clang-cl-x86` are system toolchains, and a project's own `[compiler] cmd` can point at MSVC (for example under
 wine). Windows targets import and match; rebuilding the PE from source isn't implemented yet, so *Export project*
-is off for them. REA is optional: put `rea` on PATH (or set `DECOMP_REA` to its command, e.g. `DECOMP_REA="/opt/rea/scripts/rea.mjs mcp"`) and configure its Ghidra/IDA/Hopper provider; `inspect_binary` then returns its pseudocode
-and callers. `DECOMP_REA_DRAFTS=1` also lets claims start from its pseudocode (slower: a cold analysis can take
-minutes, which is why it's off by default).
+is off for them. REA is optional. Set it up once in the [RE console](#re-console)'s settings, which the agents' bridge
+uses too. `inspect_binary` then returns its pseudocode and callers. `DECOMP_REA_DRAFTS=1` also lets claims start from
+its pseudocode. That is slower (a cold analysis can take minutes), so it's off by default.
+
+**Linux programs.** x86 and x86-64 ELF executables and shared libraries import the same way. Function bounds come
+from the symbol table or, in a stripped program, from `.eh_frame`, which nearly every program keeps for unwinding.
+Calls into shared libraries go through PLT stubs named after the function (`memcpy`), with their GOT slots named
+`memcpy@got`. The C library's start-up code is left out. The compiler is picked from what the program's `.comment`
+says built it: GCC or Clang, and C++ when the program uses mangled names. Position-independent programs compile with
+`-fPIE`. Limits:
+- An exact match needs the same compiler version and flags that built the program. The ones on your machine are
+  usually newer, so point the project's `[compiler] cmd` at the right version.
+- System headers can't be included. Declare library functions yourself, and in C++ write the classes whose mangled
+  names you need.
+
+As on Windows, there's no rebuildable export yet.
 
 **The base for ports and mods.** *Export project* writes a normal decomp tree (matched functions as C, the rest as
 assembly from splat or luvdis, a linker script and `build.py`) and proves it rebuilds your game byte for byte.
@@ -394,9 +474,9 @@ uv run pytest
 
 | Path | What it is |
 | :-- | :-- |
-| `src/decompnet/rom/` | Input reading (`n64.py`, `psx.py`, and `pe.py` for Windows executables), splitting with splat (`split.py`), the symbol table and the matchers (`match.py`, `match_arm.py`, `match_x86.py`). |
-| `src/decompnet/coffobj.py`, `rea.py` | COFF objects from Windows compilers, and the optional REA MCP bridge used for x86 pseudocode and cross references. |
-| `src/decompnet/app/` | The app: `engine.py` (ROM projects), `forkengine.py` (forks of public decomps), `tools.py` (MCP tools and agent prompt), `agents.py` (running agents), `server.py` (GUI API and MCP), `collab.py` (rooms), `static/` (GUI), `guide/` (agent know-how). |
+| `src/decompnet/rom/` | Input reading (`n64.py`, `psx.py`, `pe.py` for Windows executables, `elfexe.py` for Linux programs), splitting with splat (`split.py`), the symbol table and the matchers (`match.py`, `match_arm.py`, `match_x86.py`). |
+| `src/decompnet/coffobj.py`, `rea.py` | COFF objects from Windows compilers, and the REA MCP client: its settings, the agents' read-only bridge and the console's calls. |
+| `src/decompnet/app/` | The app: `engine.py` (ROM projects), `forkengine.py` (forks of public decomps), `tools.py` (MCP tools and agent prompt), `agents.py` (running agents), `references.py` (reference folders), `console.py` (the RE console's REA session), `server.py` (GUI API and MCP), `collab.py` (rooms), `static/` (GUI; `console.js`/`console.css` are the RE console), `guide/` (agent know-how). |
 | `src/decompnet/forks/` | Fork mode: the decomp.dev catalog, project detection and setup, objdiff, source editing, m2c and Ghidra drafts, linking and file splits for dtk-template projects (`project.py`, `dtksplits.py`), and data diffs (`datadiff.py`). |
 | `src/decompnet/network.py` | The coordination core the engine builds on: claims, attempts, notes, the shared header. |
 | `src/decompnet/toolchains.py` | The pinned compilers: verified downloads and installs. |
