@@ -1,13 +1,13 @@
 {
-  "name": "decomp-wtf",
-  "owner": {"name": "decomp.wtf", "url": "https://decomp.wtf"},
-  "metadata": {"description": "decomp.wtf: matching decompilation of games you own, with your AI agent."},
+  "name": "decomp-anything",
+  "owner": {"name": "decomp.anything", "url": "https://github.com/giveen/decomp.anything"},
+  "metadata": {"description": "decomp.anything: reverse-engineer games, programs, apps and more with your AI agent."},
   "plugins": [
     {
-      "name": "decomp-wtf",
-      "source": "./plugins/decomp-wtf",
-      "description": "Decompile games you own into C that rebuilds them byte for byte: the original compilers, a byte-for-byte judge, free matches from machine drafts, helper agents and a live view.",
-      "version": "0.9.8"
+      "name": "decomp-anything",
+      "source": "./plugins/decomp-anything",
+      "description": "Decompile games you own into C that rebuilds them byte for byte, or open any other binary as an REA analysis project: agents, findings and the same dashboard.",
+      "version": "0.11.0"
     }
   ]
 }

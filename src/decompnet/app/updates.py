@@ -144,10 +144,11 @@ def uv() -> str | None:
 
 def can_apply() -> tuple[bool, str]:
     if sys.platform == "win32":
-        return False, ("decomp.wtf now runs in WSL 2 on Windows: run the installer again in PowerShell "
-                       "(irm https://decomp.wtf/install.ps1 | iex) to switch to it")
+        return False, ("decomp.anything now runs in WSL 2 on Windows: run the installer again in PowerShell "
+                       "(irm https://raw.githubusercontent.com/giveen/decomp.anything/main/install/install.ps1 | iex) "
+                       "to switch to it")
     if not uv():
-        return False, "uv isn't installed here, so decomp.wtf can't update itself: run the installer again"
+        return False, "uv isn't installed here, so decomp.anything can't update itself: run the installer again"
     return True, ""
 
 

@@ -34,7 +34,7 @@ def _running_version(port: int) -> str | None:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1.5) as r:
             data = json.loads(r.read())
-            return str(data.get("version") or "") if data.get("app") == "decomp-wtf" else None
+            return str(data.get("version") or "") if data.get("app") in ("decomp-anything", "decomp-wtf") else None
     except (OSError, ValueError):
         return None
 

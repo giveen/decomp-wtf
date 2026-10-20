@@ -391,7 +391,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     @mcp.custom_route("/health", methods=["GET"])
     async def health(request: Request) -> JSONResponse:
-        return JSONResponse({"ok": True, "app": "decomp-wtf", "version": __version__, "build": build_id})
+        return JSONResponse({"ok": True, "app": "decomp-anything", "version": __version__, "build": build_id})
 
     # ------------------------------------------------------------------ state
 

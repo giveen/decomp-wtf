@@ -25,7 +25,7 @@
 # On a server, decomp.anything also runs in Docker: docker-compose.yml in the repository.
 set -euo pipefail
 
-VERSION="0.10.6"
+VERSION="0.11.0"
 REPO="giveen/decomp.anything"
 START=1
 SOURCE="${DECOMP_SOURCE:-}"

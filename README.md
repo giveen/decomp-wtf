@@ -168,7 +168,7 @@ claude mcp add decomp -- decomp mcp
 
 | Agent | Install it as a package instead |
 | :-- | :-- |
-| **Claude Code** | `/plugin marketplace add i12bp8/decomp.wtf`, then `/plugin install decomp-wtf@decomp-wtf` (upstream plugin; adds a "decompile" skill) |
+| **Claude Code** | `/plugin marketplace add giveen/decomp.anything`, then `/plugin install decomp-anything@decomp-anything` (adds a "decompile" skill) |
 | **Codex, Antigravity CLI, opencode** | `decomp connect codex`, `decomp connect antigravity`, `decomp connect opencode` |
 
 ## How matching works

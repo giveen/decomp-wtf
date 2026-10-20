@@ -151,4 +151,5 @@ def test_update_api(tmp_path, monkeypatch):
     assert r.status_code == 400 and "up to date" in r.json()["error"]
     assert client.post("/api/settings", json={"check_updates": False}, headers={"X-Decomp": "1"}).json()["check_updates"] is False
     assert client.get("/api/update").json()["disabled"] is True
-    assert "build" in client.get("/health").json()
+    health = client.get("/health").json()
+    assert health["app"] == "decomp-anything" and "build" in health
