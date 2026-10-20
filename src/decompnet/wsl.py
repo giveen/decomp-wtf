@@ -22,7 +22,7 @@ import threading
 import time
 from pathlib import Path, PureWindowsPath
 
-INSTALL = "In PowerShell as administrator: wsl --install (then restart Windows and open Ubuntu once to finish)"
+INSTALL = "In PowerShell as administrator, run: wsl --install. Then restart Windows and open Ubuntu once to finish."
 _lock = threading.Lock()
 _status: tuple[bool, str, float] | None = None
 _mount: str | None = None
@@ -71,13 +71,20 @@ def status() -> tuple[bool, str]:
 
 def _check() -> tuple[bool, str]:
     if not exe():
-        return False, f"WSL isn't installed. {INSTALL}."
+        return False, f"WSL 2 isn't installed. {INSTALL}"
     try:
         code, out = _run(["-e", "uname", "-r"], timeout=120)  # the first call starts the WSL machine
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return False, f"WSL didn't start ({e}). {INSTALL}."
+    except (OSError, subprocess.TimeoutExpired):
+        return False, f"WSL 2 didn't start. {INSTALL}"
     if code != 0:
-        return False, f"WSL has no working Linux distribution yet ({out[-200:] or code}). {INSTALL}."
+        # wsl.exe's own error is a multi-line Microsoft message (often with a second install command and a URL).
+        # Do not paste it into the app: give one clear instruction instead.
+        low = out.lower()
+        if "not installed" in low or "optional component" in low:
+            return False, f"WSL 2 isn't installed. {INSTALL}"
+        if "no installed distribution" in low or "no distribution" in low or "distribution" in low and "not found" in low:
+            return False, f"WSL 2 has no Linux distribution installed. {INSTALL}"
+        return False, f"WSL 2 didn't start. {INSTALL}"
     if "microsoft" in out.lower() and "wsl2" not in out.lower() and "standard" not in out.lower():
         return False, ("WSL 1 can't run these 32-bit compilers: switch to WSL 2 (PowerShell: "
                        "wsl --set-default-version 2, then wsl --set-version <distribution> 2).")

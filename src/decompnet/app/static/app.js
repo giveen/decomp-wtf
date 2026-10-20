@@ -1323,7 +1323,11 @@ async function installToolchain(id, proprietary) {
     await loadState();
     if (S.slug) renderStats(await api(`/api/project?slug=${S.slug}`));
     if (!$("toolsPage").hidden) renderTools();
-  } catch (e) { toast(esc(e.message), "err"); }
+  } catch (e) {
+    const text = esc(e.message);
+    const wsl = /WSL 2 (?:isn't installed|has no Linux distribution)/.test(e.message);
+    toast(wsl ? `${text} <a href="https://aka.ms/wslinstall" target="_blank" rel="noopener">Microsoft's WSL install guide</a>` : text, "err");
+  }
 }
 
 /* ------------------------------------------------------------------ public decomps */

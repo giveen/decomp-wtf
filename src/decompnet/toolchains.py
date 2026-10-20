@@ -247,7 +247,7 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
     if linux:
         ok, why = wsl.status()
         if not ok:
-            raise ToolchainError(f"{tc.name} is a Linux program: on Windows it runs in WSL 2. {why}")
+            raise ToolchainError(f"{tc.name} runs in WSL 2 on Windows. {why}")
     for dep in tc.requires:
         if installed(dep, linux) is None or force:
             install(dep, accept_license=accept_license, force=force, log=log, linux=linux)

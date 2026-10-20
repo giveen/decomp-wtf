@@ -70,7 +70,7 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
             flags = c.get("flags") or tc.flags
         else:
             if linux and not (ok := wsl.status())[0]:
-                raise toolchains.ToolchainError(f"{tc.name} is a Linux program: on Windows it runs in WSL 2. {ok[1]}")
+                raise toolchains.ToolchainError(f"{tc.name} runs in WSL 2 on Windows. {ok[1]}")
             dirs = toolchains.runtime_dirs(tc.id)
             tc_dir = wsl.path(dirs[0]) if linux else str(dirs[0])
             ro_paths += [str(d) for d in dirs]
