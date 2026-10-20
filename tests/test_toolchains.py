@@ -66,6 +66,16 @@ def test_system_compilers_are_not_downloaded(tc_root, monkeypatch):
     assert downloaded == []
 
 
+def test_system_download_links_are_windows_only(monkeypatch):
+    monkeypatch.setattr(toolchains, "current_platform", lambda: "linux-x86_64")
+    rows = {r["id"]: r for r in toolchains.status()}
+    assert rows["mingwxx-x86_64"]["download"] == ""
+    monkeypatch.setattr(toolchains, "current_platform", lambda: "windows-x86_64")
+    rows = {r["id"]: r for r in toolchains.status()}
+    assert rows["mingwxx-x86_64"]["download"] == "https://winlibs.com/"
+    assert rows["llvm-tools"]["download"].startswith("https://github.com/llvm/llvm-project/releases/")
+
+
 def _fake(monkeypatch, tc_root, sha):
     src = tc_root / "src"
     src.mkdir()

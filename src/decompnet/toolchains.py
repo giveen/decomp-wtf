@@ -403,10 +403,12 @@ def java_version() -> int:
 
 def status() -> list[dict]:
     rows = []
+    windows = current_platform().startswith("windows")
     for tc in registry().values():
         m = installed(tc.id)
         rows.append({"id": tc.id, "name": tc.name, "kind": tc.kind, "platform": tc.platform, "license": tc.license,
                      "installed": m is not None, "supported": tc.supported, "description": tc.description,
                      "wsl": tc.via_wsl, "system": tc.system, "command": tc.cmd[0] if tc.cmd else "",
+                     "download": tc.download if windows else "",
                      "pinned": all(p.get("sha256") for p in tc.parts) or bool(tc.commit) or bool(tc.npm)})
     return rows

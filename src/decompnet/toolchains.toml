@@ -391,6 +391,7 @@ license = "LGPL-3.0-or-later"
 source = "system rizin"
 description = "A lightweight native analysis provider REA can use when Ghidra, Hopper or IDA aren't installed. Install it with your package manager; optional."
 system = true
+download = "https://github.com/rizinorg/rizin/releases/latest"
 cmd = ["rizin"]
 binary_name = "rizin"
 
@@ -401,6 +402,7 @@ license = "MIT"
 source = "system diec (Detect It Easy)"
 description = "Compiler and packer fingerprints from Detect It Easy's command-line tool; useful before choosing a toolchain. Install diec with your package manager; optional."
 system = true
+download = "https://github.com/horsicq/Detect-It-Easy/releases/latest"
 cmd = ["diec"]
 binary_name = "diec"
 
@@ -411,6 +413,7 @@ license = "Apache-2.0 WITH LLVM-exception"
 source = "system LLVM (llvm-pdbutil)"
 description = "Reads PDB debug symbols for Windows programs. Optional: install LLVM with your package manager or the LLVM installer; MAP, DWARF and symbol_addrs.txt need nothing extra."
 system = true
+download = "https://github.com/llvm/llvm-project/releases/latest"
 cmd = ["llvm-pdbutil"]
 binary_name = "llvm-pdbutil"
 
