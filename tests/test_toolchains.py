@@ -66,6 +66,13 @@ def test_system_compilers_are_not_downloaded(tc_root, monkeypatch):
     assert downloaded == []
 
 
+def test_every_windows_system_tool_has_a_download():
+    """All system cards a Windows user can act on link to where to get the tool (Linux compilers use apt/zypper)."""
+    for tc in toolchains.registry().values():
+        if tc.system and not tc.platform.startswith("Linux"):
+            assert tc.download.startswith("https://"), tc.id
+
+
 def test_system_download_links_are_windows_only(monkeypatch):
     monkeypatch.setattr(toolchains, "current_platform", lambda: "linux-x86_64")
     rows = {r["id"]: r for r in toolchains.status()}
