@@ -138,10 +138,87 @@ def path(tid: str, linux: bool | None = None) -> Path:
     return root() / "wsl" / tid if linux else root() / tid
 
 
+def _windows_registry_paths() -> list[Path]:
+    """The PATH Windows currently has, including an installer's changes the running process hasn't inherited."""
+    if sys.platform != "win32":
+        return []
+    import winreg
+
+    out: list[Path] = []
+    for hive, key_path in ((winreg.HKEY_CURRENT_USER, "Environment"),
+                          (winreg.HKEY_LOCAL_MACHINE,
+                           r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
+        try:
+            with winreg.OpenKey(hive, key_path) as key:
+                value, _kind = winreg.QueryValueEx(key, "Path")
+        except OSError:
+            continue
+        for part in str(value).split(";"):
+            part = os.path.expandvars(part.strip().strip('"'))
+            if part:
+                out.append(Path(part))
+    return out
+
+
+def _windows_dirs() -> list[Path]:
+    """Common places a Windows compiler is installed, including ones the app's PATH hasn't picked up yet."""
+    if sys.platform != "win32":
+        return []
+    home = Path.home()
+    drive = Path(os.environ.get("SystemDrive", "C:") + "\\")
+    dirs: list[Path] = []
+
+    def add(p: Path) -> None:
+        if p not in dirs:
+            dirs.append(p)
+
+    for p in _windows_registry_paths():
+        add(p)
+    for env in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        if value := os.environ.get(env):
+            base = Path(value)
+            for name in ("LLVM", "mingw64", "mingw32", "mingw-w64", "WinLibs"):
+                add(base / name / "bin")
+                add(base / name / "mingw64" / "bin")
+                add(base / name / "mingw32" / "bin")
+            add(base / "Programs" / "LLVM" / "bin")
+            add(base / "Programs" / "mingw64" / "bin")
+    for name in ("mingw64", "mingw32", "clang64", "ucrt64", "TDM-GCC-64"):
+        add(drive / "msys64" / name / "bin")
+    for name in ("mingw64", "mingw32", "TDM-GCC-64"):
+        add(drive / name / "bin")
+    add(drive / "ProgramData" / "chocolatey" / "bin")
+    for base in (home / "Downloads", home / "Desktop", home):
+        add(base / "mingw64" / "bin")
+        add(base / "mingw32" / "bin")
+        for extracted in base.glob("winlibs-*"):
+            add(extracted / "mingw64" / "bin")
+            add(extracted / "mingw32" / "bin")
+    return dirs
+
+
+def system_binary(tc: Toolchain) -> Path | None:
+    """The host compiler/tool itself. PATH first, then common Windows install folders (MSYS2, WinLibs, LLVM)."""
+    command = tc.cmd[0] if tc.cmd else ""
+    if not command or (sys.platform == "win32" and tc.platform == "Linux"):
+        return None
+    found = shutil.which(command)
+    if found:
+        return Path(found)
+    if tc.platform != "Windows" and tc.id not in ("rizin", "detect-it-easy", "llvm-tools"):
+        return None  # a Linux gcc/clang on Windows must not resolve to a MinGW/LLVM binary by accident
+    for directory in _windows_dirs():
+        for name in (command, command + ".exe"):
+            candidate = directory / name
+            if candidate.is_file():
+                return candidate
+    return None
+
+
 def installed(tid: str, linux: bool | None = None) -> dict | None:
     tc = get(tid)
     if tc.system:
-        return {"system": True, "id": tid} if tc.cmd and shutil.which(tc.cmd[0]) else None
+        return {"system": True, "id": tid} if system_binary(tc) else None
     m = path(tid, linux) / MANIFEST
     return json.loads(m.read_text(encoding="utf-8")) if m.exists() else None
 
@@ -369,7 +446,7 @@ def _system_missing(tc: Toolchain) -> ToolchainError:
     command = tc.cmd[0] if tc.cmd else tc.id
     return ToolchainError(
         f"{tc.name} is a compiler on this computer, not a download: {command} is not on PATH. "
-        f"Install it with your system package manager (on Windows: MinGW-w64 or LLVM), reopen the app, "
+        f"Install it and add its bin folder to PATH (on Windows: MinGW-w64 or LLVM), then reopen the app, "
         f"or set its command in the project's [compiler] section.")
 
 

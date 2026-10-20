@@ -89,9 +89,14 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
             cmd = [a.replace(f"{{tc:{dep}}}", wsl.path(where) if linux else str(where)) for a in cmd]
     else:
         cmd = list(c["cmd"])
-    if "toolchain" in c and toolchains.get(c["toolchain"]).system and cmd:
+    tc = toolchains.get(c["toolchain"]) if "toolchain" in c else None
+    if tc and tc.system and cmd:
         # A host compiler may be an alternatives symlink outside the sandbox's /usr: run its real path.
-        found = shutil.which(cmd[0])
+        # Windows compilers installed off PATH (MSYS2, WinLibs, LLVM) are found in their usual folders.
+        found = shutil.which(cmd[0]) if c.get("cmd") else None
+        if not found and not c.get("cmd"):
+            located = toolchains.system_binary(tc)
+            found = str(located) if located else None
         if found:
             link = os.readlink(found) if os.path.islink(found) else ""
             # Resolve only an alternatives link (it points into /etc, which the sandbox doesn't mount).

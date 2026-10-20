@@ -6,7 +6,7 @@ import tarfile
 
 import pytest
 
-from decompnet import toolchains
+from decompnet import project, toolchains
 
 
 @pytest.fixture
@@ -54,6 +54,23 @@ def test_an_arm_computer_is_told_why_nothing_compiles(tc_root, monkeypatch):
         toolchains.install("ee-gcc-2.96", log=lambda *_: None)
     monkeypatch.setattr(toolchains._platform, "machine", lambda: "x86_64")
     assert toolchains.unsupported_cpu() is None
+
+
+def test_a_compiler_installed_off_path_is_found(tmp_path, monkeypatch):
+    """MSYS2/WinLibs/LLVM put the compiler in a known folder; reopening the app before PATH catches up still works."""
+    bindir = tmp_path / "mingw64" / "bin"
+    bindir.mkdir(parents=True)
+    exe = bindir / "x86_64-w64-mingw32-g++.exe"
+    exe.write_text("")
+    monkeypatch.setattr(toolchains, "_windows_dirs", lambda: [bindir])
+    monkeypatch.setattr(toolchains.shutil, "which", lambda _name: None)
+    tc = toolchains.get("mingwxx-x86_64")
+    assert toolchains.system_binary(tc) == exe
+    assert toolchains.installed(tc.id) == {"system": True, "id": tc.id}
+    cfg = project.compiler_config(tmp_path, {"compiler": {"toolchain": "mingwxx-x86_64"}})
+    assert cfg.cmd[0] == str(exe), "compilation must use the compiler found outside PATH"
+    # A Linux compiler with a generic command must not pick up a Windows compiler from that folder.
+    assert toolchains.system_binary(toolchains.get("gcc-linux-x86_64")) is None
 
 
 def test_system_compilers_are_not_downloaded(tc_root, monkeypatch):
