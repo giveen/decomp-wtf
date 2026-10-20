@@ -1,6 +1,6 @@
 ---
 name: decompile
-description: Reverse-engineer software the user owns with decomp.anything. Decompile games or programs into matching C, or open any other binary, app, page or firmware as an REA analysis project. Use when the user asks to decompile, decomp, reverse engineer, port or mod a game or program, or to inspect what a binary does.
+description: Reverse-engineer software the user owns with decomp.anything. Decompile games or programs into matching C or C++, or open any other binary, app, page or firmware as an REA analysis project. Use when the user asks to decompile, decomp, reverse engineer, port or mod a game or program, or to inspect what a binary does.
 ---
 
 # Reverse-engineering with decomp.anything

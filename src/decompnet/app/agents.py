@@ -770,6 +770,8 @@ class Manager:
         if ov.get("kind") == "fork":
             # CodeWarrior's register and stack rules decide most of what's left on GameCube, Wii and DS
             topics = ["fork", "objdiff", *(["mwcc"] if ov.get("platform") in ("gc", "wii", "nds") else [])]
+        elif ov.get("platform") in ("windows", "linux"):
+            topics = ["workflow", "x86", *(["cpp"] if ov.get("source_language") == "C++" else [])]
         else:
             topics = ["workflow", {"psx": "psx", "ps2": "ps2", "gba": "agbcc"}.get(ov.get("platform")) or (
                 "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")]
@@ -796,9 +798,21 @@ class Manager:
             return tools.FORK_PROMPT.format(title=ov["title"], platform=ov.get("platform_name") or "its platform",
                                             count=s.options.get("per_session", PER_SESSION),
                                             guides=", ".join(f'guide("{g}")' for g in guides))
-        guide = {"psx": "psx", "ps2": "ps2", "gba": "agbcc"}.get(ov.get("platform")) or (
-            "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")
-        return tools.WORK_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION), compiler_guide=guide)
+        platform = ov.get("platform") or ""
+        language = ov.get("source_language") or "C"
+        if platform in ("windows", "linux"):
+            target = "program"
+            guide = "x86" + (" and cpp" if language == "C++" else "")
+            note = ("\nThe target's function names are C++ mangled names: write the class and signature that mangle to "
+                    "them (or wrap a sub_<address> in extern \"C\"); the cpp guide has the ABI details.") \
+                if language == "C++" else ""
+        else:
+            target = "game"
+            guide = {"psx": "psx", "ps2": "ps2", "gba": "agbcc"}.get(platform) or (
+                "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")
+            note = ""
+        return tools.WORK_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION),
+                                        compiler_guide=guide, language=language, target=target, language_note=note)
 
     def _command(self, s: Session, token: str, workdir: Path) -> tuple[list[str], dict, str]:
         """The agent's command line, environment and what goes in on stdin (the prompt)."""
@@ -1088,9 +1102,9 @@ def api_tool_schemas(fork: bool = False, analysis: bool = False) -> list[dict]:
                            s(function=st("optional name or address"), strategy=st("finish | easiest | closest | hardest | random"),
                              count=it("up to 6 small functions at once"))),
         "get_function": ("Show any function by name or address.", s(function=st("name or address", True))),
-        "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "
+        "compile_and_diff": ("Compile C or C++ for the function, link it at its address and diff against the target. "
                              "Score 0 = matched. Several functions: names comma-separated, all definitions in source.",
-                             s(function=st("function name, or several: a, b, c", True), source=st("C source", True))),
+                             s(function=st("function name, or several: a, b, c", True), source=st("C or C++ source", True))),
         "complete_function": ("Analysis projects: mark this work item analyzed and save the finding.",
                               s(function=st("work item", True),
                                 summary=st("what it does, calls, data, surprises", True))),

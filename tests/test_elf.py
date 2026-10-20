@@ -15,6 +15,7 @@ from decompnet.app.engine import RomNetwork
 from decompnet.rom import detect, elfexe
 
 CC = shutil.which("gcc")
+CXX = shutil.which("g++")
 # A real program keeps its unwind tables (.eh_frame): that is what splits a stripped one. They don't change code.
 FLAGS = [f for f in toolchains.get("gcc-linux-x86_64").flags if f != "-fno-asynchronous-unwind-tables"]
 
@@ -103,6 +104,7 @@ def test_import_and_match_through_the_engine(built):
     ov = net.overview(slug)
     assert ov["platform"] == "linux" and ov["platform_name"] == "Linux"
     assert ov["compiler"]["toolchain"] == "gcc-linux-x86_64"
+    assert ov["source_language"] == "C" and ov["source_ext"] == ".c"
     agent, _ = net.local_agent("linux-tester")
     for name, source in MATCHES.items():
         text = net.compile_and_diff(agent, name, source, slug)
@@ -120,6 +122,30 @@ def test_position_independent_programs_compile_with_fpie(tmp_path):
     for name in ("add", "bump", "measure", "twice", "scale"):
         text = net.compile_and_diff(agent, name, MATCHES[name], slug)
         assert "MATCH" in text, f"{name}: {text}"
+
+
+@pytest.mark.skipif(CC is None or CXX is None, reason="needs g++")
+def test_cxx_programs_use_cpp_toolchain_and_language(tmp_path):
+    source = tmp_path / "prog.cpp"
+    source.write_text(r"""
+namespace demo {
+__attribute__((noinline)) int add(int a, int b) { return a + b; }
+}
+int main(int argc, char **argv) { return demo::add(argc, 3); }
+""")
+    exe = tmp_path / "prog-cxx"
+    subprocess.run([CXX, *FLAGS, "-no-pie", "-o", str(exe), str(source)], check=True)
+    net = RomNetwork(tmp_path / "cxx.db", tmp_path)
+    slug = net.import_rom(exe.read_bytes(), confirmed=True, name="prog-cxx", log=lambda *_: None)
+    ov = net.overview(slug)
+    assert ov["compiler"]["toolchain"] == "gxx-linux-x86_64"
+    assert ov["source_language"] == "C++" and ov["source_ext"] == ".cpp"
+    target = net.store.one(
+        "SELECT name FROM functions WHERE project_id=(SELECT id FROM projects WHERE slug=?) "
+        "AND name LIKE '_ZN4demo3addE%'", slug)["name"]
+    agent, _ = net.local_agent("cxx-tester")
+    text = net.compile_and_diff(agent, target, "namespace demo { int add(int a, int b) { return a + b; } }", slug)
+    assert "MATCH" in text, text
 
 
 def _can_m32() -> bool:

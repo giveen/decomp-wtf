@@ -41,6 +41,27 @@ PLATFORM_STATUS = {"gc": "recommended", "wii": "recommended", "n64": "recommende
                    "psx": "beta", "ps2": "beta", "gba": "beta", "nds": "beta", "windows": "beta", "linux": "beta"}
 # PC programs: split from the executable itself (pe.py, elfexe.py) and judged by the x86 matcher.
 X86_PLATFORMS = ("windows", "linux")
+# C++ drivers: the source is compiled as C++ (see toolchains.toml), and the UI and agent prompt say C++.
+CXX_TOOLCHAINS = ("gxx-", "clangxx-", "mingwxx-", "clang-clxx-")
+
+
+def source_language(toolchain: str) -> str:
+    return "C++" if toolchain.startswith(CXX_TOOLCHAINS) else "C"
+
+
+def source_ext(toolchain: str) -> str:
+    return ".cpp" if source_language(toolchain) == "C++" else ".c"
+
+
+def _looks_cxx(image) -> bool:
+    """Whether an executable was built as C++: mangled function names, or a C++ runtime it imports."""
+    names = [s.name for s in image.symbols]
+    if any(n.startswith("_Z") for n in names):  # Itanium ABI (GCC, Clang, MinGW)
+        return True
+    if any(s.kind == "func" and s.name.startswith("?") for s in image.symbols):  # MSVC ABI
+        return True
+    return any(("libstdc++" in n.lower() or "libc++" in n.lower() or "msvcp" in n.lower()) for n in names)
+
 LINUX_COMPILERS = {
     "gcc-linux-x86_64": ("GCC (x86-64)", "Linux programs (x86-64), with the GCC on this machine"),
     "gxx-linux-x86_64": ("G++ (x86-64)", "Linux C++ programs (x86-64), with the G++ on this machine"),
@@ -55,8 +76,12 @@ COMPILERS = {
     **{k: use for k, (_short, use) in LINUX_COMPILERS.items()},
     "mingw-x86_64": "Windows games (x86-64), with the GCC on this machine",
     "mingw-x86": "Windows games (32-bit x86), with the GCC on this machine",
+    "mingwxx-x86_64": "Windows C++ games (x86-64), with the G++ on this machine",
+    "mingwxx-x86": "Windows C++ games (32-bit x86), with the G++ on this machine",
     "clang-cl-x86_64": "Windows games (x86-64), with LLVM's MSVC-compatible clang-cl",
     "clang-cl-x86": "Windows games (32-bit x86), with LLVM's MSVC-compatible clang-cl",
+    "clang-clxx-x86_64": "Windows C++ games (x86-64), with LLVM's MSVC-compatible clang-cl",
+    "clang-clxx-x86": "Windows C++ games (32-bit x86), with LLVM's MSVC-compatible clang-cl",
     "gcc-2.7.2-kmc": "many third-party N64 games",
     "ido-7.1": "most later first-party N64 games",
     "ido-5.3": "early N64 games (1996-97)",
@@ -68,7 +93,9 @@ COMPILERS = {
 SHORT_NAMES = {"gcc-2.7.2-kmc": "KMC GCC 2.7.2", "ido-7.1": "IDO 7.1", "ido-5.3": "IDO 5.3",
                "gcc-2.7.2-psx": "GCC 2.7.2 (PS1)", "gcc-2.8.1-psx": "GCC 2.8.1 (PS1)", "ee-gcc-2.96": "EE-GCC 2.96",
                "agbcc": "agbcc", "mingw-x86_64": "MinGW-w64 GCC (x86-64)", "mingw-x86": "MinGW-w64 GCC (x86)",
+               "mingwxx-x86_64": "MinGW-w64 G++ (x86-64)", "mingwxx-x86": "MinGW-w64 G++ (x86)",
                "clang-cl-x86_64": "clang-cl (x86-64)", "clang-cl-x86": "clang-cl (x86)",
+               "clang-clxx-x86_64": "clang-cl (x86-64, C++)", "clang-clxx-x86": "clang-cl (x86, C++)",
                **{k: short for k, (short, _use) in LINUX_COMPILERS.items()}}
 # CodeWarrior versions in the `mwcc` pack (GameCube, Wii) and the `mwccarm` pack (DS), for games started from scratch.
 MW_VERSIONS = {
@@ -108,7 +135,9 @@ LINUX_NOTE = """
 # Functions this small are handed out in batches (claim_function count): agents match most on the first try.
 BATCH_INSNS = 48
 PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": ["gcc-2.7.2-psx", "gcc-2.8.1-psx"],
-                      "ps2": ["ee-gcc-2.96"], "gba": ["agbcc"], "windows": ["mingw-x86_64", "mingw-x86", "clang-cl-x86_64", "clang-cl-x86"],
+                      "ps2": ["ee-gcc-2.96"], "gba": ["agbcc"],
+                      "windows": ["mingw-x86_64", "mingw-x86", "mingwxx-x86_64", "mingwxx-x86",
+                                  "clang-cl-x86_64", "clang-cl-x86", "clang-clxx-x86_64", "clang-clxx-x86"],
                       "linux": list(LINUX_COMPILERS)}
 
 
@@ -812,14 +841,18 @@ class RomNetwork(Network):
         image = (elfexe if linux else pe).read(picked.data, picked.filename)
         info = picked.info  # the name the user picked (not the canonical game.exe the copy is stored as)
         suffix = "x86_64" if image.arch == "x86_64" else "x86"
+        cxx = _looks_cxx(image)
         if linux:
             # .comment names the compiler; C++ programs call into libstdc++, whose names are mangled (_Z...).
             family = "clang" if "clang" in info["compiler_guess"].lower() else "gcc"
-            cxx = any(s.name.startswith("_Z") for s in image.symbols)
             driver = {"gcc": "gxx", "clang": "clangxx"}[family] if cxx else family
             toolchain = toolchain or f"{driver}-linux-{suffix}"
-        toolchain = toolchain or f"mingw-{suffix}"
+        elif not toolchain:
+            # MSVC's ABI is matched by clang-cl; MinGW's by MinGW's C++ driver.
+            msvc = info["compiler_guess"] == "MSVC" or any(s.name.startswith("?") for s in image.symbols)
+            toolchain = f"{'clang-clxx' if msvc else 'mingwxx'}-{suffix}" if cxx else f"mingw-{suffix}"
         tc = toolchains.get(toolchain)
+        log(f"{source_language(toolchain)} program; matching with {tc.name}")
         if toolchains.installed(toolchain) is None:
             log(f"{tc.name} isn't on this computer: functions import and can be inspected, but compiling needs it "
                 f"(install it, or set another [compiler] for the project)")
@@ -1028,9 +1061,10 @@ class RomNetwork(Network):
             r, sim = alike[0]
             src = self.store.one("SELECT matched_source FROM functions WHERE project_id=? AND name=?", proj["id"], r["name"])
             if sim >= 0.8 and src and src["matched_source"] and len(src["matched_source"]) <= 3000:
-                # nearly the same code: its matching C is the best starting point there is (saves a tool call)
-                lines += [f"Matching C of {r['name']} ({sim * 100:.0f}% similar): start from this",
-                          "```c", src["matched_source"].strip(), "```"]
+                # nearly the same code: its matching source is the best starting point there is (saves a tool call)
+                lang = source_language(self.cfg(proj)["compiler"]["toolchain"])
+                lines += [f"Matching {lang} of {r['name']} ({sim * 100:.0f}% similar): start from this",
+                          f"```{'cpp' if lang == 'C++' else 'c'}", src["matched_source"].strip(), "```"]
         if (roots := self.references(proj["slug"])):
             from . import references
 
@@ -1092,7 +1126,9 @@ class RomNetwork(Network):
         if best is not None:
             src = self.store.one("SELECT matched_source FROM functions WHERE project_id=? AND name=?", proj["id"], best["name"])
             if src and src["matched_source"]:
-                lines += ["", f"Matching C of {best['name']}:", "```c", src["matched_source"].strip()[:4000], "```"]
+                lang = source_language(self.cfg(proj)["compiler"]["toolchain"])
+                lines += ["", f"Matching {lang} of {best['name']}:", f"```{'cpp' if lang == 'C++' else 'c'}",
+                          src["matched_source"].strip()[:4000], "```"]
         return "\n".join(lines)
 
     # ------------------------------------------------------------------ agent tools for ROMs
@@ -1803,6 +1839,7 @@ class RomNetwork(Network):
                          "installed": toolchains.installed(tc.id) is not None, "proprietary": tc.proprietary,
                          "supported": tc.supported, "wsl": tc.via_wsl,
                          "why": None if tc.supported else toolchains.unsupported_cpu()},
+            "source_language": source_language(tc.id), "source_ext": source_ext(tc.id),
             "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
             "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0,
             "context_version": self._context(proj["id"])["version"],

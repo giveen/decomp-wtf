@@ -22,6 +22,7 @@ FLAGS = ["-O2", "-ffreestanding", "-ffunction-sections", "-fdata-sections", "-fn
          "-fno-unwind-tables", "-fno-stack-protector", "-fno-ident", "-fno-pic", "-fno-pie", "-mno-stack-arg-probe"]
 
 pytestmark = pytest.mark.skipif(CC is None, reason="needs x86_64-w64-mingw32-gcc")
+CXX = shutil.which("x86_64-w64-mingw32-g++")
 
 SOURCE = r"""
 __attribute__((noinline)) int add(int a, int b) { return a + b; }
@@ -71,6 +72,7 @@ def test_import_and_match_through_the_engine(built):
     ov = net.overview(slug)
     assert ov["platform"] == "windows" and ov["platform_name"] == "Windows"
     assert ov["functions"] >= 5 and ov["compiler"]["toolchain"] == "mingw-x86_64"
+    assert ov["source_language"] == "C" and ov["source_ext"] == ".c"
     agent, _ = net.local_agent("windows-tester")
     assert "MATCH" in net.compile_and_diff(agent, "add", "int add(int a, int b) { return a + b; }", slug)
     assert "MATCH" in net.compile_and_diff(
@@ -125,3 +127,24 @@ def test_32_bit_functions_and_absolute_globals(tmp_path):
     assert "MATCH" in net.compile_and_diff(agent, "add", "int add(int a, int b) { return a + b; }", slug)
     assert "MATCH" in net.compile_and_diff(
         agent, "bump", "int g_counter;\nint bump(int n) { g_counter += n; return g_counter; }", slug)
+
+
+@pytest.mark.skipif(CXX is None, reason="needs x86_64-w64-mingw32-g++")
+def test_cxx_programs_use_cpp_toolchain_and_language(tmp_path):
+    src = tmp_path / "game.cpp"
+    src.write_text("namespace demo { __attribute__((noinline)) int add(int a, int b) { return a + b; } }\n"
+                   "void _start(void) { demo::add(1, 2); }\n")
+    exe = tmp_path / "game-cxx.exe"
+    subprocess.run([CXX, *FLAGS, "-nostdlib", "-Wl,--entry,_start", "-Wl,--subsystem,console", "-o", str(exe),
+                    str(src)], check=True)
+    net = RomNetwork(tmp_path / "cxx.db", tmp_path)
+    slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game-cxx.exe", log=lambda *_: None)
+    ov = net.overview(slug)
+    assert ov["compiler"]["toolchain"] == "mingwxx-x86_64"
+    assert ov["source_language"] == "C++" and ov["source_ext"] == ".cpp"
+    target = net.store.one(
+        "SELECT name FROM functions WHERE project_id=(SELECT id FROM projects WHERE slug=?) "
+        "AND name LIKE '_ZN4demo3addE%'", slug)["name"]
+    agent, _ = net.local_agent("cxx-tester")
+    text = net.compile_and_diff(agent, target, "namespace demo { int add(int a, int b) { return a + b; } }", slug)
+    assert "MATCH" in text, text

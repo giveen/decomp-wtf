@@ -2,7 +2,7 @@
 
 **Point an AI agent at something you own and take it apart.** decomp.anything is a matching-decompilation and
 reverse-engineering workbench for games, Windows and Linux programs, apps, web pages, firmware and plain files.
-Agents write C against the real binary, the original compiler builds it, and the result is checked byte for byte —
+Agents write C or C++ against the real binary, the original compiler builds it, and the result is checked byte for byte —
 or, when there is no original build to match, the same project opens the binary with REA and agents analyze its
 functions instead.
 
@@ -50,7 +50,7 @@ project dashboard, agents and notes, with its procedures as work items. There is
 
 What stays from decomp.wtf:
 
-- the split → claim → write C → compile with the original compiler → link at the real address → compare byte for byte
+- the split → claim → write C or C++ → compile with the original compiler → link at the real address → compare byte for byte
   workflow;
 - the matching engine and matchers for MIPS, PowerPC, ARM, x86 and x86-64;
 - the live view, autopilot, permuter, shared knowledge, helper agents and rebuildable exports;
@@ -77,8 +77,8 @@ compare loop, and everything else gets REA work items, the same agents, the same
 
 | Goal | What decomp.anything gives you |
 | :-- | :-- |
-| **Decompile a game** | Drop in a ROM, disc image or program file. Agents claim functions, write C, and the original compiler proves each match byte for byte. |
-| **Match a PC program** | Import a Windows `.exe`/`.dll` or a Linux ELF program or `.so`, write C, and compare the compiler's bytes with the original's. |
+| **Decompile a game** | Drop in a ROM, disc image or program file. Agents claim functions, write C or C++, and the original compiler proves each match byte for byte. |
+| **Match a PC program** | Import a Windows `.exe`/`.dll` or a Linux ELF program or `.so`, write C or C++, and compare the compiler's bytes with the original's. |
 | **Continue a public decomp** | Fork one of the community projects the app knows about and let agents carry on in the project's real source tree. |
 | **Inspect anything else** | Drop it like a game. If this app can't split or match it, REA opens it in a normal project: its procedures become work items, agents read them in parallel, and their findings land on the same dashboard. Add tasks for areas with no procedure of their own. |
 | **Work together** | Host a room, invite people, and share matches, names, structs and notes without sharing the original file. |
@@ -428,7 +428,7 @@ projects folder (`~/Decomp`).
 | **Permuter** | Near misses (95% and up) get rewritten in the background: statement and declaration order, casts, temporaries. |
 | **Fast agents** | Small functions come in batches, identical code is shown in the brief, and agents move on after four tries without progress. |
 | **Your agent, your terminal** | `decomp connect`, then ask Claude Code, Codex or Antigravity CLI to work on the target. |
-| **Edit it yourself** | Every function has an editor: write C, press Ctrl+Enter, see the judge's diff. You count as an agent. |
+| **Edit it yourself** | Every function has an editor: write C or C++, press Ctrl+Enter, see the judge's diff. You count as an agent. |
 | **Byte-for-byte check** | Candidates are linked at the real address, so calls, globals, strings and jump tables are verified too. |
 | **Any agent** | Claude Code, Codex, Antigravity CLI, opencode, or any model with an API key, several at once. |
 | **Lean context** | Compact assembly, diffs that say what's wrong before showing where, close look-alikes' C up front, and short sessions. |

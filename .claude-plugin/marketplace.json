@@ -6,7 +6,7 @@
     {
       "name": "decomp-anything",
       "source": "./plugins/decomp-anything",
-      "description": "Decompile games you own into C that rebuilds them byte for byte, or open any other binary as an REA analysis project: agents, findings and the same dashboard.",
+      "description": "Decompile games or programs you own into C or C++ that rebuilds them byte for byte, or open any other binary as an REA analysis project: agents, findings and the same dashboard.",
       "version": "0.11.0"
     }
   ]

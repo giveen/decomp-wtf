@@ -762,7 +762,8 @@ function markPlatforms() {
     gc: ["mwcc"], wii: ["mwcc"], nds: ["mwccarm"],
     n64: ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"],
     psx: ["gcc-2.7.2-psx", "gcc-2.8.1-psx"], ps2: ["ee-gcc-2.96"], gba: ["agbcc"],
-    windows: ["mingw-x86_64", "mingw-x86", "clang-cl-x86_64", "clang-cl-x86"],
+    windows: ["mingw-x86_64", "mingw-x86", "mingwxx-x86_64", "mingwxx-x86",
+              "clang-cl-x86_64", "clang-cl-x86", "clang-clxx-x86_64", "clang-clxx-x86"],
     linux: ["gcc-linux-x86_64", "gxx-linux-x86_64", "clang-linux-x86_64", "clangxx-linux-x86_64",
             "gcc-linux-x86", "gxx-linux-x86", "clang-linux-x86", "clangxx-linux-x86"],
   };
@@ -783,6 +784,7 @@ function renderHeader(ov) {
   const analysis = ov.kind === "analysis";
   const native = isNativeProject(ov);
   const chips = [`<span class="plat">${esc(ov.platform_name || "?")}</span>`];
+  if (native && ov.source_language) chips.push(`<span class="chip-s" title="Detected from the binary; agents write this language and the compiler checks it">${esc(ov.source_language)}</span>`);
   if (!analysis && !native && platformStatus(ov.platform) === "beta") chips.push(`<span class="chip-s beta" title="This platform works and is tested on homemade games, less so on real ones yet">beta</span>`);
   if (ov.rom && ov.rom.game_code) chips.push(`<span class="chip-s mono">${esc(ov.rom.game_code)}</span>`);
   if (fork) chips.push(`<span class="chip-s">${ov.origin === "scratch" ? `from scratch · ${esc(LAYOUT[ov.platform] || "decomp")}` : "public decomp"}</span>`);
@@ -2038,8 +2040,9 @@ async function refreshFn(first) {
       } catch (e) { toast(esc(e.message), "err"); }
     };
     $("fnAsm").innerHTML = highlightAsm(d.asm);
-    const kinds = { matched: "Matching C", best: "Best attempt so far", latest: S.ov.kind === "fork" ? "In the source now" : "Latest attempt", draft: "Machine draft (m2c)" };
-    $("fnSrcKind").textContent = kinds[d.source_kind] || "No C yet";
+    const lang = S.ov.kind === "analysis" ? "" : (S.ov.source_language || "C");
+    const kinds = { matched: lang ? `Matching ${lang}` : "Matching source", best: "Best attempt so far", latest: S.ov.kind === "fork" ? "In the source now" : "Latest attempt", draft: "Machine draft (m2c)" };
+    $("fnSrcKind").textContent = kinds[d.source_kind] || (lang ? `No ${lang} yet` : "No source yet");
     if (!S.editDirty || first) setEditor(d.source || "", d);
     $("copySrc").onclick = () => navigator.clipboard.writeText($("fnEdit").value).then(() => toast("Copied."));
     renderFnChart(d);
@@ -2176,7 +2179,8 @@ function renderDiff(d) {
   }
   const rows = d.rows;
   const same = rows.filter((r) => r[0] === " ").length, target = rows.filter((r) => r[1]).length;
-  const label = { matched: "Matching C", best: "Best attempt", latest: S.ov.kind === "fork" ? "The source now" : "Latest attempt" }[d.kind] || "Attempt";
+  const lang = S.ov.kind === "analysis" ? "" : (S.ov.source_language || "C");
+  const label = { matched: lang ? `Matching ${lang}` : "Matching source", best: "Best attempt", latest: S.ov.kind === "fork" ? "The source now" : "Latest attempt" }[d.kind] || "Attempt";
   sum.innerHTML = `<b>${label}</b> · ${d.percent === 100 && d.score === 0 ? `<span class="ok">byte-identical</span>` : `${d.percent}%${d.score != null ? ` · score ${d.score}` : ""}`} · ${same} of ${target} instructions identical
     <span class="diff-key"><i class="k arg"></i>operands <i class="k repl"></i>different <i class="k mov"></i>moved</span>`;
   const html = [];
@@ -2202,7 +2206,7 @@ function renderDiff(d) {
     html.push(rowHtml(r));
   });
   flush(html.length ? "end" : "all");
-  box.innerHTML = `<div class="dh"><span></span><span>Target (your game)</span><span></span><span>${esc(label)}</span></div>` + html.join("");
+  box.innerHTML = `<div class="dh"><span></span><span>Target (your ${isNativeProject(S.ov) ? "program" : "game"})</span><span></span><span>${esc(label)}</span></div>` + html.join("");
   box.querySelectorAll(".dfold").forEach((b) => { b.onclick = () => { b.nextElementSibling.hidden = false; b.remove(); }; });
   probs.innerHTML = (d.problems || []).map((p) => `<li>${esc(p)}</li>`).join("");
 }
@@ -2520,7 +2524,7 @@ function renderSource(ov) {
     return;
   }
   if (!ov.exportable) {
-    $("srcText").textContent = `Exporting a rebuildable project isn't available for ${ov.platform_name || "this platform"} yet. Your matched C is kept in the project.`;
+    $("srcText").textContent = `Exporting a rebuildable project isn't available for ${ov.platform_name || "this platform"} yet. Your matched ${ov.source_language || "C"} is kept in the project.`;
     $("srcState").innerHTML = "";
     return;
   }
@@ -2569,6 +2573,7 @@ async function renderProjectSettings() {
     ["Analyzed", `${ov.matched.toLocaleString()}`], ["Findings", `${(ov.findings || 0).toLocaleString()}`],
     ["Folder", ov.folder],
   ] : [["Platform", ov.platform_name], [native ? "Program" : "Game", ov.rom?.title || ov.title],
+    !fork && !analysis ? ["Source", `${ov.source_language || "C"}${ov.source_ext ? ` (${ov.source_ext})` : ""}`] : null,
     !fork && !native ? ["Game code", ov.rom?.game_code || ov.version] : null,
     !fork && !native && ov.rom?.region ? ["Region", ov.rom.region] : null,
     fork ? ["Layout", ov.origin === "scratch" ? (LAYOUT[ov.platform] || "decomp") + " (from scratch)" : ov.fork_kind] : ["Compiler", `${ov.compiler.name} ${ov.compiler.flags.join(" ")}`],
