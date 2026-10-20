@@ -1073,7 +1073,7 @@ class RomNetwork(Network):
             lines += ["", "## How to use this", "REA reads this target. Claim work items, use rea_tool for a deeper "
                       "look, and save findings with complete_function.", ""]
             if issues:
-                lines += ["## Questions still open", *[f"- {i}" for i in issues], ""]
+                lines += ["## What is still unknown", *[f"- {i}" for i in issues], ""]
             return {"slug": slug, "kind": kind, "title": proj["name"], "generated_at": now, "summary": summary,
                     "markdown": "\n".join(lines), "path": str(Path(proj["root"]) / "INTAKE.md")}
         if kind == "fork":
@@ -1111,7 +1111,7 @@ class RomNetwork(Network):
         if tc and not toolchains.installed(tc.id):
             issues.append(f"{tc.name} is not installed, so nothing can be compiled yet (Compilers & tools)")
         if kind == "rom" and cfg.get("platform") in X86_PLATFORMS and not debug:
-            issues.append("no PDB, MAP or DWARF was found beside the program: names and types are automatic guesses")
+            issues.append("no debug information was shipped: names start as sub_/FUNC_ and types are recovered from code, strings, imports and agents")
         if cfg.get("packed"):
             issues.append("the program looks packed (UPX): unpack it before trusting function boundaries")
         if rom.get("matchable") is False:
@@ -1212,7 +1212,7 @@ class RomNetwork(Network):
                                        f"(file 0x{int(s.get('rom_start') or 0):X}..0x{int(s.get('rom_end') or 0):X})"
                                        for s in sections[:30]], ""]
         if issues:
-            lines += ["## Questions still open", *[f"- {i}" for i in issues], ""]
+            lines += ["## What is still unknown", *[f"- {i}" for i in issues], ""]
         lines += ["## How to use this", "This report is generated from the import, not from guesses. Read it before "
                   "claiming functions; use `read_file` for the source files and `get_context` for context.h. "
                   "The target itself is the final judge: compile and diff.", ""]

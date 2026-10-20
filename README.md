@@ -297,6 +297,11 @@ Nothing extra is uploaded when you import by path.
 
 ## What the import found
 
+A PDB is not required, and most shipped binaries will not have one. That is normal for reverse engineering: the
+import still recovers every function boundary, compiler and flags, imports, strings, data and library/CRT code,
+then the autopilot and agents work from the instructions themselves. A shipped PDB/MAP is only a shortcut when the
+publisher left one in the build.
+
 Every import also writes an **INTAKE.md** report beside the project and shows it in **Overview → What was found**.
 It records what the import already established, so neither you nor an agent starts by rediscovering it:
 
