@@ -20,3 +20,11 @@ def test_auto_names_and_user_code_stay_open():
     assert library.kind("player_update") is None
     assert library.kind("add") is None
     assert library.kind("main") is None
+
+
+def test_statically_linked_c_library_names():
+    assert library.kind("malloc") == "C runtime"
+    assert library.kind("memcpy") == "C runtime"
+    assert library.kind("vfprintf") == "C runtime"
+    assert library.kind("_pei386_runtime_relocator") == "CRT"
+    assert library.kind("__gcc_deregister_frame") == "CRT"

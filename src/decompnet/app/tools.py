@@ -53,7 +53,9 @@ PLATFORM_GUIDES = {
 INSTRUCTIONS = """\
 decomp.anything: you are reverse-engineering a target the user owns. Matching projects turn functions into C or C++
 that compiles to exactly the same machine code; analysis projects read any binary through REA and record what matters.
-Start with project_info, then claim_function. guide(topic) has know-how. Everything runs on the user's computer.
+Start with project_info. `search_facts` finds functions, strings, APIs and addresses with their callers;
+`list_subsystems` names the areas the imports and strings point at. Then claim_function. guide(topic) has know-how.
+Everything runs on the user's computer.
 The target is the user's: never publish it or its code anywhere.
 """
 
@@ -66,7 +68,8 @@ Repeat for up to {count} work items, then stop:
 1. claim_function() gives you the next procedure or task, with REA's dossier: pseudocode, assembly, callers and
    referenced strings/names. If it is the survey item, you get the target overview and memory map.
 2. Go deeper with rea_tool(tool, arguments): search_strings, search_procedures, analyze_function, xrefs,
-   procedure_callers/callees, list_segments, read_bytes, inspect_native_api. Search first when you need context.
+   procedure_callers/callees, list_segments, read_bytes, inspect_native_api. search_facts searches the project's
+   work items by name, string or address. Search first when you need context.
 3. Write findings with add_note(text, function) while you work, and finish the item with
    complete_function(function, summary): what it does, inputs/outputs, calls, data and anything surprising.
 4. release_function(function, notes) if it needs someone else; notes are required.
@@ -86,7 +89,8 @@ Use only the decomp tools. Repeat for up to {count} claims (a batch is one), the
 1. claim_function(count=4) gives you the next function, and when it's small, its neighbours with it (small
    functions mostly match on the first try): assembly, location, calls, data it uses, the best previous
    attempt and notes (start from those!), a machine-generated draft, and identical matched code if any.
-2. get_context() shows the shared header every compile includes.
+2. get_context() shows the shared header every compile includes. Lost? search_facts("name, string, API or address")
+   and list_subsystems() point at the relevant code without address-by-address searching.
 3. Write the {language} functions (same names as the assembly) and judge them: compile_and_diff(function="a, b, c",
    source=all the definitions) for a batch, one name for one. Read the diff: '<' '>' missing/extra
    instructions, 'i' operands, 'o' order, 'r' registers, 's' stack. Fix structure first, registers last.
@@ -114,7 +118,7 @@ machine code, judged by objdiff. Use only the decomp tools. Repeat for up to {co
    file (small functions mostly match on the first try): target assembly, the current diff, its source
    file, the best previous attempt and notes (start from those!), functions already matched in that file,
    and identical matched code elsewhere if there is any.
-2. The brief usually has what you need. When it doesn't: read_file on the source file and its headers,
+2. The brief usually has what you need. When it doesn't: search_facts / read_file on the source file and its headers,
    search_code for the types, structs and helpers it uses. Reuse what exists; never redefine it.
    find_similar(function) finds look-alike functions: start from a matched one.
 3. compile_and_diff(function, source) with the complete definition (plus any #include "...", prototypes
@@ -260,6 +264,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "read_data": lambda net, agent, slug, what, length=64: (net.forks.read_data(agent, slug, what, length)
                                                             if net.fork_slug(slug) else net.read_data(slug, what, length)),
     "list_functions": lambda net, agent, slug, status="open", limit=40: net.list_functions(slug, status, limit),
+    "search_facts": lambda net, agent, slug, query, limit=40: net.search_facts(slug, query, limit),
+    "list_subsystems": lambda net, agent, slug, limit=12: net.subsystem_text(slug, limit),
     "add_note": lambda net, agent, slug, text, function="": net.add_note(agent, slug, text, function or None),
     "search_notes": lambda net, agent, slug, query: net.search_notes(slug, query),
     "find_similar": lambda net, agent, slug, function, limit=5: net.find_similar(slug, function, limit),
@@ -285,7 +291,7 @@ FORK_ONLY = {"edit_file", "file_status", "split_file"}
 ANALYSIS_ONLY = {"complete_function", "rea_tool"}
 ANALYSIS_TOOLS = {"project_info", "claim_function", "get_function", "release_function", "complete_function",
                   "rea_tool", "inspect_binary", "search_binary", "read_data", "list_functions", "add_note",
-                  "search_notes", "guide", "read_file", "search_code"}
+                  "search_notes", "guide", "read_file", "search_code", "search_facts"}
 
 
 def _hot_text(rows) -> str:
@@ -462,6 +468,18 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
     async def list_functions(ctx: Context, status: str = "open", limit: int = 40) -> str:
         """List functions by status: open, matched or all."""
         return await run(ctx, "list_functions", status=status, limit=limit)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def search_facts(ctx: Context, query: str, limit: int = 40) -> str:
+        """Search function names, symbols, strings, imported APIs and addresses in one call. Returns functions
+        with call/callee counts and symbols with the functions that use them. Use it before naming something."""
+        return await run(ctx, "search_facts", query=query, limit=limit)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def list_subsystems(ctx: Context, limit: int = 12) -> str:
+        """Group functions by the imported APIs and strings they use (render, audio, input, network, file,
+        UI, memory, threading, crypto). A starting point for tasks, not a proof."""
+        return await run(ctx, "list_subsystems", limit=limit)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def add_note(ctx: Context, text: str, function: str = "") -> str:

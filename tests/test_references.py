@@ -48,5 +48,7 @@ def test_search_finds_an_address_and_skips_copies(ref):
 
 
 def test_rom_projects_get_the_reading_tools():
-    assert {"read_file", "search_code"} <= set(tools.tool_names(fork=False))
+    assert {"read_file", "search_code", "search_facts", "list_subsystems"} <= set(tools.tool_names(fork=False))
     assert "edit_file" not in tools.tool_names(fork=False)
+    assert "search_facts" in tools.tool_names(analysis=True)
+    assert "list_subsystems" not in tools.tool_names(analysis=True)

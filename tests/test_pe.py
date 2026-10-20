@@ -270,10 +270,24 @@ def test_intake_report_writes_the_imports_findings_for_agents(built):
     assert "PE" in text or "x86_64" in text
     assert "## Compiler" in text and "## Largest functions" in text and "## Code" in text
     assert "add" in text and "bump" in text and "g_counter" in text
-    assert "## Most-called functions" in text
+    assert "## Most-called functions" in text and "## Subsystem hints" in text
     assert report["summary"] and "functions" in report["summary"]
     path = Path(report["path"])
     assert path.is_file() and path.name == "INTAKE.md" and "## Identity" in path.read_text()
     line = net.intake_line(slug)
     assert str(path) in line and "read it first" in line
     assert line in net.claim(net.local_agent("report-agent")[0], slug)
+
+
+def test_search_facts_finds_names_symbols_and_callers(built):
+    exe, _obj = built
+    net = RomNetwork(exe.parent / "facts.db", exe.parent)
+    slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game.exe", log=lambda *_: None)
+    found = net.search_facts(slug, "add")
+    assert "`add`" in found and "callers" in found
+    symbol = net.search_facts(slug, "g_counter")
+    assert "`g_counter`" in symbol and "used by" in symbol
+    address = net.search_facts(slug, "0x140001000")
+    assert "Address 0x140001000" in address
+    groups = net.subsystem_text(slug)
+    assert "Subsystem hints" in groups and "unclassified" in groups

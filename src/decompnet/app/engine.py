@@ -44,6 +44,21 @@ PLATFORM_STATUS = {"gc": "recommended", "wii": "recommended", "n64": "recommende
 X86_PLATFORMS = ("windows", "linux")
 # C++ drivers: the source is compiled as C++ (see toolchains.toml), and the UI and agent prompt say C++.
 CXX_TOOLCHAINS = ("gxx-", "clangxx-", "mingwxx-", "clang-clxx-")
+# What imported APIs and strings usually mean. Hints, not proof: the report says which functions use them.
+SUBSYSTEM_HINTS = (
+    ("render", ("d3d", "dxgi", "opengl", "vulkan", "glbind", "glclear", "glgen", "gltex", "glvertex",
+                "shader", "texture", "sprite", "render", "gdi", "bitblt", "drawtext", "font")),
+    ("audio", ("dsound", "xaudio", "openal", "fmod", "audio", "sound", "waveout", "mixer", "music")),
+    ("input", ("dinput", "xinput", "getkeystate", "getasynckeystate", "joystick", "keyboard", "mouse")),
+    ("network", ("ws2", "winsock", "socket", "connect", "recv", "send", "http", "curl", "inet")),
+    ("file/registry", ("createfile", "readfile", "writefile", "fopen", "fclose", "findfirst", "findnext",
+                       "deletefile", "movefile", "copyfile", "regopen", "regquery", "regset", "registry")),
+    ("ui", ("user32", "messagebox", "createwindow", "dialogbox", "getdlgitem", "setwindowtext", "menu")),
+    ("memory", ("malloc", "free", "realloc", "calloc", "heapalloc", "virtualalloc", "virtualfree",
+                "memcpy", "memset", "memmove")),
+    ("threading", ("createthread", "thread", "mutex", "criticalsection", "waitforsingle", "sleep")),
+    ("crypto", ("crypt", "aes", "sha1", "sha256", "md5", "rsa", "ssl", "tls")),
+)
 
 
 def source_language(toolchain: str) -> str:
@@ -1126,8 +1141,176 @@ class RomNetwork(Network):
         markdown = self._intake_markdown(proj, cfg, rom, compiler, debug, target, agg, funcs, named, imports,
                                          strings, data, entry_rows, sections, issues)
         markdown += self._xref_markdown(proj, funcs, syms)
+        markdown += self._cxx_markdown(syms)
+        groups, unclassified = self._subsystem_groups(proj, funcs, syms)
+        if groups or unclassified:
+            markdown += self._subsystem_markdown(groups, unclassified)
+        markdown += ("## How to use this\n"
+                     "This report is generated from the import, not from guesses. Read it before claiming functions; "
+                     "use `read_file` for source files, `get_context` for context.h, `search_facts` for a name, "
+                     "string, API or address, and `list_subsystems` for a starting area. The target is the final "
+                     "judge: compile and diff.\n")
         return {"slug": slug, "kind": kind, "title": proj["name"], "generated_at": now, "summary": summary,
                 "markdown": markdown, "path": str(Path(proj["root"]) / "INTAKE.md")}
+
+    def search_facts(self, slug: str, query: str, limit: int = 40) -> str:
+        """Search the import's index: function names, symbols, strings, imported APIs and addresses, with the
+        callers of every symbol. One tool call replaces a name search followed by xrefs on each hit."""
+        proj = self._project(slug)
+        q = (query or "").strip()
+        if not q:
+            return "Give a name, part of a string, an API, or an address (0x140001000)."
+        limit = max(1, min(int(limit or 40), 200))
+        pid = proj["id"]
+        low = q.lower()
+        functions = self.store.all(
+            "SELECT name, vram, size, n_insns, status FROM functions WHERE project_id=? "
+            "AND instr(lower(name), ?) > 0 ORDER BY status='open', n_insns DESC LIMIT ?", pid, low, limit)
+        symbols = self.store.all(
+            "SELECT name, address, size, kind, preview FROM symbols WHERE project_id=? "
+            "AND (instr(lower(name), ?) > 0 OR instr(lower(coalesce(preview,'')), ?) > 0) LIMIT ?",
+            pid, low, low, limit)
+        try:
+            graph = self.xrefs(proj)
+        except Exception:
+            graph = {"called_by": {}, "calls": {}, "used_by": {}, "uses": {}}
+        by_addr = {int(f["vram"]): f["name"] for f in self.store.all(
+            "SELECT name, vram FROM functions WHERE project_id=? AND vram IS NOT NULL", pid)}
+        lines = [f'Facts matching "{q}"']
+        if functions:
+            lines.append(f"Functions ({len(functions)}):")
+            for r in functions:
+                callers = len(graph["called_by"].get(int(r["vram"]), ())) if r["vram"] is not None else 0
+                callees = len(graph["calls"].get(int(r["vram"]), ())) if r["vram"] is not None else 0
+                lines.append(f"- `{r['name']}` at 0x{int(r['vram'] or 0):X} — {r['status']}, "
+                             f"{r['n_insns']} instructions, {r['size']} bytes, {callers} callers, {callees} callees")
+        if symbols:
+            lines.append(f"Symbols ({len(symbols)}):")
+            for r in symbols:
+                users = graph["used_by"].get(int(r["address"] or 0), ())
+                who = ", ".join(f"`{by_addr[a]}`" for a in sorted(users)[:8] if a in by_addr)
+                if len(users) > 8:
+                    who += f" +{len(users)-8}"
+                detail = f" ({r['kind']}, {r['size']} bytes" + (f": {r['preview']}" if r["preview"] else "") + ")"
+                lines.append(f"- `{r['name']}` at 0x{int(r['address'] or 0):X}{detail}"
+                             + (f" — used by {who}" if who else ""))
+        # An address is often what an agent has, not a name.
+        try:
+            addr = int(q, 0)
+        except ValueError:
+            addr = None
+        if addr is not None:
+            fn = self.store.one("SELECT name, vram, size, n_insns, status FROM functions WHERE project_id=? "
+                                "AND vram<=? AND vram+coalesce(size,0)>? ORDER BY vram DESC LIMIT 1", pid, addr, addr)
+            if fn:
+                lines.append(f"Address 0x{addr:X}: inside `{fn['name']}` at 0x{int(fn['vram'] or 0):X} "
+                             f"({fn['status']}, {fn['n_insns']} instructions)")
+            sym = self.store.one("SELECT name, address, size, kind, preview FROM symbols WHERE project_id=? "
+                                 "AND address=? LIMIT 1", pid, addr)
+            if sym:
+                lines.append(f"Address 0x{addr:X}: `{sym['name']}` ({sym['kind']}, {sym['size']} bytes)"
+                             + (f": {sym['preview']}" if sym["preview"] else ""))
+        if len(lines) == 1:
+            lines.append("Nothing matched. Try a shorter fragment, an API name, a string, or an address.")
+        return "\n".join(lines)
+
+    def _subsystem_groups(self, proj, funcs=None, syms=None):
+        """Function vram -> primary subsystem, scored by the imported APIs and strings it references, plus the
+        number of unclassified functions. Hints for the first split, not a claim about every function."""
+        pid = proj["id"]
+        funcs = [f for f in (funcs if funcs is not None else self.store.all(
+            "SELECT name, vram, size, n_insns, status FROM functions WHERE project_id=?", pid))
+            if f["status"] != "library"]
+        syms = syms if syms is not None else self.store.all(
+            "SELECT name, address, size, kind, preview FROM symbols WHERE project_id=?", pid)
+        by_addr = {int(f["vram"]): f for f in funcs if f["vram"] is not None}
+        sym_at = {}
+        for s in syms:
+            sym_at[int(s["address"] or 0)] = s
+        try:
+            graph = self.xrefs(proj)
+        except Exception:
+            return {}, set()
+        scores = {}
+        def hint(label):
+            text = str(label or "").lower()
+            for tag, words in SUBSYSTEM_HINTS:
+                if any(w in text for w in words):
+                    return tag
+            return None
+        for caller, addrs in graph["uses"].items():
+            if caller not in by_addr:
+                continue
+            for addr in addrs:
+                s = sym_at.get(int(addr))
+                if not s:
+                    continue
+                label = s["name"][6:] if s["name"].startswith("__imp_") else (
+                    s["preview"] if s["kind"] == "string" and s["preview"] else s["name"])
+                tag = hint(label)
+                if tag:
+                    scores.setdefault(caller, {}).setdefault(tag, 0)
+                    scores[caller][tag] += 1
+        for caller, callees in graph["calls"].items():
+            if caller not in by_addr:
+                continue
+            for callee in callees:
+                other = by_addr.get(int(callee))
+                if not other:
+                    continue
+                tag = hint(other["name"])
+                if tag:
+                    scores.setdefault(caller, {}).setdefault(tag, 0)
+                    scores[caller][tag] += 1
+        groups = {}
+        for vram, tags in scores.items():
+            tag = max(tags, key=tags.get)
+            groups.setdefault(tag, []).append(by_addr[vram])
+        unclassified = [f for f in funcs if int(f["vram"] or 0) not in scores]
+        return groups, unclassified
+
+    def subsystem_text(self, slug: str, limit: int = 12) -> str:
+        """The subsystem map as text for an agent: where to start looking, not an authoritative taxonomy."""
+        proj = self._project(slug)
+        if self.is_analysis(proj):
+            return "Subsystem hints are built from imports and strings in a matching project; analysis projects use REA."
+        groups, unclassified = self._subsystem_groups(proj)
+        if not groups and not unclassified:
+            return "No functions to group yet."
+        lines = ["Subsystem hints (from imported APIs and strings; verify before relying on one):"]
+        for tag, rows in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))[:max(1, int(limit or 12))]:
+            rows = sorted(rows, key=lambda f: (f["n_insns"] or 0), reverse=True)
+            lines.append(f"### {tag} — {len(rows)} functions")
+            lines += [f"- `{f['name']}` at 0x{int(f['vram'] or 0):X} ({f['n_insns']} instructions, {f['status']})"
+                      for f in rows[:10]]
+            if len(rows) > 10:
+                lines.append(f"- … {len(rows)-10} more")
+        if unclassified:
+            lines.append(f"### unclassified — {len(unclassified)} functions")
+            lines += [f"- `{f['name']}` at 0x{int(f['vram'] or 0):X}" for f in unclassified[:10]]
+            if len(unclassified) > 10:
+                lines.append(f"- … {len(unclassified)-10} more")
+        return "\n".join(lines)
+
+    def _cxx_markdown(self, syms) -> str:
+        """C++ vtables and RTTI that survived as symbols; says plainly that stripped binaries need fingerprints."""
+        v = sorted((s for s in syms if str(s["name"]).startswith(("??_7", "_ZTV"))),
+                   key=lambda s: int(s["address"] or 0))
+        r = sorted((s for s in syms if str(s["name"]).startswith(("??_R", "_ZTI", "_ZTS", ".?AV"))),
+                   key=lambda s: int(s["address"] or 0))
+        if not v and not r:
+            return ""
+        lines = ["## C++ vtables and RTTI", "Present as symbols; use them to recover classes and virtual calls."]
+        if v:
+            lines += [f"- vtable: `{s['name']}` at 0x{int(s['address'] or 0):X} ({s['size']} bytes)" for s in v[:30]]
+            if len(v) > 30:
+                lines.append(f"- … {len(v)-30} more vtables")
+        if r:
+            lines += [f"- RTTI: `{s['name']}` at 0x{int(s['address'] or 0):X}" for s in r[:30]]
+            if len(r) > 30:
+                lines.append(f"- … {len(r)-30} more RTTI records")
+        lines.append("")
+        return "\n".join(lines)
 
     def _xref_markdown(self, proj, funcs, syms) -> str:
         """The names agents would otherwise look up one by one: most-called functions, and which functions use
@@ -1173,6 +1356,22 @@ class RomNetwork(Network):
         if data:
             lines += ["## Data objects and their callers", *[f"- `{name}` — {n} function{'s' if n != 1 else ''}: "
                                                               f"{labels(users)}" for n, name, users in data[:20]], ""]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _subsystem_markdown(groups, unclassified) -> str:
+        lines = ["## Subsystem hints", "From imported APIs and strings; a starting point, not a proof."]
+        for tag, rows in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))[:12]:
+            rows = sorted(rows, key=lambda f: (f["n_insns"] or 0), reverse=True)
+            lines.append(f"### {tag} — {len(rows)} functions")
+            lines += [f"- `{f['name']}` at 0x{int(f['vram'] or 0):X} ({f['n_insns']} instructions, {f['status']})"
+                      for f in rows[:8]]
+            if len(rows) > 8:
+                lines.append(f"- … {len(rows)-8} more")
+        if unclassified:
+            lines.append(f"### unclassified — {len(unclassified)} functions")
+            lines += [f"- `{f['name']}` at 0x{int(f['vram'] or 0):X}" for f in unclassified[:8]]
+        lines.append("")
         return "\n".join(lines)
 
     @staticmethod
@@ -1260,9 +1459,6 @@ class RomNetwork(Network):
                                        for s in sections[:30]], ""]
         if issues:
             lines += ["## What is still unknown", *[f"- {i}" for i in issues], ""]
-        lines += ["## How to use this", "This report is generated from the import, not from guesses. Read it before "
-                  "claiming functions; use `read_file` for the source files and `get_context` for context.h. "
-                  "The target itself is the final judge: compile and diff.", ""]
         return "\n".join(lines)
 
     def write_intake(self, slug: str, log=print) -> dict:

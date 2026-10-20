@@ -310,6 +310,8 @@ It records what the import already established, so neither you nor an agent star
 - debug information: source, names and type count;
 - functions, library/CRT code, data objects, strings and imported APIs;
 - most-called functions, and which functions use each imported API, string and data object;
+- subsystem hints (render, audio, input, network, file/registry, UI, memory, threading, crypto) from imports and
+  strings, and C++ vtable/RTTI symbols when the target kept them;
 - the entry point, named functions and largest functions by instruction count;
 - runtime trace coverage and the questions that are still open (missing compiler, no debug names, packed program,
   no trace, mostly automatic names).
@@ -336,8 +338,8 @@ guess:
   blanked, internal branch targets stay relative), so moved code still matches. The report says same, moved,
   changed, added and removed, with a similarity score for changed functions.
 
-Agents get `import_debug_info`, `export_debug_info`, `compare_version`, `import_trace` and `list_hot` tools; the
-autopilot and the normal matching loop are unchanged.
+Agents get `import_debug_info`, `export_debug_info`, `compare_version`, `import_trace`, `list_hot`, `search_facts`
+and `list_subsystems` tools; the autopilot and the normal matching loop are unchanged.
 
 ## Runtime coverage
 
