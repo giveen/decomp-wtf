@@ -120,13 +120,49 @@ def test_32_bit_functions_and_absolute_globals(tmp_path):
     subprocess.run([CC32, *flags, "-nostdlib", "-Wl,--entry,_start", "-Wl,--subsystem,console", "-o", str(exe),
                     str(src)], check=True)
     net = RomNetwork(tmp_path / "d.db", tmp_path)
-    slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game32.exe", log=lambda *_: None)
+    slug = net.import_rom(exe.read_bytes(), toolchain="mingw-x86_64", confirmed=True, name="game32.exe",
+                          log=lambda *_: None)
     image = pe.read(exe.read_bytes(), "game32.exe")
     assert image.arch == "x86" and {f.name for f in image.functions} >= {"add", "bump"}
+    assert net.overview(slug)["compiler"]["toolchain"] == "mingw-x86", "a 32-bit target must not compile with x86-64"
     agent, _ = net.local_agent("x86-tester")
     assert "MATCH" in net.compile_and_diff(agent, "add", "int add(int a, int b) { return a + b; }", slug)
     assert "MATCH" in net.compile_and_diff(
         agent, "bump", "int g_counter;\nint bump(int n) { g_counter += n; return g_counter; }", slug)
+
+
+CXX32 = shutil.which("i686-w64-mingw32-g++")
+
+
+@pytest.mark.skipif(CXX32 is None, reason="needs i686-w64-mingw32-g++")
+def test_32_bit_cxx_program_uses_x86_cpp_toolchain(tmp_path):
+    src = tmp_path / "game32.cpp"
+    src.write_text("namespace demo { __attribute__((noinline)) int add(int a, int b) { return a + b; } }\n"
+                   "void _start(void) { demo::add(1, 2); }\n")
+    exe = tmp_path / "game32-cxx.exe"
+    flags = [f for f in FLAGS if f not in ("-fno-pic", "-fno-pie")]
+    subprocess.run([CXX32, *flags, "-nostdlib", "-Wl,--entry,_start", "-Wl,--subsystem,console", "-o", str(exe),
+                    str(src)], check=True)
+    net = RomNetwork(tmp_path / "cxx32.db", tmp_path)
+    slug = net.import_rom(exe.read_bytes(), toolchain="mingwxx-x86_64", confirmed=True, name="game32-cxx.exe",
+                          log=lambda *_: None)
+    ov = net.overview(slug)
+    assert ov["compiler"]["toolchain"] == "mingwxx-x86"
+    assert ov["source_language"] == "C++" and ov["source_ext"] == ".cpp"
+    # Old projects (and hand-edited configs) can still name an x86-64 compiler: opening the project repairs it.
+    proj = net.store.one("SELECT * FROM projects WHERE slug=?", slug)
+    cfg = json.loads(proj["config"])
+    cfg["compiler"]["toolchain"] = "mingwxx-x86_64"
+    with net.store.tx() as db:
+        db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+    ov = net.overview(slug, backfill=True)
+    assert ov["compiler"]["toolchain"] == "mingwxx-x86"
+    target = net.store.one(
+        "SELECT name FROM functions WHERE project_id=(SELECT id FROM projects WHERE slug=?) "
+        "AND name LIKE '%demo3addE%'", slug)["name"]
+    agent, _ = net.local_agent("cxx32-tester")
+    text = net.compile_and_diff(agent, target, "namespace demo { int add(int a, int b) { return a + b; } }", slug)
+    assert "MATCH" in text, text
 
 
 @pytest.mark.skipif(CXX is None, reason="needs x86_64-w64-mingw32-g++")

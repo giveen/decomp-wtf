@@ -440,7 +440,10 @@ function setupCompilers(info) {
   const p = info.platform, select = $("compilerPick"), note = $("compilerNote");
   const cw = S.st?.codewarrior || { installed: false, ds_installed: false, gc: [], wii: [], ds: [] };
   $("compilerRow").hidden = false; note.hidden = true; $("mwConsent").hidden = true; $("mwAccept").checked = false;
-  if (p === "windows") fillCompilers(select, "mingw-x86_64", "Windows");
+  if (p === "windows") {  // the server picks MinGW or clang-cl, C or C++, and 32- or 64-bit from the PE itself
+    fillCompilers(select, "", "Windows");
+    select.insertAdjacentHTML("afterbegin", `<option value="" selected>Automatic · the compiler and architecture the program names</option>`);
+  }
   else if (p === "linux") {  // the server picks GCC or Clang, C or C++, from what the program says built it
     fillCompilers(select, "", "Linux");
     select.insertAdjacentHTML("afterbegin", `<option value="" selected>Automatic · the compiler the program names (GCC or Clang, C or C++)</option>`);

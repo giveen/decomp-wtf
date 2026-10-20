@@ -78,6 +78,20 @@ def cxx_toolchain(toolchain: str) -> str:
     return toolchain
 
 
+def arch_toolchain(toolchain: str, arch: str) -> str:
+    """The same PC compiler for the target's architecture (a 32-bit import must not compile x86-64)."""
+    suffix = "x86_64" if arch == "x86_64" else "x86"
+    for old in ("x86_64", "x86"):
+        if toolchain.endswith("-" + old):
+            candidate = toolchain[: -len(old)] + suffix
+            try:
+                toolchains.get(candidate)
+            except toolchains.ToolchainError:
+                return toolchain
+            return candidate
+    return toolchain
+
+
 LINUX_COMPILERS = {
     "gcc-linux-x86_64": ("GCC (x86-64)", "Linux programs (x86-64), with the GCC on this machine"),
     "gxx-linux-x86_64": ("G++ (x86-64)", "Linux C++ programs (x86-64), with the G++ on this machine"),
@@ -907,6 +921,13 @@ class RomNetwork(Network):
             log("this looks UPX-packed: unpack it first (UPX is in Compilers & tools), then import the unpacked program")
         suffix = "x86_64" if image.arch == "x86_64" else "x86"
         cxx = buildinfo.looks_cxx(image.symbols)
+        requested = toolchain
+        if toolchain:
+            toolchain = arch_toolchain(toolchain, image.arch)
+            if cxx and source_language(toolchain) != "C++":
+                toolchain = cxx_toolchain(toolchain)
+            if toolchain != requested:
+                log(f"using {toolchain} for this {image.arch} target (not {requested})")
         if linux:
             # .comment names the compiler; C++ programs call into libstdc++, whose names are mangled (_Z...).
             family = "clang" if info.get("language_guess") == "Rust" or "clang" in info["compiler_guess"].lower() else "gcc"
@@ -2598,6 +2619,26 @@ class RomNetwork(Network):
                                              "spend": cfg.get("spend"), "instructions": cfg.get("instructions") or "",
                                              "priority": cfg.get("priority", [])}
 
+    def _repair_pc_toolchain(self, proj, cfg) -> None:
+        """A PC project must compile for the target's architecture. Older imports and manual picks can name
+        the x86-64 variant for a 32-bit target; fix that before anything compiles."""
+        if cfg.get("platform") not in X86_PLATFORMS or not cfg.get("arch"):
+            return
+        old = cfg.get("compiler", {}).get("toolchain") or ""
+        try:
+            toolchains.get(old)
+        except toolchains.ToolchainError:
+            return
+        fixed = arch_toolchain(old, cfg["arch"])
+        if (cfg.get("rom") or {}).get("language_guess") == "C++" and source_language(fixed) != "C++":
+            fixed = cxx_toolchain(fixed)
+        if fixed == old:
+            return
+        cfg["compiler"]["toolchain"] = fixed
+        with self.store.tx() as db:
+            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+            self._event(db, proj["id"], None, "compiler", f"{fixed} for this {cfg['arch']} target")
+
     def _backfill_detection(self, proj, cfg) -> dict:
         """Old PC projects stored only a rough .comment guess; read the target once and keep the details."""
         rom = cfg["rom"]
@@ -2613,18 +2654,31 @@ class RomNetwork(Network):
             return rom
         if picked.platform not in X86_PLATFORMS:
             return rom
+        try:
+            from ..rom import elfexe
+            image = (elfexe if picked.platform == "linux" else pe).read(picked.data, picked.filename)
+        except Exception:
+            return rom
         changed = False
         for key in ("language_guess", "compiler_version", "build_label", "matchable", "compiler_guess"):
             value = picked.info.get(key)
             if value is not None and rom.get(key) != value:
                 rom[key] = value
                 changed = True
-        want_style = "msvc" if cfg["compiler"]["toolchain"].startswith("clang-cl") else "gnu"
+        old_tc = cfg["compiler"]["toolchain"]
+        tc_id = arch_toolchain(old_tc, image.arch)
+        if picked.info.get("language_guess") == "C++" and source_language(tc_id) != "C++":
+            tc_id = cxx_toolchain(tc_id)
+        if tc_id != old_tc:
+            cfg["compiler"]["toolchain"] = tc_id
+            changed = True
+        if cfg.get("arch") != image.arch:
+            cfg["arch"] = image.arch
+            changed = True
+        want_style = "msvc" if tc_id.startswith("clang-cl") else "gnu"
         if not rom.get("suggested_flags") or rom.get("flag_style") != want_style:
             try:
-                from ..rom import elfexe
-                image = (elfexe if picked.platform == "linux" else pe).read(picked.data, picked.filename)
-                tc = toolchains.get(cfg["compiler"]["toolchain"])
+                tc = toolchains.get(tc_id)
                 base = cfg["compiler"].get("flags") or tc.flags
                 suggestion = buildinfo.infer_flags(
                     picked.data, compiler="MSVC" if want_style == "msvc" else "GNU",
@@ -2635,17 +2689,11 @@ class RomNetwork(Network):
                 changed = True
             except Exception:
                 pass
-        if picked.info.get("language_guess") == "C++":
-            tc = cfg["compiler"]["toolchain"]
-            if source_language(tc) != "C++":
-                cpp = cxx_toolchain(tc)
-                if cpp != tc:
-                    cfg["compiler"]["toolchain"] = cpp
-                    changed = True
         if changed:
             cfg["rom"] = rom
             with self.store.tx() as db:
-                db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+                db.execute("UPDATE projects SET config=?, arch=? WHERE id=?",
+                           (json.dumps(cfg), cfg.get("arch") or proj["arch"], proj["id"]))
         self.classify_library(proj["slug"], log=lambda *_: None)
         return rom
 
@@ -2655,6 +2703,8 @@ class RomNetwork(Network):
         if self.is_analysis(proj):
             return self._analysis_overview(proj)
         cfg = self.cfg(proj)
+        if cfg.get("platform") in X86_PLATFORMS:
+            self._repair_pc_toolchain(proj, cfg)
         agg = self.store.one(
             "SELECT COUNT(*) AS total, SUM(status='matched') AS matched, SUM(size) AS bytes, "
             "SUM(CASE WHEN status='matched' THEN size ELSE 0 END) AS matched_bytes, SUM(attempts) AS attempts, "
@@ -2666,8 +2716,13 @@ class RomNetwork(Network):
         detected = None
         if cfg.get("platform") in X86_PLATFORMS:
             want_style = "msvc" if cfg["compiler"]["toolchain"].startswith("clang-cl") else "gnu"
+            try:
+                tool_arch = toolchains.get(cfg["compiler"]["toolchain"]).arch
+            except toolchains.ToolchainError:
+                tool_arch = ""
+            wrong_arch = bool(tool_arch and cfg.get("arch") and tool_arch != cfg["arch"])
             if backfill and (not rom.get("build_label") or not rom.get("suggested_flags") or
-                             rom.get("flag_style") != want_style or (
+                             rom.get("flag_style") != want_style or wrong_arch or (
                     rom.get("language_guess") == "C++" and source_language(cfg["compiler"]["toolchain"]) != "C++")):
                 rom = self._backfill_detection(proj, cfg)
             language = rom.get("language_guess") or source_language(cfg["compiler"]["toolchain"])
@@ -3237,8 +3292,9 @@ class RomNetwork(Network):
             raise NetworkError("an analysis project doesn't compile: its agents read the target with REA")
         if self.fork_slug(slug):
             raise NetworkError("a fork builds with the project's own compilers and flags")
-        tc = toolchains.get(toolchain)
         cfg = self.cfg(proj)
+        toolchain = arch_toolchain(toolchain, cfg.get("arch") or "")
+        tc = toolchains.get(toolchain)
         if not flags and cfg.get("platform") == "linux":
             flags = _linux_flags(tc.flags, cfg.get("rom", {}).get("pie", False))
         cfg["compiler"] = {"toolchain": tc.id, "flags": flags or tc.flags, "timeout": 20}
