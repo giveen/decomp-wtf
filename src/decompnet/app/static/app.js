@@ -2553,6 +2553,15 @@ function renderSource(ov) {
     $("srcState").innerHTML = "";
     return;
   }
+  if (["windows", "linux"].includes(ov.platform)) {
+    $("srcText").innerHTML = "decomp.anything writes a normal <b>CMake/IDE project</b>: one source file per matched function, <code>include/context.h</code>, <code>compile_commands.json</code> and <code>judge.py</code>. Open it in VS Code, CLion, Visual Studio or your editor, compile with your own toolchain, and run <code>python judge.py --all</code> to verify the matched functions byte for byte. It does not relink a PE/ELF; that stays in your normal toolchain.";
+    const ex2 = ov.export;
+    $("srcState").innerHTML = ex2
+      ? `<div class="src-line ok">✓ ${ex2.matched || 0} matched function${ex2.matched === 1 ? "" : "s"} exported</div>${ex2.path ? `<div class="src-line">${esc(ex2.path)}</div>` : ""}`
+      : `<span class="muted small">Not exported yet.</span>`;
+    $("srcExport").textContent = ex2 ? "Export again" : "Export IDE project";
+    return;
+  }
   $("srcText").innerHTML = "decomp.anything writes a complete decompilation project: the matched functions as C, everything else as assembly, a linker script and <code>build.py</code>. Then it builds it to prove it rebuilds your game <b>byte for byte</b>. It's the base for ports and mods; game code and data stay out of git, so the tree is safe to put in a repository.";
   const stale = ex && ex.matched != null && ex.matched < ov.matched;
   $("srcState").innerHTML = !ex ? `<span class="muted small">Not exported yet.</span>`
@@ -2562,6 +2571,10 @@ function renderSource(ov) {
   $("srcExport").textContent = ex ? "Export again" : "Export project";
 }
 $("srcOpen").onclick = () => openFolder();
+$("srcIde").onclick = async () => {
+  try { const r = await api("/api/ide", { method: "POST", body: { slug: S.slug } }); toast(`Opening in ${esc(r.editor)}.`); }
+  catch (e) { toast(esc(e.message), "err"); }
+};
 $("srcExport").onclick = async () => {
   $("srcExport").disabled = true;
   $("expLog").hidden = false;
@@ -2569,9 +2582,13 @@ $("srcExport").onclick = async () => {
   try {
     const { job } = await api("/api/export", { method: "POST", body: { slug: S.slug } });
     const r = await followJob(job, $("expLog"));
-    $("expResult").innerHTML = r.identical === false
-      ? `<div class="notice bad"><span><b>Exported, but the rebuild differs.</b> ${esc(r.log.split("\n").filter(Boolean).pop() || "")}</span></div>`
-      : `<div class="notice room"><span><b>Rebuilds byte for byte.</b> ${r.matched != null ? `${r.matched} of ${r.functions} functions are C.` : ""}</span></div>${cmdBox(`cd "${r.path}" && python build.py`)}`;
+    if (r.kind === "pc") {
+      $("expResult").innerHTML = `<div class="notice room"><span><b>IDE project exported.</b> ${r.matched || 0} matched function${r.matched === 1 ? "" : "s"}; open the folder in your IDE and verify with <code>python judge.py --all</code>.</span></div>${cmdBox(`cd "${r.path}" && python judge.py --all`)}`;
+    } else {
+      $("expResult").innerHTML = r.identical === false
+        ? `<div class="notice bad"><span><b>Exported, but the rebuild differs.</b> ${esc(r.log.split("\n").filter(Boolean).pop() || "")}</span></div>`
+        : `<div class="notice room"><span><b>Rebuilds byte for byte.</b> ${r.matched != null ? `${r.matched} of ${r.functions} functions are C.` : ""}</span></div>${cmdBox(`cd "${r.path}" && python build.py`)}`;
+    }
     wireCopies($("expResult"));
     S.ov = await api(`/api/project?slug=${S.slug}`);
     renderSource(S.ov);

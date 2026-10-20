@@ -397,8 +397,8 @@ identical to the host's.
 | **PlayStation 2** | Beta | ✓ | Disc or ELF; EE-GCC 2.96. |
 | **Game Boy Advance** | Beta | ✓ | ROM; agbcc. |
 | **Nintendo DS** | Beta | ✓ | ROM (.nds); CodeWarrior 1.2–DSi 1.6; ds-decomp projects. |
-| **Windows (PC)** | Beta | ✓ | `.exe` / `.dll`, x86 and x86-64; MinGW-w64, clang-cl or your own MSVC. No rebuildable PE export yet. |
-| **Linux (PC)** | Beta | ✓ | ELF executables and `.so`, x86 and x86-64; the GCC, G++, Clang and Clang++ on your machine. No rebuildable export yet. |
+| **Windows (PC)** | Beta | ✓ | `.exe` / `.dll`, x86 and x86-64; MinGW-w64, clang-cl or your own MSVC. Exports a CMake/IDE project plus `judge.py`; the final PE link stays in your normal toolchain. |
+| **Linux (PC)** | Beta | ✓ | ELF executables and `.so`, x86 and x86-64; the GCC, G++, Clang and Clang++ on your machine. Exports a CMake/IDE project plus `judge.py`; the final ELF link stays in your normal toolchain. |
 | **Android · .NET · JavaScript/Electron · web · firmware · files** | Analysis | — | Drop it like a game: REA opens it as a normal project, procedures become work items and findings land on the dashboard. Add tasks for the rest. |
 | **3DS · PSP · Switch · Xbox · Xbox 360** | Coming | Public decomps | The catalog can fork community projects for these. |
 
@@ -432,10 +432,14 @@ signatures, plus structs, unions, enums and typedefs for the shared header. The 
 version and flags. System headers can't be included: declare library functions yourself, and in C++ write the
 classes whose mangled names you need.
 
-**The base for ports and mods.** *Export project* writes a normal decomp tree (matched functions as C, the rest as
-assembly, a linker script and `build.py`) and proves it rebuilds the target byte for byte. GameCube and Wii projects
-are dtk-template; DS projects are ds-decomp. Both rebuild on every build, and GameCube/Wii files link as they finish.
-Code and data stay out of git: they're regenerated from your own copy.
+**The base for ports and mods.** For ROM projects, *Export project* writes a normal decomp tree (matched functions
+as C, the rest as assembly, a linker script and `build.py`) and proves it rebuilds the target byte for byte.
+GameCube and Wii projects are dtk-template; DS projects are ds-decomp. Both rebuild on every build, and GameCube/Wii
+files link as they finish. For Windows and Linux programs, *Export IDE project* writes a normal **CMake** tree:
+one source per matched function, `include/context.h`, `compile_commands.json` for clangd/IDEs, and `judge.py`,
+which compiles a function with the project's compiler and verifies it against the original bytes. Open it in VS
+Code, CLion, Visual Studio or your editor; full PE/ELF linking stays in your normal toolchain. Code and data stay
+out of git: they're regenerated from your own copy.
 
 **Proprietary compilers** (IDO, CodeWarrior, CodeWarrior for DS) are only installed after you accept that. Heavy
 tools run with a memory cap.
@@ -476,6 +480,7 @@ projects folder (`~/Decomp`).
 | **Suggested flags** | Security cookie, EH/RTTI, unwind tables, comments and stack probes become the compiler flags that match, one click away. |
 | **Library code out** | CRT, compiler runtime and static-library functions are marked and never handed to agents. |
 | **Data inventory** | PC and ROM data symbols, strings and their addresses are listed in a Data tab and through `list_data`. |
+| **IDE export** | PC projects export a CMake/IDE tree with `compile_commands.json` and a `judge.py` byte-match checker. |
 | **Reference folders** | Name a folder in instructions and helpers can read and search it. |
 | **Every major disc format** | ROMs, PlayStation discs, GameCube and Wii discs (ISO, GCM, RVZ, WIA, WBFS, CISO, GCZ) and program files, streamed from disk. |
 | **Local-first** | No account, no telemetry, no server dependency. |

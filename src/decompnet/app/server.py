@@ -605,6 +605,16 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         why = hostenv.open_folder(Path(net.project_row(slug)["root"]))
         return {"ok": why is None, "message": why}
 
+    def p_ide(slug, request, data):
+        root = Path(net.project_row(slug)["root"])
+        for command, label in (("code", "VS Code"), ("codium", "VSCodium"), ("clion", "CLion"),
+                               ("idea", "IntelliJ IDEA"), ("rider", "Rider")):
+            exe = shutil.which(command)
+            if exe:
+                subprocess.Popen([exe, str(root)], start_new_session=True)
+                return {"ok": True, "editor": label}
+        raise ValueError("no supported IDE command found (VS Code, VSCodium, CLion, IntelliJ IDEA or Rider)")
+
     def p_delete(slug, request, data):
         manager.stop()
         proj = net.project_row(slug)
@@ -691,6 +701,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/diff": (lambda s, r, d: net.function_diff(s, r.query_params.get("name", ""),
                                                         r.query_params.get("which", "latest")), ["GET"]),
         "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/open": (p_open, ["POST"]),
+        "/api/ide": (p_ide, ["POST"]),
         "/api/delete": (p_delete, ["POST"]), "/api/agents/manual": (p_manual, ["POST"]),
         "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]),

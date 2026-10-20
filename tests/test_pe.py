@@ -184,3 +184,28 @@ def test_data_symbols_are_listed_and_counted(built):
     assert any(r["name"] == "g_counter" and r["address"] for r in rows)
     assert net.overview(slug)["data"] == len(rows)
     assert net.data_symbols(slug, query="g_counter")
+
+
+def test_pc_export_is_a_cmake_project_with_a_working_judge(built, tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    exe, _obj = built
+    net = RomNetwork(exe.parent / "pc-export.db", exe.parent)
+    slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game.exe", log=lambda *_: None)
+    agent, _ = net.local_agent("pc-export")
+    assert "MATCH" in net.compile_and_diff(agent, "add", "int add(int a, int b) { return a + b; }", slug)
+    assert "MATCH" in net.compile_and_diff(agent, "bump", "int g_counter;\nint bump(int n) { g_counter += n; return g_counter; }", slug)
+    res = net.export_rom(slug)
+    out = Path(res["path"])
+    assert out.is_dir() and res["kind"] == "pc" and res["matched"] >= 2
+    for name in ("CMakeLists.txt", "compile_commands.json", "include/context.h", "judge.py", "build.json",
+                 "baserom.exe"):
+        assert (out / name).is_file(), name
+    assert (out / "src" / "add.c").is_file()
+    env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent / "src"))
+    check = subprocess.run([sys.executable, "judge.py", "add"], cwd=out, env=env, capture_output=True, text=True)
+    assert check.returncode == 0 and "MATCH" in check.stdout, check.stdout + check.stderr
+    all_check = subprocess.run([sys.executable, "judge.py", "--all"], cwd=out, env=env, capture_output=True, text=True)
+    assert all_check.returncode == 0, all_check.stdout + all_check.stderr

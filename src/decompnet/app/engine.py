@@ -2046,8 +2046,15 @@ class RomNetwork(Network):
 
         proj = self._project(slug)
         if self.cfg(proj).get("platform") in X86_PLATFORMS:
-            raise NetworkError("exporting a PC program isn't implemented yet: matching and REA inspection work, "
-                               "but there is no rebuildable project to write")
+            from ..rom.export_pc import export_pc
+            res = export_pc(self, slug, Path(proj["root"]).parent / f"{Path(proj['root']).name}-export", log=log)
+            with self.store.tx() as db:
+                cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
+                cfg["export"] = {"t": time.time(), "path": str(res["path"]), "identical": None,
+                                 "matched": res.get("matched"), "functions": res.get("functions"),
+                                 "kind": "pc"}
+                db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+            return res
         export = export_gba if self.cfg(proj).get("platform") == "gba" else export_rom
         res = export(self, slug, Path(proj["root"]) / "source", log=log)
         with self.store.tx() as db:  # shown on the project page: what's in the tree and whether it rebuilds
@@ -2173,7 +2180,7 @@ class RomNetwork(Network):
             "context_version": self._context(proj["id"])["version"],
             "folder": proj["root"],
             "export": cfg.get("export"),
-            "exportable": cfg.get("platform", "n64") in ("n64", "psx", "ps2", "gba"),
+            "exportable": cfg.get("platform", "n64") in ("n64", "psx", "ps2", "gba", *X86_PLATFORMS),
             "debug": cfg.get("debug"),
             "binary": cfg.get("rom", {}).get("program") if cfg.get("platform") in X86_PLATFORMS else None,
             "room": self._room_info(proj["slug"]),

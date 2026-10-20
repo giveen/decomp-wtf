@@ -167,3 +167,23 @@ def test_32_bit_programs(tmp_path):
     for name in ("add", "bump", "pick", "measure"):
         text = net.compile_and_diff(agent, name, MATCHES[name], slug)
         assert "MATCH" in text, f"{name}: {text}"
+
+
+@pytest.mark.skipif(CC is None, reason="needs gcc")
+def test_pc_export_and_judge_for_linux(tmp_path):
+    import os
+    import sys
+    from pathlib import Path
+
+    exe = _build(tmp_path, "-no-pie")
+    net = RomNetwork(tmp_path / "export.db", tmp_path)
+    slug = net.import_rom(exe.read_bytes(), confirmed=True, name="prog", log=lambda *_: None)
+    agent, _ = net.local_agent("linux-export")
+    assert "MATCH" in net.compile_and_diff(agent, "add", MATCHES["add"], slug)
+    res = net.export_rom(slug)
+    out = Path(res["path"])
+    assert (out / "CMakeLists.txt").is_file() and (out / "compile_commands.json").is_file()
+    assert (out / "judge.py").is_file() and (out / "baserom.elf").is_file()
+    env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent / "src"))
+    check = subprocess.run([sys.executable, "judge.py", "add"], cwd=out, env=env, capture_output=True, text=True)
+    assert check.returncode == 0 and "MATCH" in check.stdout, check.stdout + check.stderr
