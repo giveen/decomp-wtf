@@ -811,6 +811,10 @@ class Manager:
             guide = {"psx": "psx", "ps2": "ps2", "gba": "agbcc"}.get(platform) or (
                 "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")
             note = ""
+        detected = ov.get("detected") or {}
+        if detected and not detected.get("matchable", True):
+            note += (f"\nThis target was built with {detected['label']}: C/C++ cannot reproduce that compiler's output, "
+                     "so matches will stay elusive. Use the tools to inspect and explain the program; don't claim a match.")
         return tools.WORK_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION),
                                         compiler_guide=guide, language=language, target=target, language_note=note)
 

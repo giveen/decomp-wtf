@@ -783,8 +783,13 @@ function renderHeader(ov) {
   const fork = ov.kind === "fork";
   const analysis = ov.kind === "analysis";
   const native = isNativeProject(ov);
+  const detected = ov.detected;
   const chips = [`<span class="plat">${esc(ov.platform_name || "?")}</span>`];
-  if (native && ov.source_language) chips.push(`<span class="chip-s" title="Detected from the binary; agents write this language and the compiler checks it">${esc(ov.source_language)}</span>`);
+  if (native && detected) {
+    const why = detected.matchable ? "Detected from the binary" : `${detected.label} was detected in the binary; decomp.wtf matches C/C++, so this target can be inspected but not rebuilt yet`;
+    chips.push(`<span class="chip-s${detected.matchable ? "" : " beta"}" title="${esc(why)}">${esc(detected.label)}</span>`);
+  }
+  if (native && ov.source_language && (!detected || !detected.matchable)) chips.push(`<span class="chip-s" title="The language agents write and the compiler checks">${esc(ov.source_language)}${detected && !detected.matchable ? " (matching)" : ""}</span>`);
   if (!analysis && !native && platformStatus(ov.platform) === "beta") chips.push(`<span class="chip-s beta" title="This platform works and is tested on homemade games, less so on real ones yet">beta</span>`);
   if (ov.rom && ov.rom.game_code) chips.push(`<span class="chip-s mono">${esc(ov.rom.game_code)}</span>`);
   if (fork) chips.push(`<span class="chip-s">${ov.origin === "scratch" ? `from scratch · ${esc(LAYOUT[ov.platform] || "decomp")}` : "public decomp"}</span>`);
@@ -2567,6 +2572,8 @@ async function renderProjectSettings() {
   }
   const t = (ov.analysis || {}).target || {};
   const native = isNativeProject(ov);
+  const detected = ov.detected;
+  const mismatch = detected && !detected.matchable;
   const facts = analysis ? [
     ["Target", t.path], ["Format", t.format || "unknown"], ["Architecture", t.architecture || "unknown"],
     ["Provider", (ov.analysis || {}).provider || "automatic"], ["Work items", `${ov.functions.toLocaleString()}`],
@@ -2574,6 +2581,8 @@ async function renderProjectSettings() {
     ["Folder", ov.folder],
   ] : [["Platform", ov.platform_name], [native ? "Program" : "Game", ov.rom?.title || ov.title],
     !fork && !analysis ? ["Source", `${ov.source_language || "C"}${ov.source_ext ? ` (${ov.source_ext})` : ""}`] : null,
+    !fork && native && detected ? ["Built with", detected.label] : null,
+    !fork && mismatch ? ["Matching", `C/C++ can't rebuild ${detected.language}`] : null,
     !fork && !native ? ["Game code", ov.rom?.game_code || ov.version] : null,
     !fork && !native && ov.rom?.region ? ["Region", ov.rom.region] : null,
     fork ? ["Layout", ov.origin === "scratch" ? (LAYOUT[ov.platform] || "decomp") + " (from scratch)" : ov.fork_kind] : ["Compiler", `${ov.compiler.name} ${ov.compiler.flags.join(" ")}`],

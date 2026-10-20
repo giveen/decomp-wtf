@@ -387,7 +387,9 @@ analyses DS ROMs (ARM9, ITCM, DTCM, overlays); Game Boy Advance ROMs are split b
 [luvdis](https://github.com/aarant/luvdis) plus this project's own pass for code nothing calls. Windows executables
 are split with the PE reader (`pe.py`) from `.pdata`, the COFF symbol table, exports, the entry point and call
 targets. Linux programs use the symbol table or `.eh_frame`. Every attempt is compiled with the target's compiler and
-checked byte for byte.
+checked byte for byte. PC imports also read the language and toolchain version the binary records: GCC and Clang in
+`.comment`, Rust in `.comment` or the standard library's `rustc-<version>` paths, and Go in `.go.buildinfo`. Rust and
+Go are identified, but only C and C++ are matched byte for byte.
 
 **Windows programs.** Function boundaries come from the x86-64 exception directory and the executable's symbol table
 where it has one, then exports, the entry point and every direct call target. Matching compiles your C to COFF and

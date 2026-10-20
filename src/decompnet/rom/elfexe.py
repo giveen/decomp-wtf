@@ -22,7 +22,7 @@ from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
 from elftools.elf.sections import SymbolTableSection
 
-from . import pe
+from . import buildinfo, pe
 from .pe import EXECUTABLE, PeImage, PeSection
 from .symbols import Symbol
 
@@ -153,13 +153,15 @@ def _imports(elf: ELFFile, arch: str, data: bytes) -> list[Symbol]:
     return out
 
 
+def _section(elf: ELFFile, name: str) -> bytes:
+    sec = elf.get_section_by_name(name)
+    return sec.data() if sec is not None else b""
+
+
 def _compiler(elf: ELFFile) -> str:
     """What .comment says built it. The C library's start files add their own GCC line, so a clang
     line, when there is one, is the program's."""
-    sec = elf.get_section_by_name(".comment")
-    if sec is None:
-        return "unknown"
-    lines = [x.decode("utf-8", "replace").strip() for x in sec.data().split(b"\0") if x.strip()]
+    lines = [x.decode("utf-8", "replace").strip() for x in _section(elf, ".comment").split(b"\0") if x.strip()]
     clang = [x for x in lines if "clang" in x.lower()]
     return (clang or lines or ["unknown"])[-1][:80]
 
@@ -192,11 +194,16 @@ def read(data: bytes, name: str = "") -> PeImage:
     functions, symbols, data_rows = pe.build(data, arch, 0, sections, symbols, ranges, entry, image_lo=lo,
                                              absolute=not pie)
     functions = [f for f in functions if f.name not in CRT and not (f.vram == entry and f.name == "entry")]
+    detected = buildinfo.analyze(data, comment=_section(elf, ".comment"),
+                                 buildinfo=_section(elf, ".go.buildinfo"),
+                                 symbols=symbols, cxx=buildinfo.looks_cxx(symbols))
     info = {
         "title": (name.rsplit(".", 1)[0] if name.endswith((".so", ".elf", ".bin")) else name or "linux-program")
         .replace("_", " ").strip() or "linux-program",
         "game_code": "", "region": "PC", "size": len(data), "sha1": hashlib.sha1(data).hexdigest(),
         "compiler_guess": _compiler(elf), "byte_order": "little", "entrypoint": entry,
+        "language_guess": detected["language"], "compiler_version": detected["version"],
+        "build_label": detected["label"], "matchable": detected["matchable"],
         "machine": f"{3 if arch == 'x86' else 62:04X}", "image_base": 0, "pie": pie,
     }
     return PeImage(arch, 3 if arch == "x86" else 62, 0, info, sections, functions, symbols, data_rows, entry, False)

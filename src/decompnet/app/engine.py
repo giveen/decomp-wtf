@@ -27,7 +27,7 @@ from pathlib import Path
 from .. import rea, scoring, seeds, similarity, toolchains
 from ..elfobj import FunctionObj
 from ..network import Agent, Network, NetworkError, _ago, _hash_token
-from ..rom import detect, match, pe, split
+from ..rom import buildinfo, detect, match, pe, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 from . import analysis
 
@@ -52,15 +52,6 @@ def source_language(toolchain: str) -> str:
 def source_ext(toolchain: str) -> str:
     return ".cpp" if source_language(toolchain) == "C++" else ".c"
 
-
-def _looks_cxx(image) -> bool:
-    """Whether an executable was built as C++: mangled function names, or a C++ runtime it imports."""
-    names = [s.name for s in image.symbols]
-    if any(n.startswith("_Z") for n in names):  # Itanium ABI (GCC, Clang, MinGW)
-        return True
-    if any(s.kind == "func" and s.name.startswith("?") for s in image.symbols):  # MSVC ABI
-        return True
-    return any(("libstdc++" in n.lower() or "libc++" in n.lower() or "msvcp" in n.lower()) for n in names)
 
 LINUX_COMPILERS = {
     "gcc-linux-x86_64": ("GCC (x86-64)", "Linux programs (x86-64), with the GCC on this machine"),
@@ -716,7 +707,7 @@ class RomNetwork(Network):
         (workdir / picked.filename).write_bytes(rom)
         size = f"{info['size'] // (1024 * 1024)} MiB" if info["size"] >= 1 << 20 else f"{info['size'] // 1024} KiB"
         log(f"{detect.PLATFORMS[picked.platform]}: {info['title']} ({info['game_code'] or 'no game code'}, "
-            f"{info['region']}), {size}, looks built with {info['compiler_guess']}")
+            f"{info['region']}), {size}, looks built with {info.get('build_label') or info['compiler_guess']}")
         if picked.platform == "gba":
             return self._import_gba(picked, slug, workdir, toolchain, flags, log)
         if picked.platform in X86_PLATFORMS:
@@ -841,10 +832,10 @@ class RomNetwork(Network):
         image = (elfexe if linux else pe).read(picked.data, picked.filename)
         info = picked.info  # the name the user picked (not the canonical game.exe the copy is stored as)
         suffix = "x86_64" if image.arch == "x86_64" else "x86"
-        cxx = _looks_cxx(image)
+        cxx = buildinfo.looks_cxx(image.symbols)
         if linux:
             # .comment names the compiler; C++ programs call into libstdc++, whose names are mangled (_Z...).
-            family = "clang" if "clang" in info["compiler_guess"].lower() else "gcc"
+            family = "clang" if info.get("language_guess") == "Rust" or "clang" in info["compiler_guess"].lower() else "gcc"
             driver = {"gcc": "gxx", "clang": "clangxx"}[family] if cxx else family
             toolchain = toolchain or f"{driver}-linux-{suffix}"
         elif not toolchain:
@@ -852,7 +843,10 @@ class RomNetwork(Network):
             msvc = info["compiler_guess"] == "MSVC" or any(s.name.startswith("?") for s in image.symbols)
             toolchain = f"{'clang-clxx' if msvc else 'mingwxx'}-{suffix}" if cxx else f"mingw-{suffix}"
         tc = toolchains.get(toolchain)
-        log(f"{source_language(toolchain)} program; matching with {tc.name}")
+        log(f"detected {info.get('build_label') or info['compiler_guess']}; matching with {tc.name}")
+        if info.get("matchable") is False:
+            log(f"{info.get('build_label') or 'this language'} can't be rebuilt from C/C++: inspect and annotate it, "
+                f"but functions won't match the original compiler output")
         if toolchains.installed(toolchain) is None:
             log(f"{tc.name} isn't on this computer: functions import and can be inspected, but compiling needs it "
                 f"(install it, or set another [compiler] for the project)")
@@ -1830,11 +1824,20 @@ class RomNetwork(Network):
             "SUM(CASE WHEN status='matched' THEN size ELSE 0 END) AS matched_bytes, SUM(attempts) AS attempts "
             "FROM functions WHERE project_id=?", proj["id"])
         tc = toolchains.get(cfg["compiler"]["toolchain"])
+        rom = cfg["rom"]
+        detected = None
+        if cfg.get("platform") in X86_PLATFORMS:
+            language = rom.get("language_guess") or source_language(tc.id)
+            guess = rom.get("compiler_guess") or ""
+            label = rom.get("build_label") or buildinfo.label_from_guess(guess, language)
+            detected = {"language": language, "compiler": guess, "version": rom.get("compiler_version") or "",
+                        "label": label, "matchable": rom.get("matchable", True)}
         return {
             "slug": proj["slug"], "title": proj["name"], "description": proj["description"],
             "platform": cfg.get("platform", "n64"), "platform_name": detect.PLATFORMS.get(cfg.get("platform", "n64"), ""),
             "compilers": PLATFORM_COMPILERS.get(cfg.get("platform", "n64"), []),
-            "rom": {k: cfg["rom"].get(k) for k in ("title", "game_code", "region", "size", "sha1", "byte_order", "compiler_guess")},
+            "rom": {k: rom.get(k) for k in ("title", "game_code", "region", "size", "sha1", "byte_order", "compiler_guess")},
+            "detected": detected,
             "compiler": {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name), "flags": cfg["compiler"]["flags"],
                          "installed": toolchains.installed(tc.id) is not None, "proprietary": tc.proprietary,
                          "supported": tc.supported, "wsl": tc.via_wsl,
