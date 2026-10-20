@@ -887,7 +887,8 @@ class RomNetwork(Network):
         if debug is not None:
             self._merge_debug(image, debug)
             log(f"debug information from {debug.source}: {len(debug.symbols)} names, {len(debug.types)} types")
-        if not linux and (b"UPX!" in picked.data[:0x1000] or any(s.name.upper().startswith("UPX") for s in image.sections)):
+        packed = not linux and (b"UPX!" in picked.data[:0x1000] or any(s.name.upper().startswith("UPX") for s in image.sections))
+        if packed:
             log("this looks UPX-packed: unpack it first (UPX is in Compilers & tools), then import the unpacked program")
         suffix = "x86_64" if image.arch == "x86_64" else "x86"
         cxx = buildinfo.looks_cxx(image.symbols)
@@ -923,6 +924,7 @@ class RomNetwork(Network):
             flags = base_flags
         cfg = {
             "kind": "rom", "platform": picked.platform, "arch": image.arch, "big_endian": False, "gp": 0,
+            "packed": bool(packed),
             "rom": {**info, "file": picked.filename, "program": picked.filename},
             "segments": image.segments,
             "compiler": {"toolchain": toolchain, "flags": flags or tc.flags, "timeout": 20},
@@ -1031,6 +1033,214 @@ class RomNetwork(Network):
         if warnings:
             log("starting context: " + "; ".join(warnings))
         return {"applied": applied, "warnings": warnings}
+
+    _AUTO_FUNCTION = re.compile(r"^(?:sub|func|FUN|loc|D|STR|unk|j|off)_[0-9A-Fa-f]{4,}$")
+
+    def intake_report(self, slug: str) -> dict:
+        """What the import already knows, in one place: identity, compiler, debug names, code, data, imports,
+        strings, trace and the questions still open. Written to INTAKE.md so agents read it instead of rediscovering."""
+        proj = self._project(slug)
+        cfg = self.cfg(proj)
+        kind = cfg.get("kind") or "rom"
+        rom = cfg.get("rom") or {}
+        compiler = cfg.get("compiler") or {}
+        debug = cfg.get("debug") or {}
+        target = cfg.get("target") or {}
+        now = time.time()
+        if kind == "analysis":
+            agg = self.store.one("SELECT COUNT(*) AS total, SUM(status='matched') AS matched, "
+                                 "SUM(size) AS bytes FROM functions WHERE project_id=?", proj["id"])
+            counts = cfg.get("counts") or {}
+            segments = cfg.get("segments") or []
+            issues = []
+            if not agg["total"]:
+                issues.append("no procedures were listed: add tasks or open the target with another REA tool")
+            summary = (f"{agg['total'] or 0} work items · {agg['matched'] or 0} analyzed · "
+                       f"{target.get('format') or 'file'} {target.get('architecture') or ''}").strip()
+            lines = [f"# Intake report: {proj['name']}", "", f"Generated {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                     f"for project `{proj['slug']}`.", "", "## Target",
+                     f"- file: `{target.get('path') or ''}`",
+                     f"- format: {target.get('format') or 'file'} · architecture: {target.get('architecture') or 'unknown'}",
+                     f"- provider: {cfg.get('provider') or 'auto'}",
+                     f"- work items: {agg['total'] or 0} · analyzed: {agg['matched'] or 0} · "
+                     f"bytes: {agg['bytes'] or 0}"]
+            counts = cfg.get("counts") or {}
+            if counts:
+                lines.append("- REA inventory: " + ", ".join(f"{k} {v}" for k, v in counts.items()))
+            if segments:
+                lines += ["", "## Segments"]
+                lines += [f"- `{s.get('name') or '?'}` at 0x{int(s.get('vram') or 0):X}" for s in segments[:30]]
+            lines += ["", "## How to use this", "REA reads this target. Claim work items, use rea_tool for a deeper "
+                      "look, and save findings with complete_function.", ""]
+            if issues:
+                lines += ["## Questions still open", *[f"- {i}" for i in issues], ""]
+            return {"slug": slug, "kind": kind, "title": proj["name"], "generated_at": now, "summary": summary,
+                    "markdown": "\n".join(lines), "path": str(Path(proj["root"]) / "INTAKE.md")}
+        if kind == "fork":
+            return {"slug": slug, "kind": kind, "title": proj["name"], "generated_at": now,
+                    "summary": "a fork already has its project's source and symbols", "markdown": "", "path": ""}
+        agg = self.store.one(
+            "SELECT COUNT(*) AS total, SUM(status='library') AS library, SUM(status='matched') AS matched, "
+            "SUM(size) AS bytes, SUM(n_insns) AS insns, SUM(hits) AS hits, SUM(hits>0) AS traced "
+            "FROM functions WHERE project_id=?", proj["id"])
+        funcs = self.store.all("SELECT name, vram, size, n_insns, status FROM functions WHERE project_id=? "
+                               "ORDER BY n_insns DESC", proj["id"])
+        syms = self.store.all("SELECT name, address, size, kind, preview FROM symbols WHERE project_id=?", proj["id"])
+        named = [f for f in funcs if not self._AUTO_FUNCTION.match(f["name"]) and f["status"] != "library"]
+        imports = []
+        seen_imports = set()
+        for sym in syms:
+            if not sym["name"].startswith("__imp_"):
+                continue
+            name = sym["name"][6:]
+            if name and name not in seen_imports:
+                seen_imports.add(name)
+                imports.append(name)
+        strings = [s for s in syms if s["kind"] == "string" or s["name"].startswith("STR_")]
+        strings.sort(key=lambda s: (s["size"] or 0), reverse=True)
+        data = [s for s in syms if s["kind"] != "func" and s["kind"] != "string"
+                and not s["name"].startswith(("STR_", "__imp_"))]
+        data.sort(key=lambda s: (s["size"] or 0), reverse=True)
+        entry = rom.get("entrypoint") or 0
+        entry_rows = [f for f in funcs if entry and f["vram"] == entry]
+        sections = cfg.get("segments") or []
+        issues = []
+        tc = toolchains.get(compiler.get("toolchain") or "")
+        if kind == "rom" and not (agg["total"] or 0):
+            issues.append("no functions were found")
+        if tc and not toolchains.installed(tc.id):
+            issues.append(f"{tc.name} is not installed, so nothing can be compiled yet (Compilers & tools)")
+        if kind == "rom" and cfg.get("platform") in X86_PLATFORMS and not debug:
+            issues.append("no PDB, MAP or DWARF was found beside the program: names and types are automatic guesses")
+        if cfg.get("packed"):
+            issues.append("the program looks packed (UPX): unpack it before trusting function boundaries")
+        if rom.get("matchable") is False:
+            issues.append(f"{rom.get('build_label') or 'this language'} cannot be rebuilt as C/C++; inspect and annotate it instead")
+        if not (agg["traced"] or 0):
+            issues.append("no runtime trace: hot functions and call order are unknown")
+        if funcs and len(named) < max(1, len(funcs) // 20):
+            issues.append("almost every function still has an automatic name")
+        summary = (f"{agg['total'] or 0} functions · {agg['library'] or 0} library · {len(data)} data · "
+                   f"{len(strings)} strings · {len(imports)} imports" +
+                   (f" · {agg['traced']} traced ({agg['hits']} hits)" if agg["traced"] else ""))
+        markdown = self._intake_markdown(proj, cfg, rom, compiler, debug, target, agg, funcs, named, imports,
+                                         strings, data, entry_rows, sections, issues)
+        return {"slug": slug, "kind": kind, "title": proj["name"], "generated_at": now, "summary": summary,
+                "markdown": markdown, "path": str(Path(proj["root"]) / "INTAKE.md")}
+
+    @staticmethod
+    def _intake_markdown(proj, cfg, rom, compiler, debug, target, agg, funcs, named, imports, strings, data,
+                         entry_rows, sections, issues) -> str:
+        """A readable report, not JSON: the same facts an analyst would write on the first page."""
+        def size(n):
+            n = int(n or 0)
+            return f"{n // (1 << 20)} MiB" if n >= 1 << 20 else f"{n / 1024:.1f} KiB" if n >= 1024 else f"{n} B"
+        def esc(s):
+            return str(s or "").replace("|", "\\|").replace("\n", " ")[:160]
+        lines = [f"# Intake report: {proj['name']}", "",
+                 f"Generated {time.strftime('%Y-%m-%d %H:%M:%S')} for project `{proj['slug']}`.", ""]
+        if target:
+            lines += ["## Target", f"- file: `{target.get('path') or ''}`",
+                      f"- format: {target.get('format') or 'file'} · architecture: {target.get('architecture') or 'unknown'}",
+                      f"- provider: {cfg.get('provider') or 'auto'}", ""]
+            counts = cfg.get("counts") or {}
+            if counts:
+                lines += ["- REA inventory: " + ", ".join(f"{k} {v}" for k, v in counts.items())]
+        else:
+            lines += ["## Identity", f"- file: `{rom.get('file') or ''}`",
+                      f"- platform: {cfg.get('platform') or 'unknown'} · architecture: {proj['arch']} · "
+                      f"{'big endian' if proj['big_endian'] else 'little endian'}",
+                      f"- title: {rom.get('title') or proj['name']} · game code: {rom.get('game_code') or 'none'} · "
+                      f"region: {rom.get('region') or 'unknown'}",
+                      f"- size: {size(rom.get('size'))} · SHA-1: `{rom.get('sha1') or ''}`",
+                      f"- entry point: 0x{int(rom.get('entrypoint') or 0):X}" +
+                      (f" · image base: 0x{int(rom.get('image_base') or 0):X}" if rom.get("image_base") else ""), ""]
+        tc_name = ""
+        if compiler:
+            tc = toolchains.get(compiler.get("toolchain") or "")
+            tc_name = tc.name if tc else (compiler.get("toolchain") or "")
+            flags = " ".join(compiler.get("flags") or [])
+            lines += ["## Compiler", f"- toolchain: {tc_name or 'none'}",
+                      f"- source language: {rom.get('language_guess') or source_language(compiler.get('toolchain') or '')}",
+                      f"- detected: {rom.get('build_label') or rom.get('compiler_guess') or 'unknown'}"
+                      + (f" · version {rom.get('compiler_version')}" if rom.get("compiler_version") else ""),
+                      f"- flags: `{flags or '(none)'}`"]
+            if rom.get("suggested_flags"):
+                lines.append(f"- inferred flags: `{' '.join(rom['suggested_flags'])}`")
+            evidence = rom.get("flag_evidence") or []
+            if evidence:
+                lines.append("- evidence: " + "; ".join(str(e) for e in evidence[:6]))
+            if tc and not toolchains.installed(tc.id):
+                lines.append("- **not installed**: install it in Compilers & tools to compile candidates")
+            lines.append("")
+        if debug:
+            lines += ["## Debug information", f"- source: `{debug.get('source') or ''}`",
+                      f"- names: {debug.get('symbols', 0)} · types: {debug.get('types', 0)}"]
+            if cfg.get("context", {}).get("file") or debug.get("header"):
+                lines.append("- the debug header is part of context.h (unless it failed to compile)")
+            lines.append("")
+        lines += ["## Code", f"- functions: {agg['total'] or 0} ({agg['library'] or 0} library/CRT, "
+                  f"{agg['matched'] or 0} matched) · {size(agg['bytes'])} · {agg['insns'] or 0} instructions",
+                  f"- named: {len(named)} · automatic names: {max(0, (agg['total'] or 0) - (agg['library'] or 0) - len(named))}",
+                  f"- data objects: {len(data)} · strings: {len(strings)} · imports: {len(imports)}",
+                  f"- trace: {agg['traced'] or 0} functions, {agg['hits'] or 0} hits" +
+                  ("" if agg["traced"] else " (none imported)"), ""]
+        if entry_rows:
+            lines += ["## Entry point", *[f"- `{r['name']}` at 0x{int(r['vram'] or 0):X} ({r['n_insns']} instructions)"
+                                          for r in entry_rows[:6]], ""]
+        if named:
+            lines += ["## Named functions (first 20)", *[f"- `{r['name']}` at 0x{int(r['vram'] or 0):X} — "
+                                                       f"{r['size']} bytes, {r['n_insns']} instructions, {r['status']}"
+                                                       for r in named[:20]], ""]
+        if funcs:
+            lines += ["## Largest functions", "| address | function | bytes | instructions | status |",
+                      "|---|---|---:|---:|---|",
+                      *[f"| 0x{int(r['vram'] or 0):X} | `{esc(r['name'])}` | {r['size']} | {r['n_insns']} | {r['status']} |"
+                        for r in funcs[:15]], ""]
+        if imports:
+            lines += ["## Imported APIs (first 40)", *[f"- `{esc(n)}`" for n in imports[:40]], ""]
+        if strings:
+            lines += ["## Strings (largest 20)", *[f"- 0x{int(s['address'] or 0):X} ({s['size']} B): {esc(s['preview'])}"
+                                                  for s in strings[:20] if s["preview"]], ""]
+        if data:
+            lines += ["## Data objects (largest 15)", "| address | name | bytes | kind | preview |",
+                      "|---|---|---:|---|---|",
+                      *[f"| 0x{int(s['address'] or 0):X} | `{esc(s['name'])}` | {s['size']} | {s['kind']} | {esc(s['preview'])} |"
+                        for s in data[:15]], ""]
+        if sections:
+            lines += ["## Sections", *[f"- `{s.get('name') or '?'}` at 0x{int(s.get('vram') or 0):X} "
+                                       f"(file 0x{int(s.get('rom_start') or 0):X}..0x{int(s.get('rom_end') or 0):X})"
+                                       for s in sections[:30]], ""]
+        if issues:
+            lines += ["## Questions still open", *[f"- {i}" for i in issues], ""]
+        lines += ["## How to use this", "This report is generated from the import, not from guesses. Read it before "
+                  "claiming functions; use `read_file` for the source files and `get_context` for context.h. "
+                  "The target itself is the final judge: compile and diff.", ""]
+        return "\n".join(lines)
+
+    def write_intake(self, slug: str, log=print) -> dict:
+        """Write INTAKE.md beside the project and remember it, so every agent can read the import's findings."""
+        proj = self._project(slug)
+        report = self.intake_report(slug)
+        if not report["markdown"] or self.cfg(proj).get("kind") == "fork":
+            return report
+        path = Path(proj["root"]) / "INTAKE.md"
+        path.write_text(report["markdown"], encoding="utf-8")
+        self._update_cfg(slug, lambda cfg: cfg.__setitem__("intake", {"file": "INTAKE.md", "generated_at": report["generated_at"]}))
+        report["path"] = str(path)
+        log(f"intake report: {path.name} ({report['summary']})")
+        return report
+
+    def intake_line(self, slug: str) -> str:
+        """The one line every agent prompt and brief gets, pointing at the report instead of rediscovering it."""
+        proj = self._project(slug)
+        cfg = self.cfg(proj)
+        if not cfg.get("intake"):
+            return ""
+        path = Path(proj["root"]) / (cfg["intake"].get("file") or "INTAKE.md")
+        return (f"Intake report (facts already extracted at import; read it first with read_file): {path}. "
+                f"It lists the target, compiler and flags, debug names/types, function and data inventory, imports, "
+                f"strings and what is still unknown.")
 
     def import_debug_info(self, slug: str, path: str = "", log=print) -> dict:
         """Merge a PDB/DWARF/MAP/symbol_addrs file into an existing project: names replace automatic ones,
@@ -1349,7 +1559,10 @@ class RomNetwork(Network):
             return []
         syms = self.symbols(proj["id"])
         x = self.xrefs(proj)
-        lines = ["", "### Where it lives",
+        lines = [""]
+        if (facts := self.intake_line(proj["slug"])):
+            lines += [facts, ""]
+        lines += ["### Where it lives",
                  f"address 0x{fn['vram']:08X}, ROM offset 0x{fn['rom_offset']:X}, segment {fn['unit']}"]
         calls = sorted(x["calls"].get(fn["vram"], ()))
         callers = sorted(x["called_by"].get(fn["vram"], ()))

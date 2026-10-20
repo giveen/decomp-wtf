@@ -511,6 +511,10 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                                           libraries=intake["libs"], log=log)
                 if report["warnings"]:
                     log("starting context warnings: " + "; ".join(report["warnings"]))
+            try:
+                net.write_intake(slug, log=log)
+            except Exception as e:
+                log(f"intake report skipped: {e}")
             settings.data["last_project"] = slug
             settings.save()
             if not net.is_analysis(net.project_row(slug)):
@@ -710,6 +714,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     routes = {
         "/api/project": (p_overview, ["GET"]),
+        "/api/intake": (lambda s, r, d: net.write_intake(s, log=lambda *_: None), ["GET"]),
         "/api/live": (p_live, ["GET"]),
         "/api/function": (lambda s, r, d: net.function_detail(s, r.query_params.get("name", "")), ["GET"]),
         "/api/diff": (lambda s, r, d: net.function_diff(s, r.query_params.get("name", ""),

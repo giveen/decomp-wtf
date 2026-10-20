@@ -569,6 +569,7 @@ async function openProject(slug, tab = "overview") {
   S.slug = slug; S.e = 0; S.a = 0; S.seq = {}; S.scores = new Map(); S.flash = new Map(); S.sessions = []; S.claims = [];
   S.apFeed = null; S.stats = null; S.map = []; S.mapSig = null; geo = null;
   $("activity").innerHTML = ""; $("thoughts").innerHTML = ""; $("now").innerHTML = ""; $("expLog").hidden = true; $("expResult").innerHTML = ""; $("teamBox").innerHTML = "";
+  $("intakePanel").hidden = true; $("intakeBody").textContent = ""; $("intakeSummary").textContent = "";
   try {
     if (!S.st) await loadState();
     S.ov = await api(`/api/project?slug=${slug}`);
@@ -615,6 +616,7 @@ async function openProject(slug, tab = "overview") {
   if (setup) { renderForkSetup(); return; }
   setTab(tab);
   renderStats(S.ov);
+  renderIntake(slug);
   await refreshMap();
   await poll(true);
   S.timer = setInterval(() => poll(false), 1000);
@@ -975,6 +977,20 @@ function fnCounts() {
 }
 
 /* The overview's numbers: function states, pace, who matched what, recent matches. */
+let intakeReq = 0;
+async function renderIntake(slug) {
+  const box = $("intakePanel");
+  if (!S.ov || S.ov.kind === "fork") { box.hidden = true; return; }
+  const req = ++intakeReq;
+  try {
+    const report = await api(`/api/intake?slug=${encodeURIComponent(slug)}`);
+    if (req !== intakeReq || S.slug !== slug || !report.markdown) return;
+    box.hidden = false;
+    $("intakeSummary").textContent = report.summary || "";
+    $("intakeBody").textContent = report.markdown;
+  } catch { if (req === intakeReq) box.hidden = true; }
+}
+
 function renderOverview() {
   if (!S.ov || S.tab !== "overview") return;
   const analysis = S.ov.kind === "analysis";

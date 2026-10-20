@@ -780,6 +780,8 @@ class Manager:
         if (learned := self.net.learnings(s.slug)):
             text += ("\nWhat agents learned on this project so far (compiler quirks, conventions; add yours with "
                      f"add_note and no function):\n{learned}\n")
+        if (facts := self.net.intake_line(s.slug)):
+            text += f"\n{facts}\n"
         if (wish := self.net.instructions(s.slug)):
             text += f"\nThe user's instructions for this project (they come first):\n{wish}\n"
         if (roots := self.net.references(s.slug)):

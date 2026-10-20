@@ -673,3 +673,13 @@ a.ghost, a.primary { text-decoration: none; }
 .intake-grid .wide { grid-column: 1 / -1; }
 .intake-grid textarea { min-height: 58px; resize: vertical; }
 @media (max-width: 720px) { .intake-grid { grid-template-columns: 1fr; } }
+
+/* the import's own findings: generated from the binary, not from guesses */
+.intake-panel { padding: 0; }
+.intake-panel summary { display: flex; align-items: baseline; gap: 10px; padding: 14px 18px; cursor: pointer; list-style: none; }
+.intake-panel summary::-webkit-details-marker { display: none; }
+.intake-panel summary h2 { margin: 0; }
+.intake-panel summary .intake-hint { font-size: 11px; color: var(--muted); letter-spacing: .04em; }
+.intake-panel[open] summary { border-bottom: 1px solid var(--border); }
+.intake-md { margin: 0; padding: 16px 18px; max-height: 520px; overflow: auto; white-space: pre-wrap;
+  font: 12px/1.55 var(--mono); color: var(--fg); background: var(--surface); }

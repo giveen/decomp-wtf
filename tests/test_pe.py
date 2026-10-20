@@ -259,3 +259,20 @@ def test_intake_context_applies_notes_symbols_types_trace_and_libraries(built, t
     assert net.hot_functions(slug)[0]["name"] == "bump" and net.hot_functions(slug)[0]["hits"] == 7
     assert net.store.one("SELECT status FROM functions WHERE project_id=(SELECT id FROM projects WHERE slug=?) AND name='bump'",
                          slug)["status"] == "library"
+
+
+def test_intake_report_writes_the_imports_findings_for_agents(built):
+    exe, _obj = built
+    net = RomNetwork(exe.parent / "report.db", exe.parent)
+    slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game.exe", log=lambda *_: None)
+    report = net.write_intake(slug, log=lambda *_: None)
+    text = report["markdown"]
+    assert "PE" in text or "x86_64" in text
+    assert "## Compiler" in text and "## Largest functions" in text and "## Code" in text
+    assert "add" in text and "bump" in text and "g_counter" in text
+    assert report["summary"] and "functions" in report["summary"]
+    path = Path(report["path"])
+    assert path.is_file() and path.name == "INTAKE.md" and "## Identity" in path.read_text()
+    line = net.intake_line(slug)
+    assert str(path) in line and "read it first" in line
+    assert line in net.claim(net.local_agent("report-agent")[0], slug)

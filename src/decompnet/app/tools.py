@@ -174,6 +174,8 @@ def _search_code(net: RomNetwork, slug: str, pattern: str, glob: str = "") -> st
 def project_info(net: RomNetwork, slug: str) -> str:
     wish = net.instructions(slug)
     text = _project_info(net, slug)
+    if (facts := net.intake_line(slug)):
+        text += "\n" + facts
     text += f"\nThe user's instructions for this project (they come first):\n{wish}" if wish else ""
     return text + (f"\n{references.prompt_line(roots)}" if (roots := net.references(slug)) else "")
 
