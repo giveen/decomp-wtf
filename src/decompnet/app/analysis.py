@@ -178,6 +178,15 @@ def summarize(rows: Any, limit: int = 30) -> str:
 
 # Archives whose contents can become work items. Android packages use the Android inspector, not this table.
 ARCHIVE_SUFFIXES = (".zip", ".jar", ".whl", ".ipa", ".tar", ".tgz", ".tar.gz")
+# Resource limits for a hostile or accidental archive. They are deliberately generous for user-owned targets.
+MAX_ARCHIVE_INPUT = 2 * 1024 * 1024 * 1024
+MAX_INVENTORY_ENTRIES = 20_000
+MAX_INVENTORY_BYTES = 1024 * 1024 * 1024
+MAX_COMPRESSION_RATIO = 1000
+MAX_ENTRY_BYTES = 256 * 1024 * 1024
+MAX_EXTRACTED_BYTES = 512 * 1024 * 1024
+MAX_NESTING = 3
+INSPECT_TIMEOUT = 300
 
 
 def is_archive(path: str | Path) -> bool:
@@ -203,6 +212,29 @@ def artifact_inventory(value: Any) -> dict | None:
         return None
 
     return find(value, 0)
+
+
+def validate_inventory(inventory: dict) -> None:
+    """Fail closed on entry-count, total-size or compression-ratio bombs before work items are written."""
+    occurrences = [o for o in inventory.get("occurrences") or [] if isinstance(o, dict)]
+    if len(occurrences) > MAX_INVENTORY_ENTRIES:
+        raise ValueError(f"archive has {len(occurrences):,} entries; the limit is {MAX_INVENTORY_ENTRIES:,}. "
+                         "Extract the part you need and analyze that instead.")
+    nodes = {n.get("artifact_id"): n for n in inventory.get("nodes") or [] if isinstance(n, dict)}
+    total = 0
+    for occ in occurrences:
+        if occ.get("entry_kind") != "file":
+            continue
+        node = nodes.get(occ.get("artifact_id")) or {}
+        size = int(occ.get("declared_size") or node.get("size") or 0)
+        total += size
+        compressed = occ.get("compressed_size")
+        if compressed and int(compressed) > 0 and size > int(compressed) * MAX_COMPRESSION_RATIO:
+            raise ValueError(f"{occ.get('logical_path') or 'an entry'} expands {size:,} bytes from {compressed} "
+                             f"compressed bytes; that compression ratio is refused")
+        if total > MAX_INVENTORY_BYTES:
+            raise ValueError(f"archive files total more than {MAX_INVENTORY_BYTES // (1024 * 1024)} MiB when "
+                             "uncompressed; analyze a smaller part")
 
 
 def artifact_entries(inventory: dict) -> list[dict]:
@@ -240,8 +272,8 @@ def read_archive_entry(path: str | Path, name: str, offset: int = 0, length: int
         if zipfile.is_zipfile(path):
             with zipfile.ZipFile(path) as archive:
                 info = archive.getinfo(name)
-                if info.is_dir():
-                    return b""
+                if info.is_dir() or info.flag_bits & 0x1:
+                    return None
                 with archive.open(info) as handle:
                     handle.seek(offset)
                     return handle.read(length)
@@ -307,7 +339,7 @@ def classify_entry(path: str, data: bytes | None = None) -> dict:
 
 
 def extract_archive_entry(path: str | Path, name: str, dest: str | Path,
-                          max_bytes: int = 256 * 1024 * 1024) -> tuple[int, str]:
+                          max_bytes: int = MAX_ENTRY_BYTES) -> tuple[int, str]:
     """Extract exactly one regular entry into a new file, streaming and hashing it. No links, no execution."""
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -336,6 +368,8 @@ def extract_archive_entry(path: str | Path, name: str, dest: str | Path,
                     raise ValueError("that entry is a directory or encrypted")
                 if info.file_size > max_bytes:
                     raise ValueError(f"that archive entry is larger than {max_bytes // (1024 * 1024)} MiB")
+                if info.compress_size > 0 and info.file_size > info.compress_size * MAX_COMPRESSION_RATIO:
+                    raise ValueError("that archive entry's compression ratio is refused")
                 with archive.open(info) as stream:
                     copy(stream)
         elif tarfile.is_tarfile(path):

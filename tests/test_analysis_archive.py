@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from decompnet.app import analysis
 
 ZIP = Path(__file__).parent / "fixtures" / "artifact-demo.zip"
@@ -67,6 +69,30 @@ def test_one_entry_is_extracted_to_a_new_file(tmp_path):
     assert out.read_bytes() == b"hello"
     assert size == 5
     assert digest == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+
+
+def test_extraction_cap_leaves_no_partial_file(tmp_path):
+    out = tmp_path / "extracted" / "a.txt"
+    with pytest.raises(ValueError, match="larger than"):
+        analysis.extract_archive_entry(ZIP, "dir/a.txt", out, max_bytes=3)
+    assert not out.exists()
+    assert not (out.parent / "a.txt.part").exists()
+
+
+def test_inventory_limits_reject_count_size_and_ratio(monkeypatch):
+    monkeypatch.setattr(analysis, "MAX_INVENTORY_ENTRIES", 1)
+    with pytest.raises(ValueError, match="entries"):
+        analysis.validate_inventory(inventory())
+    monkeypatch.setattr(analysis, "MAX_INVENTORY_ENTRIES", 100)
+    monkeypatch.setattr(analysis, "MAX_INVENTORY_BYTES", 1)
+    with pytest.raises(ValueError, match="total more"):
+        analysis.validate_inventory(inventory())
+    monkeypatch.setattr(analysis, "MAX_INVENTORY_BYTES", 1 << 30)
+    monkeypatch.setattr(analysis, "MAX_COMPRESSION_RATIO", 1)
+    inv = inventory()
+    inv["occurrences"][1]["compressed_size"] = 1
+    with pytest.raises(ValueError, match="compression ratio"):
+        analysis.validate_inventory(inv)
 
 
 def test_import_analysis_maps_archive_files_to_work_items(tmp_path, monkeypatch):

@@ -291,6 +291,9 @@ class RomNetwork(Network):
         target_path = Path(path).expanduser().resolve()
         if not target_path.is_file():
             raise NetworkError(f"no file at {target_path}")
+        if analysis.is_archive(target_path) and target_path.stat().st_size > analysis.MAX_ARCHIVE_INPUT:
+            raise NetworkError(f"that archive is larger than {analysis.MAX_ARCHIVE_INPUT // (1024 ** 3)} GiB; "
+                               "extract the part you need and analyze that instead")
         target = {"path": str(target_path), "tool": tool or "open_binary", "arguments": arguments or {}}
         for row in self.store.all("SELECT slug, config FROM projects"):
             cfg = json.loads(row["config"])
@@ -336,10 +339,13 @@ class RomNetwork(Network):
             inventory = None
             if analysis.is_archive(target_path):
                 try:
-                    inventory = analysis.artifact_inventory(client.call("inspect_artifact", {}, timeout=900,
-                                                                        any_tool=True))
-                except rea.ReaError:
+                    inventory = analysis.artifact_inventory(client.call(
+                        "inspect_artifact", {}, timeout=analysis.INSPECT_TIMEOUT, any_tool=True))
+                except rea.ReaError as e:
+                    log(f"archive inventory failed: {e}")
                     inventory = None
+                if inventory is not None:
+                    analysis.validate_inventory(inventory)
             try:
                 overview = client.call("binary_overview", {}, timeout=900)
             except rea.ReaError:
@@ -635,6 +641,9 @@ class RomNetwork(Network):
         artifact = cfg.get("artifact") or {}
         if not artifact:
             raise NetworkError("this analysis project isn't an archive")
+        depth = int((cfg.get("source") or {}).get("depth") or 0)
+        if depth >= analysis.MAX_NESTING:
+            raise NetworkError(f"nested targets stop at {analysis.MAX_NESTING} levels; open this entry separately")
         row, meta = self._artifact_entry_row(proj, entry)
         if row is None:
             raise NetworkError(f"no file named {entry!r} in this archive project")
@@ -662,6 +671,14 @@ class RomNetwork(Network):
         name = Path(entry).name or "entry.bin"
         dest = folder / name
         if not dest.exists():
+            size = int(meta.get("size") or 0)
+            extract_root = Path(proj["root"]) / "extracted"
+            extracted = sum(p.stat().st_size for p in extract_root.rglob("*") if p.is_file()) if extract_root.exists() else 0
+            if extracted + size > analysis.MAX_EXTRACTED_BYTES:
+                raise NetworkError(f"this project already has {extracted // (1024 * 1024)} MiB of extracted files; "
+                                   f"the limit is {analysis.MAX_EXTRACTED_BYTES // (1024 * 1024)} MiB")
+            if shutil.disk_usage(proj["root"]).free < size + (64 * 1024 * 1024):
+                raise NetworkError("not enough free disk space for this entry")
             total, digest = analysis.extract_archive_entry(target_path, entry, dest)
             if sha and digest != sha:
                 dest.unlink(missing_ok=True)
@@ -673,7 +690,8 @@ class RomNetwork(Network):
                                      copy_target=True, log=log)
         source = {"kind": "artifact-entry", "parent": proj["slug"], "parent_title": proj["name"],
                   "entry": entry, "entry_sha256": sha, "archive": target_path.name,
-                  "archive_sha256": (cfg.get("target") or {}).get("sha256") or "", "tool": tool}
+                  "archive_sha256": (cfg.get("target") or {}).get("sha256") or "", "tool": tool,
+                  "depth": depth + 1}
         self._update_cfg(child, lambda c: c.__setitem__("source", source))
         child_row = self.project_row(child)
 
