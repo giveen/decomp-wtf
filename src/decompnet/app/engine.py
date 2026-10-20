@@ -1125,8 +1125,55 @@ class RomNetwork(Network):
                    (f" · {agg['traced']} traced ({agg['hits']} hits)" if agg["traced"] else ""))
         markdown = self._intake_markdown(proj, cfg, rom, compiler, debug, target, agg, funcs, named, imports,
                                          strings, data, entry_rows, sections, issues)
+        markdown += self._xref_markdown(proj, funcs, syms)
         return {"slug": slug, "kind": kind, "title": proj["name"], "generated_at": now, "summary": summary,
                 "markdown": markdown, "path": str(Path(proj["root"]) / "INTAKE.md")}
+
+    def _xref_markdown(self, proj, funcs, syms) -> str:
+        """The names agents would otherwise look up one by one: most-called functions, and which functions use
+        each imported API, string and data object."""
+        try:
+            graph = self.xrefs(proj)
+        except Exception:
+            return ""
+        by_addr = {int(f["vram"]): f["name"] for f in funcs if f["vram"] is not None}
+        def labels(addrs, n=6):
+            names = [by_addr.get(int(a), f"0x{int(a):X}") for a in sorted(addrs) if int(a) in by_addr]
+            return ", ".join(f"`{x}`" for x in names[:n]) + (f" +{len(names)-n}" if len(names) > n else "")
+        called = sorted(((len(v), int(k), by_addr.get(int(k), f"0x{int(k):X}")) for k, v in graph["called_by"].items()),
+                        reverse=True)[:15]
+        imports = []
+        strings = []
+        data = []
+        for s in syms:
+            addr = int(s["address"] or 0)
+            users = graph["used_by"].get(addr)
+            if not users:
+                continue
+            name = s["name"]
+            if name.startswith("__imp_"):
+                imports.append((len(users), name[6:], users))
+            elif s["kind"] == "string" or name.startswith("STR_"):
+                strings.append((len(users), s["preview"] or name, users))
+            elif s["kind"] != "func":
+                data.append((len(users), name, users))
+        imports.sort(key=lambda r: r[0], reverse=True)
+        strings.sort(key=lambda r: r[0], reverse=True)
+        data.sort(key=lambda r: r[0], reverse=True)
+        lines = []
+        if called:
+            lines += ["## Most-called functions", *[f"- `{name}` — {n} caller{'s' if n != 1 else ''}"
+                                                    for n, _addr, name in called], ""]
+        if imports:
+            lines += ["## Imported APIs and their callers", *[f"- `{name}` — {n} function{'s' if n != 1 else ''}: "
+                                                               f"{labels(users)}" for n, name, users in imports[:30]], ""]
+        if strings:
+            lines += ["## Strings and their callers", *[f"- \"{str(text)[:100]}\" — {n} function{'s' if n != 1 else ''}: "
+                                                         f"{labels(users)}" for n, text, users in strings[:25]], ""]
+        if data:
+            lines += ["## Data objects and their callers", *[f"- `{name}` — {n} function{'s' if n != 1 else ''}: "
+                                                              f"{labels(users)}" for n, name, users in data[:20]], ""]
+        return "\n".join(lines)
 
     @staticmethod
     def _intake_markdown(proj, cfg, rom, compiler, debug, target, agg, funcs, named, imports, strings, data,

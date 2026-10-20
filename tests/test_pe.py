@@ -270,6 +270,7 @@ def test_intake_report_writes_the_imports_findings_for_agents(built):
     assert "PE" in text or "x86_64" in text
     assert "## Compiler" in text and "## Largest functions" in text and "## Code" in text
     assert "add" in text and "bump" in text and "g_counter" in text
+    assert "## Most-called functions" in text
     assert report["summary"] and "functions" in report["summary"]
     path = Path(report["path"])
     assert path.is_file() and path.name == "INTAKE.md" and "## Identity" in path.read_text()

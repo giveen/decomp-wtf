@@ -309,6 +309,7 @@ It records what the import already established, so neither you nor an agent star
 - the compiler and version, source language, inferred flags and the evidence for them;
 - debug information: source, names and type count;
 - functions, library/CRT code, data objects, strings and imported APIs;
+- most-called functions, and which functions use each imported API, string and data object;
 - the entry point, named functions and largest functions by instruction count;
 - runtime trace coverage and the questions that are still open (missing compiler, no debug names, packed program,
   no trace, mostly automatic names).
