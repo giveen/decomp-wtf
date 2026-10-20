@@ -199,6 +199,7 @@
     <nav class="ptabs" id="ptabs" role="tablist" aria-label="Project">
       <a role="tab" data-ptab="overview">Overview</a>
       <a role="tab" data-ptab="functions"><span id="fnTabLabel">Functions</span> <span class="count" id="fnTabCount"></span></a>
+      <a role="tab" data-ptab="summary" id="summaryTab" hidden>Summary</a>
       <a role="tab" data-ptab="data" id="dataTab">Data <span class="count" id="dataTabCount"></span></a>
       <a role="tab" data-ptab="agents">Agents <span class="count" id="agTabCount"></span></a>
       <a role="tab" data-ptab="activity">Activity</a>
@@ -364,6 +365,18 @@
   <!-- team -->
   <section class="ptab" data-pane="team">
     <section class="panel"><div class="pad" id="teamBox"></div></section>
+  </section>
+
+  <!-- analysis summary -->
+  <section class="ptab" data-pane="summary" hidden>
+    <section class="panel">
+      <header class="panel-head"><h2>Analysis summary</h2><span class="muted small" id="summaryMeta"></span></header>
+      <div class="pad">
+        <p class="muted small">Every analyzed work item and its finding, plus what is still open. The same report is written to <code>SUMMARY.md</code> in the project folder.</p>
+        <div class="row"><button class="primary small-btn" id="summaryDownload" type="button">Download .md</button><button class="ghost small-btn" id="summaryCopy" type="button">Copy</button><button class="ghost small-btn" id="summaryFolder" type="button">Open folder</button></div>
+        <pre class="intake-md" id="summaryText">Loading…</pre>
+      </div>
+    </section>
   </section>
 
   <!-- source -->

@@ -333,6 +333,13 @@ class RomNetwork(Network):
             else:
                 raise error or rea.ReaError("REA couldn't open this target")
             info = analysis.opened_target(opened, str(target_path))
+            inventory = None
+            if analysis.is_archive(target_path):
+                try:
+                    inventory = analysis.artifact_inventory(client.call("inspect_artifact", {}, timeout=900,
+                                                                        any_tool=True))
+                except rea.ReaError:
+                    inventory = None
             try:
                 overview = client.call("binary_overview", {}, timeout=900)
             except rea.ReaError:
@@ -345,30 +352,47 @@ class RomNetwork(Network):
                 items = analysis.procedures(client.call("list_procedures", {}, timeout=900), segments)
             except rea.ReaError:
                 items = []
+            entries = analysis.artifact_entries(inventory) if inventory is not None else []
+            if entries:
+                items = entries
         except BaseException:
             shutil.rmtree(workdir, ignore_errors=True)
             raise
         counts = analysis.overview_counts(overview)
         if counts.get("segments") is None:
             counts["segments"] = len(segments)
-        if counts.get("procedures") is None:
+        if inventory is not None:
+            occurrences = inventory.get("occurrences") or []
+            counts["entries"] = len(occurrences)
+            counts["files"] = len(entries)
+            counts["directories"] = sum(1 for o in occurrences if isinstance(o, dict) and o.get("entry_kind") == "directory")
+        if counts.get("procedures") is None or entries:
             counts["procedures"] = len(items)
         if not items:  # anything without a procedure inventory still gets one survey item
             items = [{"name": "survey", "address": 0, "size": 0, "unit": ""}]
             log("no procedures listed: the project starts with one survey task; add more tasks in the project")
-        log(f"{info.get('format') or 'target'} {info.get('architecture') or ''}: {len(items)} work items")
+        if entries:
+            log(f"{info.get('format') or 'archive'}: {len(entries)} files from {counts.get('entries', len(entries))} entries")
+        else:
+            log(f"{info.get('format') or 'target'} {info.get('architecture') or ''}: {len(items)} work items")
 
         cfg = {
             "kind": "analysis", "platform": "rea", "target": info | {"tool": target["tool"],
                                                                       "arguments": target["arguments"]},
             "provider": provider or "", "counts": counts, "segments": segments,
+            "artifact": ({"format": info.get("format") or "", "entries": counts.get("entries", 0),
+                          "files": counts.get("files", 0), "directories": counts.get("directories", 0),
+                          "inspection_id": inventory.get("inspection_id") if inventory else ""}
+                         if inventory is not None else None),
             "legal": {"basis": "authorized", "license": "user's own use",
                       "statement": "opened by the user, who confirmed they are authorized to analyze it",
                       "confirmed_at": time.time()},
             "context": {"file": None},
         }
-        description = (f"{info.get('format') or 'target'} · {info.get('architecture') or 'unknown'}"
-                       f" · {len(items)} work items")
+        work_items = f"{len(items)} work item" + ("" if len(items) == 1 else "s")
+        description = (f"{info.get('format') or 'target'} · {counts.get('entries')} entries · {work_items}"
+                       if inventory is not None and entries else
+                       f"{info.get('format') or 'target'} · {info.get('architecture') or 'unknown'} · {work_items}")
         now = time.time()
         names: set[str] = set()
         with self.store.tx() as db:
@@ -378,11 +402,18 @@ class RomNetwork(Network):
                               str(workdir), json.dumps(cfg))).lastrowid
             for item in items:
                 name = analysis.safe_name(item["name"], item.get("address"))
-                if name in names:
-                    name = f"{name}_{item['address']:X}"
+                if name in names:  # an archive can repeat a basename in two directories
+                    base, n = name, 2
+                    while name in names:
+                        name, n = f"{base}~{n}", n + 1
                 names.add(name)
-                meta = {"kind": "survey" if name == "survey" and not item.get("address") else "procedure",
-                        "address": item.get("address") or 0}
+                if item.get("kind") == "artifact-entry":
+                    meta = {"kind": "artifact-entry", "address": 0, **{k: item.get(k) for k in (
+                        "path", "entry_kind", "artifact_kind", "artifact_format", "sha256", "compressed_size",
+                        "executable", "encrypted")}}
+                else:
+                    meta = {"kind": "survey" if name == "survey" and not item.get("address") else "procedure",
+                            "address": item.get("address") or 0}
                 db.execute(
                     "INSERT INTO functions(project_id,name,size,n_insns,unit,vram,meta,status) VALUES(?,?,?,?,?,?,?,?)",
                     (pid, name, item.get("size") or 0, 0, item.get("unit") or "", item.get("address") or 0,
@@ -413,7 +444,7 @@ class RomNetwork(Network):
                                f"{', '.join(sorted(rea.ANALYSIS_ALLOWED))}")
         try:
             client = rea.analysis_client(cfg["target"], cfg.get("provider") or "")
-            value = client.call(tool, arguments or {}, timeout=1800)
+            value = client.call(tool, arguments or {}, timeout=1800, any_tool=True)
         except rea.ReaError as e:
             raise NetworkError(str(e)) from e
         return analysis.pretty(value)
@@ -438,6 +469,85 @@ class RomNetwork(Network):
         except rea.ReaError:
             pass
         return "\n".join(rows) or f"REA found no string or procedure matching {query!r}."
+
+    def analysis_read_entry(self, slug: str, entry: str, offset: int = 0, length: int = 256) -> str:
+        """Read one file inside an archive project, without extracting it to disk."""
+        _, cfg = self.analysis_cfg(slug)
+        if not cfg.get("artifact"):
+            raise NetworkError("this analysis project isn't an archive")
+        data = analysis.read_archive_entry((cfg.get("target") or {}).get("path") or "", entry,
+                                           max(0, int(offset)), max(1, min(int(length), 8192)))
+        if data is None:
+            raise NetworkError(f"no entry {entry!r} in this archive (or it couldn't be read)")
+        return f"{entry} + 0x{max(0, int(offset)):X} ({len(data)} bytes)\n" + analysis.preview_bytes(data, len(data))
+
+    def analysis_summary(self, slug: str) -> dict:
+        """Write SUMMARY.md: the target, every analyzed work item's finding, and what is still open."""
+        proj, cfg = self.analysis_cfg(slug)
+        target = cfg.get("target") or {}
+        artifact = cfg.get("artifact") or {}
+        rows = self.store.all(
+            "SELECT f.name, f.size, f.status, f.meta, f.matched_source, f.matched_at, a.name AS agent "
+            "FROM functions f LEFT JOIN agents a ON a.id=f.matched_agent_id "
+            "WHERE f.project_id=? ORDER BY f.status='matched' DESC, f.unit, f.name", proj["id"])
+        analyzed = [r for r in rows if r["status"] == "matched"]
+        pending = [r for r in rows if r["status"] != "matched"]
+        notes = self.store.all(
+            "SELECT n.text, n.created_at, a.name AS agent FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
+            "WHERE n.project_id=? AND n.function_id IS NULL ORDER BY n.id DESC", proj["id"])
+        now = time.time()
+        findings = f"{len(analyzed)} finding" + ("" if len(analyzed) == 1 else "s")
+        summary = (f"{len(analyzed)}/{len(rows)} work items analyzed · {findings}"
+                   + (f" · {artifact.get('entries')} archive entries" if artifact.get("entries") else ""))
+        lines = [f"# Analysis summary: {proj['name']}", "",
+                 f"Generated {time.strftime('%Y-%m-%d %H:%M:%S')} for project `{proj['slug']}`.", "",
+                 "## Target",
+                 f"- file: `{target.get('path') or ''}`",
+                 f"- format: {target.get('format') or 'file'} · kind: {target.get('kind') or 'target'}",
+                 f"- provider: {cfg.get('provider') or 'auto'}",
+                 f"- progress: {summary}"]
+        if artifact.get("entries"):
+            dirs, files = artifact.get("directories") or 0, artifact.get("files") or 0
+            lines.append(f"- archive: {artifact.get('entries')} entries · {files} file{'' if files == 1 else 's'} · "
+                         f"{dirs} director{'y' if dirs == 1 else 'ies'}")
+        lines += ["", "## Findings"]
+        if not analyzed:
+            lines += ["Nothing has been analyzed yet.", ""]
+        for row in analyzed:
+            meta = json.loads(row["meta"] or "{}")
+            path = meta.get("path") or row["name"]
+            lines += [f"### `{path}`"]
+            facts = [f"{row['size']} bytes"]
+            if meta.get("artifact_format"):
+                facts.append(str(meta["artifact_format"]))
+            if meta.get("sha256"):
+                facts.append(f"sha256 {meta['sha256']}")
+            lines.append("- " + " · ".join(facts))
+            when = _ago(row["matched_at"]) if row["matched_at"] else "earlier"
+            lines.append(f"- analyzed by {row['agent'] or 'an agent'} {when}")
+            lines += ["", (row["matched_source"] or "").strip() or "(no finding text)", ""]
+        if pending:
+            lines += ["## Still open"]
+            for row in pending:
+                meta = json.loads(row["meta"] or "{}")
+                label = meta.get("path") or row["name"]
+                lines.append(f"- `{label}` — {row['status']}")
+            lines.append("")
+        if notes:
+            lines += ["## Project notes"]
+            for note in notes:
+                lines.append(f"- {note['text'].strip()}" + (f" — {note['agent']}" if note["agent"] else ""))
+            lines.append("")
+        lines += ["", "## What this means",
+                  "The findings above are agent-written observations, not verified original source. Read the target "
+                  "again with REA when a claim matters, and add a task for anything still unanswered."]
+        markdown = "\n".join(lines).rstrip() + "\n"
+        path = Path(proj["root"]) / "SUMMARY.md"
+        path.write_text(markdown, encoding="utf-8")
+        self._update_cfg(slug, lambda c: c.__setitem__("summary", {"file": "SUMMARY.md", "generated_at": now}))
+        return {"slug": slug, "kind": "analysis", "title": proj["name"], "generated_at": now,
+                "summary": summary, "complete": bool(rows) and not pending,
+                "markdown": markdown, "path": str(path)}
 
     def analysis_read_data(self, slug: str, what: str, length: int = 64) -> str:
         _, cfg = self.analysis_cfg(slug)
@@ -474,19 +584,33 @@ class RomNetwork(Network):
                       fn["matched_source"].strip()]
         if meta.get("kind") == "task" and meta.get("brief"):
             lines += ["", "The user's task:", meta["brief"]]
-        try:
-            client = rea.analysis_client(target, cfg.get("provider") or "")
-            if meta.get("kind") == "procedure" and meta.get("address"):
-                dossier = client.call("analyze_function", {"procedure": f"0x{int(meta['address']):X}"}, timeout=1800)
-                lines += ["", analysis.dossier(dossier)]
-            else:
-                ov = client.call("binary_overview", {}, timeout=900)
-                segs = analysis.clean_segments(client.call("list_segments", {}, timeout=900))
-                lines += ["", "REA overview:", analysis.pretty(ov)]
-                if segs:
-                    lines += ["", "segments:", analysis.pretty(segs)]
-        except rea.ReaError as e:
-            lines += ["", f"REA couldn't read this item: {e}", "Try another view with rea_tool."]
+        if meta.get("kind") == "artifact-entry":
+            path = str(meta.get("path") or fn["name"])
+            lines += ["", f"archive entry: {path}", f"size: {fn['size']} bytes"]
+            if meta.get("sha256"):
+                lines.append(f"sha256: {meta['sha256']}")
+            if meta.get("executable"):
+                lines.append("executable: yes")
+            if meta.get("encrypted"):
+                lines.append("encrypted: yes")
+            data = analysis.read_archive_entry(target.get("path") or "", path, 0, 4096)
+            lines += ["", "entry preview (bounded):", "```", analysis.preview_bytes(data), "```"]
+            lines += ["", "Read more with read_artifact_entry(entry, offset, length); the archive inventory is "
+                          "available through rea_tool(\"inspect_artifact\", {})."]
+        else:
+            try:
+                client = rea.analysis_client(target, cfg.get("provider") or "")
+                if meta.get("kind") == "procedure" and meta.get("address"):
+                    dossier = client.call("analyze_function", {"procedure": f"0x{int(meta['address']):X}"}, timeout=1800)
+                    lines += ["", analysis.dossier(dossier)]
+                else:
+                    ov = client.call("binary_overview", {}, timeout=900)
+                    segs = analysis.clean_segments(client.call("list_segments", {}, timeout=900))
+                    lines += ["", "REA overview:", analysis.pretty(ov)]
+                    if segs:
+                        lines += ["", "segments:", analysis.pretty(segs)]
+            except rea.ReaError as e:
+                lines += ["", f"REA couldn't read this item: {e}", "Try another view with rea_tool."]
         notes = self.store.all(
             "SELECT n.text, n.created_at, a.name FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
             "WHERE n.function_id=? ORDER BY n.id DESC LIMIT 8", fn["id"])
@@ -499,9 +623,14 @@ class RomNetwork(Network):
         if pnotes:
             lines += ["", "### Project-wide notes"] + [f"- ({n['name']}) {n['text']}" for n in pnotes]
         if header == "CLAIMED":
-            lines += ["", "Next: investigate with rea_tool (search_strings, search_procedures, xrefs, list_segments…), "
-                          "write what matters with add_note, then complete_function(function, summary). "
-                          "Release it with notes if it needs someone else."]
+            if meta.get("kind") == "artifact-entry":
+                lines += ["", "Next: read_artifact_entry(entry, offset, length) for more of this file, write what "
+                              "matters with add_note, then complete_function(function, summary). Release it with "
+                              "notes if it needs someone else."]
+            else:
+                lines += ["", "Next: investigate with rea_tool (search_strings, search_procedures, xrefs, list_segments…), "
+                              "write what matters with add_note, then complete_function(function, summary). "
+                              "Release it with notes if it needs someone else."]
         return "\n".join(lines)
 
     def complete_analysis(self, agent: Agent, project: str | None, function: str, summary: str) -> str:
@@ -525,8 +654,16 @@ class RomNetwork(Network):
             db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
                        (proj["id"], fn["id"], agent.id, summary, now))
             self._event(db, proj["id"], agent.id, "analyze", fn["name"])
+        done = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status!='matched'",
+                              proj["id"])["n"] == 0
+        if done:
+            try:
+                self.analysis_summary(proj["slug"])
+            except Exception:
+                pass
         return (f"✅ {fn['name']} is analyzed and saved. Your finding is on it and in the project's notes. "
-                "Call claim_function for the next item, or add_note about the target as a whole.")
+                "Call claim_function for the next item, or add_note about the target as a whole."
+                + (" The project summary is in SUMMARY.md." if done else ""))
 
 
     def project_row(self, slug: str):
@@ -2804,7 +2941,10 @@ class RomNetwork(Network):
             "compiler": {"toolchain": "rea", "name": "REA", "flags": [], "installed": True,
                          "proprietary": False, "supported": True, "wsl": False, "why": None},
             "analysis": {"target": target, "counts": cfg.get("counts") or {}, "segments": cfg.get("segments") or [],
-                         "provider": cfg.get("provider") or "", "notes": notes},
+                         "provider": cfg.get("provider") or "", "notes": notes,
+                         "artifact": cfg.get("artifact") or {}},
+            "entries": (cfg.get("artifact") or {}).get("entries"),
+            "files": (cfg.get("artifact") or {}).get("files"),
             "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
             "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0,
             "releases": agg["releases"] or 0, "findings": notes,
@@ -2925,7 +3065,8 @@ class RomNetwork(Network):
                 r["status"] if r["status"] in ("matched", "asm") else
                 "working" if (r["agent"] or key(r) in remote) else "open")
             out.append({"name": r["name"], "vram": r["vram"], "size": r["size"], "insns": r["n_insns"],
-                        "unit": r["unit"], "status": status, "library": meta.get("library"),
+                        "unit": r["unit"], "kind": meta.get("kind") or "", "status": status,
+                        "library": meta.get("library"),
                         "best": r["best_score"], "attempts": r["attempts"], "hits": int(r["hits"] or 0),
                         "agent": r["agent"] or remote.get(key(r)), "matched_at": r["matched_at"],
                         "matched_by": r["matched_by"]})
