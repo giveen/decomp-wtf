@@ -2,13 +2,19 @@
 
 An analysis project is any target REA can open — a native binary, an APK, a .NET assembly, a JavaScript app, a
 firmware image, an archive — turned into the same project dashboard as a game. There is no compiler and no match
-score. Each work item is a procedure (or a task the user added), and an agent's job is to understand it and leave a
-precise finding.
+score. Each work item is a procedure, a regular file inside an archive, or a task the user added. An agent's job is
+to understand it and leave a precise finding.
+
+An archive project is one level of that: `claim_function()` gives you a file, `read_artifact_entry` reads it in place,
+and `complete_function` records the finding. The user can analyze a binary or nested archive from **Contents** as a
+linked child project; child findings are rolled into the parent's `SUMMARY.md`. Do not extract the whole archive or
+open a child yourself: read the claimed entry within its limits.
 
 ## The loop
 
 1. `claim_function()` gives you the next work item. For a procedure you get REA's dossier: signature, pseudocode,
-   assembly, callers and referenced strings/names. For the `survey` item you get the target overview and memory map.
+   assembly, callers and referenced strings/names. For an archive file you get its path, size, type and the
+   `read_artifact_entry` hint; for the `survey` item you get the target overview and memory map.
 2. Read the dossier before calling more tools. It often answers the question on its own.
 3. Go deeper with `rea_tool(tool, arguments)`. Useful tools:
    - `search_strings {"pattern": "..."}` and `search_procedures {"pattern": "..."}`: find things by name or text.

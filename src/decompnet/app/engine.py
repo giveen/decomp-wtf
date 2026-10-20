@@ -245,6 +245,9 @@ class RomNetwork(Network):
         self._roms: dict[int, tuple[bytes, list[split.Segment]]] = {}
         self._xrefs: dict[int, dict] = {}
         self._seed_lock = threading.Lock()
+        # ponytail: one archive extraction/import at a time. It is user-triggered and rare; this closes the
+        # same-entry race between two tabs without a per-entry lock map.
+        self._extract_lock = threading.Lock()
         self.links: dict = {}  # slug -> collab.Link, for projects joined from a friend's room
         self.rooms: dict = {}  # slug -> collab.Room, for projects this computer shares
         self._remote_ids: dict[str, int] = {}
@@ -601,7 +604,9 @@ class RomNetwork(Network):
         """The archive's files as a tree for the project page, including which entries already have child targets."""
         proj, cfg = self.analysis_cfg(slug)
         artifact = cfg.get("artifact") or {}
-        children = {str(c.get("entry")): c for c in cfg.get("children") or [] if isinstance(c, dict)}
+        known = {row["slug"] for row in self.store.all("SELECT slug FROM projects")}
+        children = {str(c.get("entry")): c for c in cfg.get("children") or []
+                    if isinstance(c, dict) and c.get("slug") in known}
         root = {"name": proj["name"], "path": "", "kind": "directory", "children": {}}
         for row in self.store.all("SELECT name, size, meta FROM functions WHERE project_id=?", proj["id"]):
             meta = json.loads(row["meta"] or "{}")
@@ -637,6 +642,10 @@ class RomNetwork(Network):
 
     def analyze_archive_entry(self, slug: str, entry: str, log=print) -> dict:
         """Extract one archive entry and open it as a linked analysis project. Never extracts the whole archive."""
+        with self._extract_lock:
+            return self._open_archive_entry(slug, entry, log)
+
+    def _open_archive_entry(self, slug: str, entry: str, log=print) -> dict:
         proj, cfg = self.analysis_cfg(slug)
         artifact = cfg.get("artifact") or {}
         if not artifact:
@@ -657,9 +666,20 @@ class RomNetwork(Network):
         if not tool:
             raise NetworkError(f"{entry} isn't a target type this app can open yet")
 
-        children = cfg.get("children") or []
+        children = []
+        for child in cfg.get("children") or []:
+            if not isinstance(child, dict) or not child.get("slug"):
+                continue
+            try:
+                self._project(child["slug"])
+            except NetworkError:
+                continue  # the child was removed: forget it and offer to open the entry again
+            children.append(child)
+        if len(children) != len(cfg.get("children") or []):
+            cfg["children"] = children
+            self._update_cfg(slug, lambda c: c.__setitem__("children", children))
         for child in children:
-            if isinstance(child, dict) and child.get("entry") == entry and child.get("slug"):
+            if child.get("entry") == entry:
                 log(f"{entry} is already open as {child['slug']}")
                 return {"slug": child["slug"], "entry": entry, "existing": True}
 
@@ -676,10 +696,16 @@ class RomNetwork(Network):
             extracted = sum(p.stat().st_size for p in extract_root.rglob("*") if p.is_file()) if extract_root.exists() else 0
             if extracted + size > analysis.MAX_EXTRACTED_BYTES:
                 raise NetworkError(f"this project already has {extracted // (1024 * 1024)} MiB of extracted files; "
-                                   f"the limit is {analysis.MAX_EXTRACTED_BYTES // (1024 * 1024)} MiB")
+                                   f"the limit is {analysis.MAX_EXTRACTED_BYTES // (1024 * 1024)} MiB. "
+                                   f"Delete old files in {extract_root} to free space")
             if shutil.disk_usage(proj["root"]).free < size + (64 * 1024 * 1024):
                 raise NetworkError("not enough free disk space for this entry")
             total, digest = analysis.extract_archive_entry(target_path, entry, dest)
+            if extracted + total > analysis.MAX_EXTRACTED_BYTES:
+                dest.unlink(missing_ok=True)
+                raise NetworkError(f"this project already has {extracted // (1024 * 1024)} MiB of extracted files; "
+                                   f"the limit is {analysis.MAX_EXTRACTED_BYTES // (1024 * 1024)} MiB. "
+                                   f"Delete old files in {extract_root} to free space")
             if sha and digest != sha:
                 dest.unlink(missing_ok=True)
                 raise NetworkError(f"{entry} changed while it was being extracted (hash mismatch)")
@@ -3224,7 +3250,9 @@ class RomNetwork(Network):
             "LEFT JOIN agents a ON a.id=c.agent_id LEFT JOIN agents m ON m.id=f.matched_agent_id "
             "WHERE f.project_id=? ORDER BY f.vram, f.unit, f.id", proj["id"])
         cfg = self.cfg(proj)
-        children = {str(c.get("entry")): c.get("slug") for c in cfg.get("children") or [] if isinstance(c, dict)}
+        known = {row["slug"] for row in self.store.all("SELECT slug FROM projects")}
+        children = {str(c.get("entry")): c.get("slug") for c in cfg.get("children") or []
+                    if isinstance(c, dict) and c.get("slug") in known}
         link = self.links.get(slug)
         # who works on what in the room: by address, or by name in a git project (its functions have no addresses)
         key = (lambda r: r["name"]) if link is not None and link.fork else (lambda r: r["vram"])

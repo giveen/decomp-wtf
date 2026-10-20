@@ -305,6 +305,7 @@ _ENTRY_TYPES = {
     ".apk": ("android", "APK", "inspect_android_package"),
     ".dex": ("android", "DEX", "open_binary"),
     ".js": ("javascript", "JavaScript", "analyze_javascript_application"),
+    ".asar": ("javascript", "Electron app", "open_binary"),
     ".mjs": ("javascript", "JavaScript", "analyze_javascript_application"),
     ".cjs": ("javascript", "JavaScript", "analyze_javascript_application"),
     ".wasm": ("wasm", "WASM", "open_binary"),

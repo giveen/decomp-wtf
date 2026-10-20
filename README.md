@@ -60,7 +60,7 @@ What stays from decomp.wtf:
 What this fork adds:
 
 - **[RE console](#inspect-anything):** a graphical front end for [REA](https://rea.tools)'s tool catalog, opened from
-  a project work item (or a PC function). Browse native binaries, Android apps, .NET assemblies, JavaScript and
+  a procedure work item (or a PC function). Browse native binaries, Android apps, .NET assemblies, JavaScript and
   Electron apps, web pages, firmware and plain files; functions, pseudocode, strings, flow graphs and call graphs,
   plus a generated form for every REA tool.
 - **Linux targets:** x86 and x86-64 ELF executables and shared libraries import and match like Windows programs.
@@ -81,6 +81,7 @@ compare loop, and everything else gets REA work items, the same agents, the same
 | **Match a PC program** | Import a Windows `.exe`/`.dll` or a Linux ELF program or `.so`, write C or C++, and compare the compiler's bytes with the original's. |
 | **Continue a public decomp** | Fork one of the community projects the app knows about and let agents carry on in the project's real source tree. |
 | **Inspect anything else** | Drop it like a game. If this app can't split or match it, REA opens it in a normal project: its procedures become work items, agents read them in parallel, and their findings land on the same dashboard. Add tasks for areas with no procedure of their own. |
+| **Look inside an archive** | Drop a ZIP, TAR or similar archive. Every regular file is a work item; **Contents** previews it, and a binary or nested archive can open as a linked child project. |
 | **Work together** | Host a room, invite people, and share matches, names, structs and notes without sharing the original file. |
 | **Use your own agent** | Claude Code, Codex, Antigravity CLI, opencode, an OpenAI-compatible endpoint, or any MCP client. |
 
@@ -239,8 +240,15 @@ picker falls back to REA, its procedures become work items, and agents claim the
 The project dashboard shows analyzed items, findings, agent output and the live map; **Add task** covers areas that
 have no procedure of their own.
 
-**RE console** is the deep viewer behind a project, not a separate mode: click a work item in an analysis project,
-or a function's **RE console** button in a PC project. It is also a manual front end for
+An **archive** is a project too (ZIP, TAR and their common variants). REA inventories it, every regular file becomes
+a work item, and the **Contents** panel shows the tree with a preview of each file. Analyze a binary or a nested
+archive from Contents to extract only that entry and open it as a linked child project; child targets appear under
+their parent in the sidebar, and their findings roll into the parent's `SUMMARY.md`. Text and assets stay readable
+in place. The extraction limits are deliberately generous for your own files: 2 GiB archive input, 20,000 entries,
+1 GiB uncompressed, 1000:1 per-entry compression, 256 MiB per entry and 512 MiB extracted per project.
+
+**RE console** is the deep viewer behind a project, not a separate mode: click a procedure work item in an analysis
+project, or a function's **RE console** button in a PC project. It is also a manual front end for
 [REA](https://rea.tools) (Reverse Engineer Anything), covering REA's whole catalog: native programs, Android apps,
 .NET assemblies, JavaScript and Electron apps, web pages, firmware and plain files. Nothing has to be a game, and
 nothing has to match.

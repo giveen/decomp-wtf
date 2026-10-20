@@ -666,6 +666,13 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             raise ValueError("name the archive entry to analyze")
         return {"job": jobs.start("analysis-entry", lambda log: net.analyze_archive_entry(slug, entry, log=log))}
 
+    def p_contents_read(slug, request, data):
+        entry = str(request.query_params.get("entry") or "")
+        if not entry:
+            raise ValueError("name the archive entry to read")
+        return net.analysis_read_entry(slug, entry, int(request.query_params.get("offset") or 0),
+                                       int(request.query_params.get("length") or 4096))
+
     def p_export(slug, request, data):
         def work(log):
             res = net.export_rom(slug, log=log)
@@ -777,6 +784,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/intake": (lambda s, r, d: net.write_intake(s, log=lambda *_: None), ["GET"]),
         "/api/summary": (lambda s, r, d: net.analysis_summary(s), ["GET"]),
         "/api/contents": (lambda s, r, d: net.analysis_contents(s), ["GET"]),
+        "/api/contents/read": (p_contents_read, ["GET"]),
         "/api/analysis/entry": (p_analyze_entry, ["POST"]),
         "/api/live": (p_live, ["GET"]),
         "/api/function": (lambda s, r, d: net.function_detail(s, r.query_params.get("name", "")), ["GET"]),

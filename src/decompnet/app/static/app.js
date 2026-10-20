@@ -81,7 +81,7 @@ const S = {
   projects: [],
 };
 const VIEWS = ["home", "catalog", "project", "agentsPage", "toolsPage", "settingsPage", "consolePage"];
-const CT = { slug: null, data: null, collapsed: new Set(), selected: null, pendingSelect: null, busy: false };
+const CT = { slug: null, data: null, collapsed: new Set(), selected: null, pendingSelect: null, preview: null, busy: false };
 const TABS = ["overview", "functions", "summary", "data", "agents", "activity", "team", "source", "settings"];
 
 /* The project folder in the computer's file manager (decomp.anything in Docker says where it is instead). */
@@ -144,15 +144,16 @@ async function loadNav() {
   }
   renderNav();
 }
-function navProject(p, child = false) {
+function navProject(p, child = false, level = 0) {
   const pct = p.kind === "analysis" ? (p.functions ? (100 * p.matched) / p.functions : 0) : p.bytes ? (100 * p.matched_bytes) / p.bytes : 0;
   const short = child ? `↳ ${p.entry || ""}` : PLAT_SHORT[p.platform] || (p.platform_name || "").replace("Nintendo ", "") || "?";
+  const cls = child ? ` child${level > 1 ? ` d${Math.min(level, 3)}` : ""}` : "";
   const state = p.working ? `<span class="dot on" title="${p.working} agent${p.working === 1 ? "" : "s"} working"></span>`
     : p.autopilot === "running" ? `<span class="dot work" title="autopilot running"></span>` : "";
-  if (p.broken) return `<a class="nav-proj broken${child ? " child" : ""}" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.broken)}">
+  if (p.broken) return `<a class="nav-proj broken${cls}" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.broken)}">
     <span class="np-top"><span class="np-name">${esc(p.title)}</span></span>
     <span class="np-meta"><span>can't be opened: hover for why</span></span></a>`;
-  return `<a class="nav-proj${child ? " child" : ""}" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.title)}">
+  return `<a class="nav-proj${cls}" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.title)}">
     <span class="np-top"><span class="np-name">${esc(p.title)}</span>${state}${p.room ? `<span class="np-room" title="${p.room === "host" ? "you share this project" : "in a team room"}">●●</span>` : ""}</span>
     <span class="np-meta"><span>${esc(short)}</span><span class="grow"></span><span>${p.kind === "fork" && !p.ready ? "set up" : pctNum(pct) + "%"}</span></span>
     <span class="np-bar"><i data-w="${pct.toFixed(2)}"></i></span></a>`;
@@ -162,7 +163,7 @@ function renderNav() {
   const box = $("navProjects");
   if (!S.projects.length) { box.innerHTML = `<p class="nav-empty">None yet: drop in a binary.</p>`; return; }
   const parents = S.projects.filter((p) => !p.parent);
-  const known = new Set(parents.map((p) => p.slug));
+  const known = new Set(S.projects.map((p) => p.slug));
   const kids = new Map();
   for (const p of S.projects) {
     if (!p.parent) continue;
@@ -170,7 +171,9 @@ function renderNav() {
     kids.get(p.parent).push(p);
   }
   const orphans = S.projects.filter((p) => p.parent && !known.has(p.parent));
-  box.innerHTML = [...parents, ...orphans].map((p) => navProject(p) + (kids.get(p.slug) || []).map((k) => navProject(k, true)).join("")).join("");
+  const tree = (p, child = false, level = 0) => navProject(p, child, level)
+    + (kids.get(p.slug) || []).map((k) => tree(k, true, level + 1)).join("");
+  box.innerHTML = [...parents, ...orphans].map((p) => tree(p)).join("");
   setWidths(box);
   markNav();
 }
@@ -716,7 +719,7 @@ function contentsRow(n, depth) {
   const type = dir ? "DIR" : (n.entry_format || n.entry_type || "FILE");
   const size = dir ? "" : bytes(n.size || 0);
   const child = n.child ? `<span class="contents-child">child</span>` : "";
-  return `<div class="contents-row${selected}${dir ? " dir" : ""}" data-cpath="${esc(n.path)}" style="--depth:${depth}" role="treeitem">
+  return `<div class="contents-row${selected}${dir ? " dir" : ""}" data-cpath="${esc(n.path)}" data-depth="${depth}" role="treeitem">
     ${caret}<span class="contents-type">${esc(type)}</span><span class="contents-name" title="${esc(n.path)}">${esc(n.name)}</span>
     <span class="contents-size">${esc(size)}</span><span class="contents-marks">${child}</span></div>`;
 }
@@ -747,6 +750,26 @@ function renderContentsDetail() {
   const n = CT.selected ? contentsFind(CT.data?.nodes, CT.selected) : null;
   box.hidden = !n;
   box.innerHTML = contentsDetail(n);
+  if (n && n.kind === "file") {
+    const pre = document.createElement("pre");
+    pre.className = "contents-preview";
+    pre.id = "contentsPreview";
+    pre.textContent = "Reading…";
+    box.append(pre);
+    loadContentsPreview(n.path);
+  }
+}
+
+async function loadContentsPreview(path) {
+  CT.preview = { slug: S.slug, path };
+  const pre = $("contentsPreview");
+  if (!pre) return;
+  try {
+    const text = await api(`/api/contents/read?slug=${encodeURIComponent(S.slug)}&entry=${encodeURIComponent(path)}&length=4096`);
+    if (CT.preview?.slug === S.slug && CT.preview.path === path && pre.isConnected) pre.textContent = text;
+  } catch (e) {
+    if (CT.preview?.slug === S.slug && CT.preview.path === path && pre.isConnected) pre.textContent = e.message;
+  }
 }
 
 function renderContentsTree() {
@@ -754,6 +777,7 @@ function renderContentsTree() {
   if (!CT.data) { box.innerHTML = `<p class="muted small">Reading the archive…</p>`; return; }
   const rows = contentsRows(CT.data.nodes);
   box.innerHTML = rows.length ? rows.join("") : `<p class="muted small">No files in this archive.</p>`;
+  box.querySelectorAll("[data-depth]").forEach((el) => el.style.setProperty("--depth", el.dataset.depth));
   $("contentsCount").textContent = `${(CT.data.entries || 0).toLocaleString()} entries · ${(CT.data.files || 0).toLocaleString()} files`;
   renderContentsDetail();
 }
@@ -765,7 +789,7 @@ async function renderContents() {
   }
   $("contentsPanel").hidden = false;
   if (CT.slug !== S.slug) {
-    CT.slug = S.slug; CT.data = null; CT.selected = null; CT.busy = false;
+    CT.slug = S.slug; CT.data = null; CT.selected = null; CT.preview = null; CT.busy = false;
     CT.collapsed = new Set();
   }
   try {
@@ -775,11 +799,11 @@ async function renderContents() {
     CT.data = data;
     if (fresh) CT.collapsed = new Set(contentsDirs(data.nodes));
     if (CT.pendingSelect) {
-      const selected = CT.pendingSelect;
+      const pending = CT.pendingSelect;
       CT.pendingSelect = null;
-      if (contentsFind(data.nodes, selected)) {
-        CT.selected = selected;
-        const parts = selected.split("/");
+      if (pending.slug === S.slug && contentsFind(data.nodes, pending.path)) {
+        CT.selected = pending.path;
+        const parts = pending.path.split("/");
         for (let i = 1; i < parts.length; i++) CT.collapsed.delete(parts.slice(0, i).join("/"));
       }
     }
@@ -2316,8 +2340,9 @@ async function openFn(name) {
     const f = S.map.find((x) => x.name === name);
     if (f && f.kind === "artifact-entry") {
       if (f.child) { location.hash = `#/p/${f.child}`; return; }
-      if (f.path) CT.pendingSelect = f.path;
-      location.hash = `#/p/${S.slug}/overview`;
+      if (f.path) CT.pendingSelect = { slug: S.slug, path: f.path };
+      const overview = `#/p/${S.slug}/overview`;
+      if (location.hash === overview) renderContents(); else location.hash = overview;
       return;
     }
     const t = (S.ov.analysis || {}).target || {};
