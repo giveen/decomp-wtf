@@ -95,7 +95,7 @@ def test_stripped_programs_split_from_eh_frame(built, tmp_path):
 
 def test_detects_linux_programs(built):
     picked = detect.identify(built)
-    assert picked.platform == "linux" and picked.filename == "program.elf"
+    assert picked.platform == "linux" and picked.filename == "prog"
 
 
 def test_import_and_match_through_the_engine(built):

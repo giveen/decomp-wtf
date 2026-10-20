@@ -65,6 +65,19 @@ def test_coff_relocations_point_at_named_symbols(built):
     assert [r.offset for r in fn.relocs] == [2, 10]
 
 
+def test_import_keeps_the_programs_name(built):
+    """The project folder gets the name the user picked, not a generic game.exe."""
+    exe, _obj = built
+    named = exe.with_name("My Game.exe")
+    shutil.copyfile(exe, named)
+    net = RomNetwork(exe.parent / "name.db", exe.parent)
+    slug = net.import_rom(named, confirmed=True, log=lambda *_: None)
+    proj = net.store.one("SELECT * FROM projects WHERE slug=?", slug)
+    root = Path(proj["root"])
+    assert (root / "My Game.exe").is_file()
+    assert json.loads(proj["config"])["rom"]["program"] == "My Game.exe"
+
+
 def test_import_and_match_through_the_engine(built):
     exe, _obj = built
     net = RomNetwork(built[0].parent / "decomp.db", built[0].parent)
