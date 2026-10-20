@@ -131,11 +131,25 @@ def root() -> Path:
     return Path(env).expanduser() if env else data_dir() / "toolchains"
 
 
+def _manifest(tid: str, linux: bool | None = None) -> Path:
+    """The manifest an install writes. A WSL install lives under wsl/, but an older one may be at the root."""
+    tc = get(tid)
+    if linux is None:
+        if tc.via_wsl:
+            wsl_dir = root() / "wsl" / tid
+            if (wsl_dir / MANIFEST).exists():
+                return wsl_dir / MANIFEST
+            legacy = root() / tid / MANIFEST
+            return legacy if legacy.exists() else wsl_dir / MANIFEST
+        linux = False
+    return (root() / "wsl" / tid if linux else root() / tid) / MANIFEST
+
+
 def path(tid: str, linux: bool | None = None) -> Path:
     """Where a toolchain is installed. `linux`: its Linux build for WSL (default: when that's how it runs here)."""
     if linux is None:
-        linux = tid in _registry_data() and get(tid).via_wsl
-    return root() / "wsl" / tid if linux else root() / tid
+        return _manifest(tid).parent
+    return (root() / "wsl" / tid if linux else root() / tid)
 
 
 def _windows_registry_paths() -> list[Path]:
@@ -219,7 +233,7 @@ def installed(tid: str, linux: bool | None = None) -> dict | None:
     tc = get(tid)
     if tc.system:
         return {"system": True, "id": tid} if system_binary(tc) else None
-    m = path(tid, linux) / MANIFEST
+    m = _manifest(tid, linux)
     return json.loads(m.read_text(encoding="utf-8")) if m.exists() else None
 
 

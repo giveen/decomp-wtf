@@ -56,6 +56,17 @@ def test_an_arm_computer_is_told_why_nothing_compiles(tc_root, monkeypatch):
     assert toolchains.unsupported_cpu() is None
 
 
+def test_a_wsl_toolchain_installed_at_the_legacy_path_is_found(tc_root, monkeypatch):
+    """An install made before WSL toolchains moved under wsl/ must not make the project say "not installed"."""
+    monkeypatch.setattr(toolchains, "current_platform", lambda: "windows-x86_64")
+    monkeypatch.setattr(toolchains.wsl, "wanted", lambda: True)
+    legacy = toolchains.root() / "gcc-2.7.2-kmc"
+    legacy.mkdir(parents=True)
+    (legacy / toolchains.MANIFEST).write_text(json.dumps({"id": "gcc-2.7.2-kmc"}))
+    assert toolchains.installed("gcc-2.7.2-kmc") == {"id": "gcc-2.7.2-kmc"}
+    assert toolchains.path("gcc-2.7.2-kmc") == legacy
+
+
 def test_a_compiler_installed_off_path_is_found(tmp_path, monkeypatch):
     """MSYS2/WinLibs/LLVM put the compiler in a known folder; reopening the app before PATH catches up still works."""
     bindir = tmp_path / "mingw64" / "bin"

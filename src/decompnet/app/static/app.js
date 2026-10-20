@@ -1011,7 +1011,7 @@ function renderCompilerNotice(ov) {
   n.className = "notice";
   n.innerHTML = ov.compiler.proprietary
     ? `<span><b>${esc(ov.compiler.name)}</b> isn't installed. It's proprietary software (recompiled by the decomp community); install it only if you accept that.</span><span class="grow"></span><button class="primary small-btn" id="tcInstall" type="button">Install…</button>`
-    : `<span><b>${esc(ov.compiler.name)}</b> isn't installed yet.${ov.compiler.wsl ? " It's a Linux program: on Windows it runs inside WSL 2 (one-time setup: <code>wsl --install</code> in an administrator PowerShell, then restart)." : ""}</span><span class="grow"></span><button class="primary small-btn" id="tcInstall" type="button">Install now</button>`;
+    : `<span><b>${esc(ov.compiler.name)}</b> isn't installed yet.${ov.compiler.wsl ? ` It's a Linux program: on Windows it runs inside WSL 2 (one-time setup: <code>wsl --install</code> in an administrator PowerShell, then restart and open Ubuntu once to finish — <a href="https://aka.ms/wslinstall" target="_blank" rel="noopener">guide</a>).` : ""}</span><span class="grow"></span><button class="primary small-btn" id="tcInstall" type="button">Install now</button>`;
   $("tcInstall").onclick = () => installToolchain(ov.compiler.toolchain, ov.compiler.proprietary);
 }
 
@@ -1324,10 +1324,33 @@ async function installToolchain(id, proprietary) {
     if (S.slug) renderStats(await api(`/api/project?slug=${S.slug}`));
     if (!$("toolsPage").hidden) renderTools();
   } catch (e) {
-    const text = esc(e.message);
-    const wsl = /WSL 2 (?:isn't installed|has no Linux distribution)/.test(e.message);
-    toast(wsl ? `${text} <a href="https://aka.ms/wslinstall" target="_blank" rel="noopener">Microsoft's WSL install guide</a>` : text, "err");
+    if (/WSL 2 (?:isn't installed|has no Linux distribution|didn't start)|WSL 1 can't run/.test(e.message)) {
+      if (!showWslSetup(e.message, id, proprietary)) {
+        toast(`${esc(e.message)} <a href="https://aka.ms/wslinstall" target="_blank" rel="noopener">Microsoft's WSL install guide</a>`, "err");
+      }
+      return;
+    }
+    toast(esc(e.message), "err");
   }
+}
+
+/* A WSL failure must stay on screen: installing WSL needs an administrator PowerShell and a restart. */
+function showWslSetup(message, id, proprietary) {
+  const n = $("compilerNotice");
+  if (!n || n.hidden) return false;
+  const command = /switch to WSL 2/.test(message) ? "wsl --set-default-version 2" : "wsl --install";
+  n.hidden = false;
+  n.className = "notice bad";
+  n.innerHTML = `<span><b>WSL 2 needs setup.</b> ${esc(message)}</span><span class="grow"></span>` +
+    `<button class="small-btn" id="wslCopy" type="button">Copy command</button>` +
+    `<a class="small-btn" href="https://aka.ms/wslinstall" target="_blank" rel="noopener">Microsoft guide</a>` +
+    `<button class="primary small-btn" id="wslRetry" type="button">Try again</button>`;
+  $("wslCopy").onclick = async () => {
+    try { await navigator.clipboard.writeText(command); toast("Copied. Run it in an administrator PowerShell.", "match"); }
+    catch { toast(command, "match"); }
+  };
+  $("wslRetry").onclick = () => installToolchain(id, proprietary);
+  return true;
 }
 
 /* ------------------------------------------------------------------ public decomps */
