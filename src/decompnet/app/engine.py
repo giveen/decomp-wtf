@@ -18,16 +18,18 @@ import json
 import logging
 import re
 import secrets
+import shutil
 import struct
 import threading
 import time
 from pathlib import Path
 
-from .. import scoring, seeds, similarity, toolchains
+from .. import rea, scoring, seeds, similarity, toolchains
 from ..elfobj import FunctionObj
-from ..network import Agent, Network, NetworkError, _hash_token
+from ..network import Agent, Network, NetworkError, _ago, _hash_token
 from ..rom import detect, match, pe, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
+from . import analysis
 
 DEFAULT_TOOLCHAIN = {"KMC": "gcc-2.7.2-kmc", "IDO": "ido-7.1", "PSYQ": "gcc-2.7.2-psx", "EEGCC": "ee-gcc-2.96",
                      "AGBCC": "agbcc"}
@@ -197,6 +199,265 @@ class RomNetwork(Network):
 
     def is_rom(self, proj) -> bool:
         return self.cfg(proj).get("kind") == "rom"
+
+    def is_analysis(self, proj) -> bool:
+        return self.cfg(proj).get("kind") == "analysis"
+
+    # ------------------------------------------------------------------ analysis projects (REA)
+
+    def analysis_cfg(self, slug: str) -> tuple:
+        proj = self._project(slug)
+        if not self.is_analysis(proj):
+            raise NetworkError(f"{slug} isn't an analysis project")
+        cfg = self.cfg(proj)
+        return proj, cfg
+
+    def import_analysis(self, path: str | Path, *, tool: str = "open_binary", arguments: dict | None = None,
+                        provider: str = "", confirmed: bool = False, copy_target: bool = False,
+                        log=print) -> str:
+        """Open anything with REA as a project: procedures become work items, and agents read them in parallel."""
+        if not confirmed:
+            raise NetworkError("confirm that you are authorized to analyze this target")
+        target_path = Path(path).expanduser().resolve()
+        if not target_path.is_file():
+            raise NetworkError(f"no file at {target_path}")
+        target = {"path": str(target_path), "tool": tool or "open_binary", "arguments": arguments or {}}
+        for row in self.store.all("SELECT slug, config FROM projects"):
+            cfg = json.loads(row["config"])
+            old = cfg.get("target") or {}
+            if cfg.get("kind") == "analysis" and old.get("path") == target["path"] and old.get("tool") == target["tool"]:
+                log(f"already imported as {row['slug']}")
+                return row["slug"]
+
+        log(f"opening {target_path.name} with REA ({target['tool']})…")
+        base = _slugify(target_path.stem or "analysis")
+        slug, n = base, 2
+        while self.store.one("SELECT 1 FROM projects WHERE slug=?", slug) or (self.workspace / slug).exists():
+            slug, n = f"{base}-{n}", n + 1
+        workdir = self.workspace / slug
+        workdir.mkdir(parents=True)
+        if copy_target:
+            kept = workdir / target_path.name
+            shutil.copy2(target_path, kept)
+            target_path = kept
+            target["path"] = str(target_path)
+        try:
+            attempts = [target["tool"]]
+            if target["tool"] == "open_binary":
+                suffix = target_path.suffix.lower()
+                extra = ({"inspect_firmware_regions" if suffix in (".bin", ".img", ".fw", ".rom")
+                          else "analyze_javascript_application" if suffix in (".js", ".asar")
+                          else "inspect_android_package" if suffix == ".apk"
+                          else "inspect_managed_artifact" if suffix in (".dll", ".exe")
+                          else None})
+                if extra:
+                    attempts.append(extra)
+            error = None
+            for tool in attempts:
+                try:
+                    target["tool"] = tool
+                    client, opened = rea.open_analysis(target, provider)
+                    break
+                except rea.ReaError as e:
+                    error = e
+            else:
+                raise error or rea.ReaError("REA couldn't open this target")
+            info = analysis.opened_target(opened, str(target_path))
+            try:
+                overview = client.call("binary_overview", {}, timeout=900)
+            except rea.ReaError:
+                overview = {}
+            try:
+                segments = analysis.clean_segments(client.call("list_segments", {}, timeout=900))
+            except rea.ReaError:
+                segments = []
+            try:
+                items = analysis.procedures(client.call("list_procedures", {}, timeout=900), segments)
+            except rea.ReaError:
+                items = []
+        except BaseException:
+            shutil.rmtree(workdir, ignore_errors=True)
+            raise
+        counts = analysis.overview_counts(overview)
+        if counts.get("segments") is None:
+            counts["segments"] = len(segments)
+        if counts.get("procedures") is None:
+            counts["procedures"] = len(items)
+        if not items:  # anything without a procedure inventory still gets one survey item
+            items = [{"name": "survey", "address": 0, "size": 0, "unit": ""}]
+            log("no procedures listed: the project starts with one survey task; add more tasks in the project")
+        log(f"{info.get('format') or 'target'} {info.get('architecture') or ''}: {len(items)} work items")
+
+        cfg = {
+            "kind": "analysis", "platform": "rea", "target": info | {"tool": target["tool"],
+                                                                      "arguments": target["arguments"]},
+            "provider": provider or "", "counts": counts, "segments": segments,
+            "legal": {"basis": "authorized", "license": "user's own use",
+                      "statement": "opened by the user, who confirmed they are authorized to analyze it",
+                      "confirmed_at": time.time()},
+            "context": {"file": None},
+        }
+        description = (f"{info.get('format') or 'target'} · {info.get('architecture') or 'unknown'}"
+                       f" · {len(items)} work items")
+        now = time.time()
+        names: set[str] = set()
+        with self.store.tx() as db:
+            pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) "
+                             "VALUES(?,?,?,?,?,?,?)",
+                             (slug, target_path.name, description, info.get("architecture") or "unknown", 0,
+                              str(workdir), json.dumps(cfg))).lastrowid
+            for item in items:
+                name = analysis.safe_name(item["name"], item.get("address"))
+                if name in names:
+                    name = f"{name}_{item['address']:X}"
+                names.add(name)
+                meta = {"kind": "survey" if name == "survey" and not item.get("address") else "procedure",
+                        "address": item.get("address") or 0}
+                db.execute(
+                    "INSERT INTO functions(project_id,name,size,n_insns,unit,vram,meta,status) VALUES(?,?,?,?,?,?,?,?)",
+                    (pid, name, item.get("size") or 0, 0, item.get("unit") or "", item.get("address") or 0,
+                     json.dumps(meta), "open"))
+            db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
+                       "VALUES(?,?,?,?,?,?,?)", (pid, 1, f"// REA analysis target: {target_path}\n", None,
+                                                  "analysis target", now, ""))
+            self._event(db, pid, None, "import", f"{len(items)} work items from {target_path.name}")
+        return slug
+
+    def add_analysis_task(self, agent: Agent | None, slug: str, name: str, brief: str = "") -> str:
+        proj, cfg = self.analysis_cfg(slug)
+        name = analysis.safe_name(name)
+        if self.store.one("SELECT 1 FROM functions WHERE project_id=? AND name=?", proj["id"], name):
+            raise NetworkError(f"{name!r} is already a work item")
+        now = time.time()
+        with self.store.tx() as db:
+            db.execute("INSERT INTO functions(project_id,name,size,n_insns,unit,vram,meta,status) VALUES(?,?,?,?,?,?,?,?)",
+                       (proj["id"], name, 0, 0, "", 0, json.dumps({"kind": "task", "brief": brief.strip()}), "open"))
+            self._event(db, proj["id"], agent.id if agent else None, "task", name)
+        return name
+
+    def analysis_tool(self, slug: str, tool: str, arguments: dict | None = None) -> str:
+        """Run one read-only REA tool on an analysis project's target."""
+        _, cfg = self.analysis_cfg(slug)
+        if tool not in rea.ANALYSIS_ALLOWED:
+            raise NetworkError(f"REA tool {tool!r} isn't available to agents; allowed: "
+                               f"{', '.join(sorted(rea.ANALYSIS_ALLOWED))}")
+        try:
+            client = rea.analysis_client(cfg["target"], cfg.get("provider") or "")
+            value = client.call(tool, arguments or {}, timeout=1800)
+        except rea.ReaError as e:
+            raise NetworkError(str(e)) from e
+        return analysis.pretty(value)
+
+    def analysis_search(self, slug: str, query: str) -> str:
+        _, cfg = self.analysis_cfg(slug)
+        try:
+            client = rea.analysis_client(cfg["target"], cfg.get("provider") or "")
+        except rea.ReaError as e:
+            raise NetworkError(str(e)) from e
+        rows: list[str] = []
+        try:
+            found = client.call("search_strings", {"pattern": query}, timeout=900)
+            if isinstance(found, list):
+                rows += [f"- string {analysis.summarize([r])}" for r in found[:40]]
+        except rea.ReaError:
+            pass
+        try:
+            found = client.call("search_procedures", {"pattern": query}, timeout=900)
+            if isinstance(found, list):
+                rows += [f"- procedure {analysis.summarize([r])}" for r in found[:40]]
+        except rea.ReaError:
+            pass
+        return "\n".join(rows) or f"REA found no string or procedure matching {query!r}."
+
+    def analysis_read_data(self, slug: str, what: str, length: int = 64) -> str:
+        _, cfg = self.analysis_cfg(slug)
+        address = what
+        try:
+            fn = self._function(what, slug)
+            address = f"0x{int(fn['vram']):X}"
+        except NetworkError:
+            pass
+        try:
+            value = rea.analysis_client(cfg["target"], cfg.get("provider") or "").call(
+                "read_bytes", {"address": address, "length": max(1, min(int(length), 512))}, timeout=900)
+        except rea.ReaError as e:
+            raise NetworkError(str(e)) from e
+        return analysis.pretty(value)
+
+    def _analysis_brief(self, fn, agent: Agent | None, header: str) -> str:
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        cfg = self.cfg(proj)
+        target = cfg.get("target") or {}
+        meta = json.loads(fn["meta"] or "{}")
+        claim = self.store.one("SELECT * FROM claims WHERE function_id=?", fn["id"])
+        lines = [f"## {header}: {proj['slug']}/{fn['name']}",
+                 f"target: {target.get('path')}",
+                 f"{target.get('format') or 'file'} · {target.get('architecture') or 'unknown'} · "
+                 f"{target.get('kind') or 'analysis target'}"]
+        if meta.get("address"):
+            lines.append(f"address: 0x{int(meta['address']):X}")
+        if claim:
+            who = "you" if agent and claim["agent_id"] == agent.id else self._agent_name(claim["agent_id"])
+            lines.append(f"claimed by {who}, lease expires in {int(claim['expires_at'] - time.time()) // 60} min")
+        if fn["status"] == "matched":
+            lines += [f"ANALYZED by {self._agent_name(fn['matched_agent_id'])} {_ago(fn['matched_at'])}:",
+                      fn["matched_source"].strip()]
+        if meta.get("kind") == "task" and meta.get("brief"):
+            lines += ["", "The user's task:", meta["brief"]]
+        try:
+            client = rea.analysis_client(target, cfg.get("provider") or "")
+            if meta.get("kind") == "procedure" and meta.get("address"):
+                dossier = client.call("analyze_function", {"procedure": f"0x{int(meta['address']):X}"}, timeout=1800)
+                lines += ["", analysis.dossier(dossier)]
+            else:
+                ov = client.call("binary_overview", {}, timeout=900)
+                segs = analysis.clean_segments(client.call("list_segments", {}, timeout=900))
+                lines += ["", "REA overview:", analysis.pretty(ov)]
+                if segs:
+                    lines += ["", "segments:", analysis.pretty(segs)]
+        except rea.ReaError as e:
+            lines += ["", f"REA couldn't read this item: {e}", "Try another view with rea_tool."]
+        notes = self.store.all(
+            "SELECT n.text, n.created_at, a.name FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
+            "WHERE n.function_id=? ORDER BY n.id DESC LIMIT 8", fn["id"])
+        if notes:
+            lines += ["", "### Notes from previous agents"] + [
+                f"- ({n['name']}, {_ago(n['created_at'])}) {n['text']}" for n in notes]
+        pnotes = self.store.all(
+            "SELECT n.text, a.name FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
+            "WHERE n.project_id=? AND n.function_id IS NULL ORDER BY n.id DESC LIMIT 5", proj["id"])
+        if pnotes:
+            lines += ["", "### Project-wide notes"] + [f"- ({n['name']}) {n['text']}" for n in pnotes]
+        if header == "CLAIMED":
+            lines += ["", "Next: investigate with rea_tool (search_strings, search_procedures, xrefs, list_segments…), "
+                          "write what matters with add_note, then complete_function(function, summary). "
+                          "Release it with notes if it needs someone else."]
+        return "\n".join(lines)
+
+    def complete_analysis(self, agent: Agent, project: str | None, function: str, summary: str) -> str:
+        fn = self._function(function, project)
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        if not self.is_analysis(proj):
+            raise NetworkError("complete_function is for analysis projects; compile_and_diff matches a game")
+        summary = summary.strip()
+        if not summary:
+            raise NetworkError("write the finding first: what this item does, what it calls, what matters")
+        if fn["status"] == "matched":
+            raise NetworkError(f"{fn['name']} is already analyzed")
+        now = time.time()
+        with self.store.tx() as db:
+            claim = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
+            if claim is None or claim["agent_id"] != agent.id:
+                raise NetworkError(f"you don't hold a claim on {fn['name']}")
+            db.execute("UPDATE functions SET status='matched', matched_source=?, matched_agent_id=?, matched_at=?, "
+                       "best_score=0, best_source=? WHERE id=?", (summary, agent.id, now, summary, fn["id"]))
+            db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
+            db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                       (proj["id"], fn["id"], agent.id, summary, now))
+            self._event(db, proj["id"], agent.id, "analyze", fn["name"])
+        return (f"✅ {fn['name']} is analyzed and saved. Your finding is on it and in the project's notes. "
+                "Call claim_function for the next item, or add_note about the target as a whole.")
+
 
     def project_row(self, slug: str):
         return self._project(slug)
@@ -840,6 +1101,7 @@ class RomNetwork(Network):
         if (fork := self.fork_slug(project)):
             return self.forks.list_functions(fork, status, limit)
         proj = self._project(project)
+        analysis = self.is_analysis(proj)
         where = "" if status == "all" else " AND f.status=?"
         args = [proj["id"]] + ([] if status == "all" else [status])
         rows = self.store.all(
@@ -847,16 +1109,29 @@ class RomNetwork(Network):
             f"LEFT JOIN claims c ON c.function_id=f.id LEFT JOIN agents a ON a.id=c.agent_id "
             f"WHERE f.project_id=?{where} ORDER BY f.vram LIMIT ?", *args, limit)
         if not rows:
-            return f"No {status} functions."
+            return f"No {status} {'work items' if analysis else 'functions'}."
+        if analysis:
+            return "\n".join(f"- {r['name']}" + (f" @0x{r['vram']:08X}" if r["vram"] else " (task)")
+                             + f": {r['status']}" + (f", claimed by {r['claimed_by']}" if r["claimed_by"] else "")
+                             for r in rows)
         return "\n".join(f"- {r['name']} @0x{r['vram']:08X}: {r['n_insns']} insns, {r['status']}"
                          + (f", best score {r['best_score']}" if r["best_score"] is not None else "")
                          + (f", claimed by {r['claimed_by']}" if r["claimed_by"] else "") for r in rows)
 
-    def inspect_binary(self, project: str | None, function: str, what: str = "") -> str:
-        """Windows targets: REA's dossier for a function (pseudocode, signature, callers), or decomp.wtf's own
-        assembly and cross references when REA isn't installed."""
+    def get_function(self, function: str, project: str | None = None, agent: Agent | None = None) -> str:
         fn = self._function(function, project)
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        if self.is_analysis(proj):
+            return self._analysis_brief(fn, agent, "VIEW")
+        return super().get_function(function, project, agent)
+
+    def inspect_binary(self, project: str | None, function: str, what: str = "") -> str:
+        """Windows targets: REA's dossier for a function (pseudocode, signature, callers), or decomp.wtf's own
+        assembly and cross references when REA isn't installed. Analysis projects: the work item's REA dossier."""
+        fn = self._function(function, project)
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        if self.is_analysis(proj):
+            return self._analysis_brief(fn, None, "VIEW")
         cfg = self.cfg(proj)
         if cfg.get("platform") not in X86_PLATFORMS:
             raise NetworkError("inspect_binary is for Windows and Linux programs: use get_function for this one")
@@ -880,8 +1155,10 @@ class RomNetwork(Network):
 
     def search_binary(self, project: str | None, query: str) -> str:
         """Strings and procedure names in a Windows target: REA's inventories when available, else what
-        decomp.wtf knows (symbol and function names)."""
+        decomp.wtf knows (symbol and function names). Analysis projects: REA's inventories."""
         proj = self._project(project)
+        if self.is_analysis(proj):
+            return self.analysis_search(proj["slug"], query)
         cfg = self.cfg(proj)
         if cfg.get("platform") not in X86_PLATFORMS:
             raise NetworkError("search_binary is for Windows and Linux programs")
@@ -899,8 +1176,10 @@ class RomNetwork(Network):
                 f"(REA is not available: {e}) decomp.wtf knows no symbol matching {query!r}."
 
     def read_data(self, project: str | None, what: str, length: int = 64) -> str:
-        self._rom_only(project, "read_data")
         proj = self._project(project)
+        if self.is_analysis(proj):
+            return self.analysis_read_data(proj["slug"], what, length)
+        self._rom_only(project, "read_data")
         syms = self.symbols(proj["id"])
         m = _ADDRESS.match(what.strip())
         addr = int(m.group(1), 16) if m else syms.resolve(what.strip())
@@ -1158,6 +1437,15 @@ class RomNetwork(Network):
             return None
 
     def claim(self, agent: Agent, project: str | None = None, function: str | None = None, strategy: str = "easiest") -> str:
+        try:
+            proj = self._project(project)
+        except NetworkError:
+            proj = None
+        if proj is not None and self.is_analysis(proj):
+            fn = self.claim_row(agent, proj["slug"], function, strategy)
+            if fn is None:
+                return f"Nothing left to claim in {proj['slug']} — every open item is analyzed or claimed. 🎉"
+            return self._analysis_brief(fn, agent, header="CLAIMED")
         if (fork := self.fork_slug(project)):
             return self.forks.claim(agent, fork, function, strategy)
         link = self._link(project)
@@ -1177,6 +1465,12 @@ class RomNetwork(Network):
         neighbours in the same file. Most small functions match on the first try, so an agent writes them all and
         judges them in one compile_and_diff: a fraction of the turns. Big functions come alone."""
         count = max(1, min(int(count or 1), 6))
+        try:
+            proj = self._project(project)
+        except NetworkError:
+            proj = None
+        if proj is not None and self.is_analysis(proj):
+            return self.claim(agent, project, None, strategy)
         if count == 1 or self._link(project) is not None:
             return self.claim(agent, project, None, strategy)
         proj = self._project(project)
@@ -1449,6 +1743,8 @@ class RomNetwork(Network):
 
     def export_rom(self, slug: str, log=print) -> dict:
         """Write a rebuildable source tree (the base for ports and mods) and prove it rebuilds the game."""
+        if self.is_analysis(self._project(slug)):
+            raise NetworkError("an analysis project has no source tree to export: its findings are notes on its work items")
         if self.fork_slug(slug):  # a fork's work is already in its source tree, committed
             return {"path": self._project(slug)["root"], "identical": None}
         from ..rom.export import export_rom
@@ -1490,6 +1786,8 @@ class RomNetwork(Network):
     def _overview(self, slug: str, proj) -> dict:
         if (fork := self.fork_slug(slug)):
             return self.forks.overview(fork)
+        if self.is_analysis(proj):
+            return self._analysis_overview(proj)
         cfg = self.cfg(proj)
         agg = self.store.one(
             "SELECT COUNT(*) AS total, SUM(status='matched') AS matched, SUM(size) AS bytes, "
@@ -1512,6 +1810,37 @@ class RomNetwork(Network):
             "export": cfg.get("export"),
             "exportable": cfg.get("platform", "n64") in ("n64", "psx", "ps2", "gba"),
             "binary": cfg.get("rom", {}).get("program") if cfg.get("platform") in X86_PLATFORMS else None,
+            "room": self._room_info(proj["slug"]),
+        }
+
+    def _analysis_overview(self, proj) -> dict:
+        cfg = self.cfg(proj)
+        target = cfg.get("target") or {}
+        agg = self.store.one(
+            "SELECT COUNT(*) AS total, SUM(status='matched') AS matched, SUM(size) AS bytes, "
+            "SUM(CASE WHEN status='matched' THEN size ELSE 0 END) AS matched_bytes, "
+            "SUM(attempts) AS attempts, SUM(abandons) AS releases FROM functions WHERE project_id=?", proj["id"])
+        notes = self.store.one("SELECT COUNT(*) AS n FROM notes WHERE project_id=?", proj["id"])["n"]
+        fmt = target.get("format") or "target"
+        arch = target.get("architecture") or "unknown"
+        return {
+            "slug": proj["slug"], "title": proj["name"], "description": proj["description"],
+            "kind": "analysis", "platform": "rea",
+            "platform_name": (fmt.upper() if fmt and fmt != "target" else "Binary"),
+            "compilers": [],
+            "rom": {"title": proj["name"], "game_code": "", "region": "", "size": target.get("size"),
+                    "sha1": target.get("sha256"), "byte_order": "", "compiler_guess": fmt},
+            "compiler": {"toolchain": "rea", "name": "REA", "flags": [], "installed": True,
+                         "proprietary": False, "supported": True, "wsl": False, "why": None},
+            "analysis": {"target": target, "counts": cfg.get("counts") or {}, "segments": cfg.get("segments") or [],
+                         "provider": cfg.get("provider") or "", "notes": notes},
+            "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
+            "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0,
+            "releases": agg["releases"] or 0, "findings": notes,
+            "context_version": 1,
+            "folder": proj["root"],
+            "export": None, "exportable": False,
+            "binary": target.get("path"),
             "room": self._room_info(proj["slug"]),
         }
 
@@ -1624,6 +1953,8 @@ class RomNetwork(Network):
         state = self.autopilots.get(slug)
         if state and state["state"] == "running":
             return state
+        if self.is_analysis(self._project(slug)):
+            raise NetworkError("autopilot is for matching projects: an analysis project's agents read the target with REA")
         # first the twins (identical code to something matched: every project), then machine drafts where m2c reads
         # the code and the project's headers are fit for them (ROM projects; games started from scratch)
         try:
@@ -1820,6 +2151,15 @@ class RomNetwork(Network):
             return self.forks.function_detail(fork, name)
         fn = self._function(name, slug)
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        if self.is_analysis(proj):
+            notes = self.store.all("SELECT n.text, n.created_at, a.name AS agent FROM notes n LEFT JOIN agents a "
+                                   "ON a.id=n.agent_id WHERE n.function_id=? ORDER BY n.id DESC LIMIT 10", fn["id"])
+            meta = json.loads(fn["meta"] or "{}")
+            return {"name": fn["name"], "vram": fn["vram"], "rom_offset": 0, "size": fn["size"],
+                    "insns": 0, "status": fn["status"], "best": fn["best_score"], "asm": "",
+                    "source": fn["matched_source"] or fn["best_source"], "source_kind": "analysis" if fn["matched_source"] else None,
+                    "scores": [], "notes": [dict(n) for n in notes], "calls": [], "called_by": [],
+                    "kind": meta.get("kind") or "procedure", "address": meta.get("address") or 0}
         attempts = self.store.all(
             "SELECT t.score, t.created_at, a.name AS agent FROM attempts t LEFT JOIN agents a ON a.id=t.agent_id "
             "WHERE t.function_id=? ORDER BY t.id", fn["id"])
@@ -1848,8 +2188,27 @@ class RomNetwork(Network):
 
     def stats(self, slug: str) -> dict:
         """Who did what and how fast: the overview's numbers (asked every few seconds, not every second)."""
-        pid = self._project(slug)["id"]
+        proj = self._project(slug)
+        pid = proj["id"]
         now = time.time()
+        if self.is_analysis(proj):
+            rows = self.store.all(
+                "SELECT a.name AS agent, COUNT(n.id) AS compiles, MAX(n.created_at) AS last FROM notes n "
+                "JOIN agents a ON a.id=n.agent_id WHERE n.project_id=? GROUP BY a.id", pid)
+            matched = {r["agent"]: r["n"] for r in self.store.all(
+                "SELECT a.name AS agent, COUNT(*) AS n FROM functions f JOIN agents a ON a.id=f.matched_agent_id "
+                "WHERE f.project_id=? AND f.status='matched' GROUP BY a.id", pid)}
+            board = [{"agent": r["agent"], "compiles": r["compiles"], "matched": matched.pop(r["agent"], 0), "last": r["last"]}
+                     for r in rows]
+            board += [{"agent": a, "compiles": 0, "matched": n, "last": None} for a, n in matched.items()]
+            board.sort(key=lambda r: (-r["matched"], -r["compiles"]))
+            per_hour = [0] * 24
+            for r in self.store.all("SELECT matched_at FROM functions WHERE project_id=? AND status='matched' "
+                                    "AND matched_at > ?", pid, now - 86400):
+                per_hour[23 - min(23, max(0, int((now - r["matched_at"]) // 3600)))] += 1
+            notes = self.store.one("SELECT COUNT(*) AS n FROM notes WHERE project_id=? AND created_at > ?",
+                                   pid, now - 3600)["n"]
+            return {"agents": board[:24], "matches_per_hour": per_hour, "compiles_last_hour": notes}
         rows = self.store.all(
             "SELECT a.name AS agent, COUNT(t.id) AS compiles, MAX(t.created_at) AS last FROM attempts t "
             "JOIN functions f ON f.id=t.function_id JOIN agents a ON a.id=t.agent_id WHERE f.project_id=? GROUP BY a.id", pid)
@@ -1893,9 +2252,11 @@ class RomNetwork(Network):
                 "claims": claims, "overview": self.overview(slug)}
 
     def set_compiler(self, slug: str, toolchain: str, flags: list[str] | None = None) -> None:
+        proj = self._project(slug)
+        if self.is_analysis(proj):
+            raise NetworkError("an analysis project doesn't compile: its agents read the target with REA")
         if self.fork_slug(slug):
             raise NetworkError("a fork builds with the project's own compilers and flags")
-        proj = self._project(slug)
         tc = toolchains.get(toolchain)
         cfg = self.cfg(proj)
         if not flags and cfg.get("platform") == "linux":

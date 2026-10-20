@@ -294,7 +294,7 @@ $("rcDecomp").onclick = async () => {
   if (!window.confirm("Start a byte-matching decomp project from this program?\n\nOnly for your own, legally obtained copy.")) return;
   try {
     const start = await api(`/api/import?path=${encodeURIComponent(RC.target.path)}&confirmed=1`, { method: "POST" });
-    rcSay("importing into decomp.wtf…");
+    rcSay("importing into decomp.anything…");
     const res = await followJob(start.job);
     loadNav();
     location.hash = `#/p/${res.slug}`;

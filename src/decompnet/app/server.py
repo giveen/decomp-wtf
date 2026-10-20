@@ -1,4 +1,4 @@
-"""The local decomp.wtf server: the GUI, its API, and the MCP endpoint agents connect to.
+"""The local decomp.anything server: the GUI, its API, and the MCP endpoint agents connect to.
 
 It listens on 127.0.0.1 only. The GUI needs a per-launch secret (handed to the browser in the URL the
 app opens, then kept in a same-site cookie); agents need their own bearer token. Host headers are
@@ -41,10 +41,18 @@ COOKIE = "decomp_live"
 MAX_DISC = 16 * 1024 * 1024 * 1024  # dual-layer DVD and then some
 
 
+def _analyze_instead(error: Exception) -> bool:
+    """A file this app can't split as a game or match as a program: REA can still open it as a project."""
+    text = str(error)
+    return any(phrase in text for phrase in (
+        "isn't a ROM, disc or game program", "isn't for x86/x86-64 Linux",
+        "too big for a ROM and isn't a disc image"))
+
+
 def file_log(path: Path) -> logging.Logger:
-    """decomp.wtf's own log (logs/decomp.log in its data folder): every job, what it said, and every error with its
+    """decomp.anything's own log (logs/decomp.log in its data folder): every job, what it said, and every error with its
     traceback, so a failed import can be reported with the whole story."""
-    logger = logging.getLogger("decomp.wtf")
+    logger = logging.getLogger("decomp.anything")
     if not any(getattr(h, "baseFilename", None) == str(path) for h in logger.handlers):
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +89,7 @@ def job_error(e: BaseException, log_path: Path | None = None) -> str:
     if isinstance(e, (NetworkError, RomError, toolchains.ToolchainError, ValueError, RuntimeError, OSError)):
         return str(e) or type(e).__name__
     where = f" (the log: {hostenv.shown_path(log_path)})" if log_path else ""
-    return (f"something went wrong inside decomp.wtf ({type(e).__name__}: {e}). That's a bug: please report it with "
+    return (f"something went wrong inside decomp.anything ({type(e).__name__}: {e}). That's a bug: please report it with "
             f"the log{where}")
 
 
@@ -92,7 +100,7 @@ class Jobs:
     def __init__(self, log_path: Path | None = None):
         self.jobs: dict[str, dict] = {}
         self.log_path = log_path
-        self.logger = file_log(log_path) if log_path else logging.getLogger("decomp.wtf")
+        self.logger = file_log(log_path) if log_path else logging.getLogger("decomp.anything")
 
     def start(self, kind: str, fn) -> str:
         jid = uuid.uuid4().hex[:12]
@@ -279,7 +287,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         agent = net.authenticate(auth.removeprefix("Bearer ").strip() or None)
         slug = manager.project_of(agent.id) or settings.data.get("last_project")
         if not slug:
-            raise NetworkError("no project is open in decomp.wtf; open a ROM in the app first")
+            raise NetworkError("no project is open in decomp.anything; open a ROM in the app first")
         return agent, slug
 
     threading.Thread(target=collab.local_addresses, daemon=True).start()  # `tailscale status` can take seconds
@@ -320,7 +328,11 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if net.is_chat(agent):
             return ListToolsResult(tools=everything)
         slug = manager.project_of(agent.id) or settings.data.get("last_project")
-        keep = set(tools.tool_names(bool(slug and net.fork_slug(slug))))
+        try:
+            analysis = bool(slug and net.is_analysis(net.project_row(slug)))
+        except NetworkError:
+            analysis = False
+        keep = set(tools.tool_names(bool(slug and net.fork_slug(slug)), analysis))
         return ListToolsResult(tools=[t for t in everything if t.name in keep])
 
     mcp._lowlevel_server.add_request_handler("tools/list", PaginatedRequestParams, scoped_tools)
@@ -329,7 +341,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if request.headers.get("host") not in allowed_hosts:
             return JSONResponse({"error": "bad host"}, status_code=403)
         if not secrets.compare_digest(request.cookies.get(COOKIE, ""), secret):
-            return JSONResponse({"error": "open decomp.wtf from the app or the `decomp` command"}, status_code=401)
+            return JSONResponse({"error": "open decomp.anything from the app or the `decomp` command"}, status_code=401)
         if write and request.headers.get("x-decomp") != "1":
             return JSONResponse({"error": "missing header"}, status_code=403)
         return None
@@ -356,14 +368,14 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         key = request.query_params.get("k")
         if key:
             if not secrets.compare_digest(key, secret):
-                return HTMLResponse("This link is from an earlier session. Open decomp.wtf again.", status_code=401)
+                return HTMLResponse("This link is from an earlier session. Open decomp.anything again.", status_code=401)
             resp = RedirectResponse("/", status_code=303)
             resp.set_cookie(COOKIE, secret, httponly=True, samesite="strict", max_age=30 * 86400)
             return resp
         if not secrets.compare_digest(request.cookies.get(COOKIE, ""), secret):
-            return HTMLResponse("<!doctype html><meta charset=utf-8><title>decomp.wtf</title>"
+            return HTMLResponse("<!doctype html><meta charset=utf-8><title>decomp.anything</title>"
                                 "<body style='font:16px system-ui;background:#0b0c0e;color:#e8e6e1;padding:3rem'>"
-                                "Open decomp.wtf from its app icon or by running <code>decomp</code>.", status_code=401)
+                                "Open decomp.anything from its app icon or by running <code>decomp</code>.", status_code=401)
         return HTMLResponse(_static("index.html").decode(), headers={"Cache-Control": "no-store"})
 
     @mcp.custom_route("/assets/{name:path}", methods=["GET"])
@@ -482,13 +494,20 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
         def work(log):
             try:
-                slug = net.import_rom(game, toolchain=toolchain, confirmed=True, name=name, log=log)
+                try:
+                    slug = net.import_rom(game, toolchain=toolchain, confirmed=True, name=name, log=log)
+                except RomError as e:
+                    if not isinstance(game, Path) or not _analyze_instead(e):
+                        raise
+                    log(f"{e}\nOpening it with REA instead: its functions become work items for the agents.")
+                    slug = net.import_analysis(game, confirmed=True, copy_target=uploaded, log=log)
             finally:
                 if uploaded:
                     shutil.rmtree(game.parent, ignore_errors=True)
             settings.data["last_project"] = slug
             settings.save()
-            autopilot(slug)
+            if not net.is_analysis(net.project_row(slug)):
+                autopilot(slug)
             return {"slug": slug}
         return JSONResponse({"job": jobs.start("import", work)})
 
@@ -522,7 +541,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     @mcp.custom_route("/api/log", methods=["GET"])
     async def api_log(request: Request) -> Response:
-        """The end of decomp.wtf's log, to read or attach to a bug report (the app's data folder isn't always at
+        """The end of decomp.anything's log, to read or attach to a bug report (the app's data folder isn't always at
         hand: in Docker it's inside the container)."""
         if (bad := guard(request)):
             return bad
@@ -635,6 +654,12 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             raise ValueError("write the note first")
         return {"message": net.add_note(agent, slug, text[:2000], str(data.get("function", "")) or None)}
 
+    def p_add_task(slug, request, data):
+        name = str(data.get("name", "")).strip()
+        if not name:
+            raise ValueError("name the task first")
+        return {"name": net.add_analysis_task(None, slug, name, str(data.get("brief", ""))[:4000])}
+
     def p_autopilot(slug, request, data):
         if data.get("action") == "stop":
             net.stop_autopilot(slug)
@@ -653,6 +678,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]),
+        "/api/analysis/task": (p_add_task, ["POST"]),
         "/api/stats": (lambda s, r, d: net.stats(s), ["GET"]),
     }
     for path, (fn, methods) in routes.items():
@@ -873,7 +899,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     @mcp.custom_route("/api/connect", methods=["GET", "POST"])
     async def api_connect(request: Request) -> Response:
-        """Your agents (Claude Code, Codex, ...) with decomp.wtf's tools: whether they have them, and adding them."""
+        """Your agents (Claude Code, Codex, ...) with decomp.anything's tools: whether they have them, and adding them."""
         if (bad := guard(request, write=request.method == "POST")):
             return bad
         if request.method == "POST":
@@ -892,7 +918,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 linked = list(pool.map(lambda a: a["installed"] and connect.status(a["id"]), found))
             return [{"id": a["id"], "name": a["name"], "installed": a["installed"], "connected": ok,
                      "command": connect.shown(a["id"])} for a, ok in zip(found, linked)]
-        if (host := hostenv.host_bridge()) is not None:  # the user's agents live outside decomp.wtf's Linux
+        if (host := hostenv.host_bridge()) is not None:  # the user's agents live outside decomp.anything's Linux
             return JSONResponse({"agents": [], "bridge": host, "host_bridge": host, **hostenv.info()})
         return JSONResponse({"agents": await anyio.to_thread.run_sync(rows), "bridge": connect.bridge_command()})
 
@@ -1011,7 +1037,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     @mcp.custom_route("/api/update", methods=["GET", "POST"])
     async def api_update(request: Request) -> Response:
-        """Whether a newer decomp.wtf is out (checked now and then; ?refresh=1 now) and, POSTed, installing it."""
+        """Whether a newer decomp.anything is out (checked now and then; ?refresh=1 now) and, POSTed, installing it."""
         if (bad := guard(request, write=request.method == "POST")):
             return bad
         if request.method == "POST":
@@ -1196,7 +1222,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     @mcp.custom_route("/api/service", methods=["GET", "POST"])
     async def api_service(request: Request) -> Response:
-        """Run decomp.wtf as a service that starts with the computer (keeps a team's room open)."""
+        """Run decomp.anything as a service that starts with the computer (keeps a team's room open)."""
         from . import service
 
         if (bad := guard(request, write=request.method == "POST")):

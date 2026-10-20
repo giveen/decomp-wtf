@@ -1,5 +1,5 @@
 "use strict";
-/* decomp.wtf GUI. Plain JS, no build step. Everything shown from agents or ROMs is untrusted text:
+/* decomp.anything GUI. Plain JS, no build step. Everything shown from agents or ROMs is untrusted text:
    it only ever reaches the page through textContent or esc(). */
 
 const $ = (id) => document.getElementById(id);
@@ -83,7 +83,7 @@ const S = {
 const VIEWS = ["home", "catalog", "project", "agentsPage", "toolsPage", "settingsPage", "consolePage"];
 const TABS = ["overview", "functions", "agents", "activity", "team", "source", "settings"];
 
-/* The project folder in the computer's file manager (decomp.wtf in Docker says where it is instead). */
+/* The project folder in the computer's file manager (decomp.anything in Docker says where it is instead). */
 function openFolder() {
   return api("/api/open", { method: "POST", body: { slug: S.slug } })
     .then((r) => { if (r && r.message) toast(esc(r.message)); })
@@ -145,9 +145,9 @@ async function loadNav() {
 }
 function renderNav() {
   const box = $("navProjects");
-  if (!S.projects.length) { box.innerHTML = `<p class="nav-empty">None yet: drop in a game.</p>`; return; }
+  if (!S.projects.length) { box.innerHTML = `<p class="nav-empty">None yet: drop in a binary.</p>`; return; }
   box.innerHTML = S.projects.map((p) => {
-    const pct = p.bytes ? (100 * p.matched_bytes) / p.bytes : 0;
+    const pct = p.kind === "analysis" ? (p.functions ? (100 * p.matched) / p.functions : 0) : p.bytes ? (100 * p.matched_bytes) / p.bytes : 0;
     const short = PLAT_SHORT[p.platform] || (p.platform_name || "").replace("Nintendo ", "") || "?";
     const state = p.working ? `<span class="dot on" title="${p.working} agent${p.working === 1 ? "" : "s"} working"></span>`
       : p.autopilot === "running" ? `<span class="dot work" title="autopilot running"></span>` : "";
@@ -181,7 +181,7 @@ async function showHome() {
   box.innerHTML = "";
   $("recent").hidden = !st.projects.length;
   for (const p of st.projects) {
-    const pct = p.bytes ? (100 * p.matched_bytes) / p.bytes : 0;
+    const pct = p.kind === "analysis" ? (p.functions ? (100 * p.matched) / p.functions : 0) : p.bytes ? (100 * p.matched_bytes) / p.bytes : 0;
     const a = document.createElement("a");
     a.className = "card";
     a.href = `#/p/${p.slug}`;
@@ -191,12 +191,14 @@ async function showHome() {
       box.append(a);
       continue;
     }
-    const meta = p.kind === "fork"
+    const meta = p.kind === "analysis"
+      ? `${esc(p.platform_name || "Binary")} · REA · ${(p.functions || 0).toLocaleString()} work items`
+      : p.kind === "fork"
       ? `${p.origin === "scratch" ? "from scratch" : "public decomp"}${p.version ? " · " + esc(p.version) : ""}${p.ready ? "" : " · needs setup"}`
       : `${esc(p.rom?.game_code || "")}${p.rom?.region ? " · " + esc(p.rom.region) : ""} · ${esc(p.compiler?.name || "")}`;
     a.innerHTML = `<div class="cc-top"><span class="plat">${esc(p.platform_name || "?")}</span><span class="meta">${esc(since(p.last_activity))}</span></div>
       <div><h4>${esc(p.title)}</h4><p class="meta">${meta}</p></div>
-      <div class="meter"><i></i></div><p class="meta"><b>${pctNum(pct)}%</b> of code · ${(p.matched || 0).toLocaleString()} / ${(p.functions || 0).toLocaleString()} functions</p>`;
+      <div class="meter"><i></i></div><p class="meta"><b>${pctNum(pct)}%</b> ${p.kind === "analysis" ? "analyzed" : "of code"} · ${(p.matched || 0).toLocaleString()} / ${(p.functions || 0).toLocaleString()} ${p.kind === "analysis" ? "work items" : "functions"}</p>`;
     box.append(a);
     requestAnimationFrame(() => { a.querySelector(".meter i").style.width = pct + "%"; });
   }
@@ -209,6 +211,8 @@ function resetDrop() {
   $("dropBusy").hidden = true;
   $("dropError").hidden = true;
   $("own").checked = false;
+  $("ownText").textContent = "This is my own copy of this game, obtained legally (for example, dumped from my own console or cartridge). The results stay with me for my own use.";
+  $("analyse").textContent = "Start decompiling";
   $("analyse").disabled = true;
   $("file").value = "";
 }
@@ -318,7 +322,7 @@ function identifyHead(head, file) {
   return null;
 }
 
-/* Files people try that decomp.wtf can't start from: say what they are and why, not just "no". */
+/* Files people try that decomp.anything can't start from: say what they are and why, not just "no". */
 function notSupported(head, file) {
   const text = (a, b) => String.fromCharCode(...head.slice(a, b));
   const ext = (file.name.match(/\.([^.]+)$/) || [])[1]?.toLowerCase() || "";
@@ -334,23 +338,44 @@ function notSupported(head, file) {
   if (ext === "pbp" || ext === "cso") return "That's a PSP file. PSP games aren't supported yet.";
   return null;
 }
-const NOT_A_GAME = "That isn't a game file decomp.wtf can start from scratch (yet). For other platforms, continue a public decomp.";
+const NOT_A_GAME = "That isn't a game file decomp.anything can start from scratch (yet). For other platforms, continue a public decomp.";
 
 async function pickFile(file) {
   const head = new Uint8Array(await file.slice(0, 0x9400).arrayBuffer());
-  let info = identifyHead(head, file), buf = file;
+  let info = identifyHead(head, file), buf = file, binary = false;
   if (!info) {
     const why = notSupported(head, file);
-    if (why || file.size > 64 * 1024 * 1024) return toast(esc(why || NOT_A_GAME), "err");
+    if (why) return toast(esc(why), "err");
+    if (file.size > 64 * 1024 * 1024) return toast("This file is too large to open through the browser: use its path instead.", "err");
     buf = await file.arrayBuffer();
     try { info = parseRom(buf); info.platform = "n64"; } catch (e) {
-      return toast(esc(NOT_A_GAME), "err");
+      binary = true;
+      info = { title: file.name, platform: "binary", order: "REA", size: file.size, code: "", region: "" };
+      buf = file;
     }
   }
   picked = { buf, info, name: file.name };
   if (!S.st) await loadState().catch(() => {});  // dropped before the page finished loading: the compiler lists
   $("romFile").textContent = file.name;
   $("romTitle").textContent = info.title;
+  $("ownText").textContent = "This is my own copy of this game, obtained legally (for example, dumped from my own console or cartridge). The results stay with me for my own use.";
+  $("analyse").textContent = "Start decompiling";
+  if (binary) {
+    $("romFacts").innerHTML = [["File", file.name], ["Format", "REA analysis"], ["Size", MB(file.size)], ["Agents", "work through its functions"]]
+      .map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("");
+    $("romStatus").hidden = false;
+    $("romStatus").className = "plat-status";
+    $("romStatus").innerHTML = `<b>REA analysis.</b> This isn't a game this app can split or match, so REA opens it: its functions become work items, and agents read them and record findings. Matching needs the original compiler and build.`;
+    $("ownText").textContent = "I'm authorized to analyze this file. The results stay with me for my own use.";
+    $("analyse").textContent = "Analyze with REA";
+    $("compilerRow").hidden = true;
+    $("compilerNote").hidden = true;
+    $("mwConsent").hidden = true;
+    $("dropIdle").hidden = true;
+    $("dropPicked").hidden = false;
+    updateAnalyse();
+    return;
+  }
   const p = info.platform;
   const facts = p === "n64"
     ? [["Game code", info.code || "—"], ["Region", info.region], ["Size", MB(info.size)], ["Format", info.order],
@@ -433,7 +458,7 @@ async function runImport(query, file, title, name = "") {
     let started;
     if (file instanceof Blob) {
       started = await uploadFile(`/api/import?${query}&name=${encodeURIComponent(name || file.name || "game.bin")}`, file,
-        (p) => { $("impUp").firstElementChild.style.width = (p * 100).toFixed(1) + "%"; $("busyTitle").textContent = p < 1 ? `Copying ${title.replace(/^\w+ /, "")} into decomp.wtf… ${(p * 100).toFixed(0)}%` : title; });
+        (p) => { $("impUp").firstElementChild.style.width = (p * 100).toFixed(1) + "%"; $("busyTitle").textContent = p < 1 ? `Copying ${title.replace(/^\w+ /, "")} into decomp.anything… ${(p * 100).toFixed(0)}%` : title; });
     } else {
       started = await api(`/api/import?${query}`, { method: "POST", raw: file ?? new ArrayBuffer(0) });
     }
@@ -460,7 +485,7 @@ function importFailed(name, e, logText) {
   $("errLog").textContent = [log, job.trace].filter(Boolean).join("\n\n") || "(nothing was logged)";
   $("errCopy").onclick = async () => {
     const st = S.st || {};
-    const report = [`decomp.wtf ${st.version || "?"}${st.build ? ` (${st.build})` : ""} · ${st.runtime || st.platform || navigator.platform}`,
+    const report = [`decomp.anything ${st.version || "?"}${st.build ? ` (${st.build})` : ""} · ${st.runtime || st.platform || navigator.platform}`,
       `Importing: ${name}`, `Error: ${e.message}`, "", "Log:", "```", log.split("\n").slice(-80).join("\n"), job.trace || "", "```"].join("\n");
     try { await navigator.clipboard.writeText(report); toast("Copied: paste it into a GitHub issue"); }
     catch { toast("Couldn't reach the clipboard: select the text under What happened instead", "err"); }
@@ -490,16 +515,16 @@ $("analyse").onclick = async () => {
 };
 $("pathPick").onclick = (e) => {
   e.stopPropagation();
-  const body = dialog("Use a file on this computer", `<p class="muted">For big disc images: decomp.wtf reads the file where it is instead of copying it through the browser.</p>
-    <label class="field"><span>Path to the game file</span><input id="ppPath" class="mono" placeholder="/home/me/games/my-game.iso"></label>
-    <label class="check"><input type="checkbox" id="ppOwn"><span>This is my own copy of this game, obtained legally. The results stay with me for my own use.</span></label>
-    <div class="row"><button class="primary" id="ppGo" type="button" disabled>Start decompiling</button><button class="ghost" data-close type="button">Cancel</button></div>`);
+  const body = dialog("Use a file on this computer", `<p class="muted">decomp.anything reads the file where it is: a disc image is never copied through the browser, and REA can open a binary of any size.</p>
+    <label class="field"><span>Path to the file</span><input id="ppPath" class="mono" placeholder="/home/me/games/my-game.iso"></label>
+    <label class="check"><input type="checkbox" id="ppOwn"><span>This is my own copy of the game, obtained legally, or a binary I'm authorized to analyze. The results stay with me for my own use.</span></label>
+    <div class="row"><button class="primary" id="ppGo" type="button" disabled>Open it</button><button class="ghost" data-close type="button">Cancel</button></div>`);
   body.querySelector("#ppOwn").onchange = () => { $("ppGo").disabled = !$("ppOwn").checked; };
   body.querySelector("#ppGo").onclick = () => {
     const path = $("ppPath").value.trim();
     if (!path) return;
     $("dialog").hidden = true;
-    runImport(`confirmed=1&path=${encodeURIComponent(path)}`, undefined, "Analysing your game…");
+    runImport(`confirmed=1&path=${encodeURIComponent(path)}`, undefined, "Opening your binary…");
   };
 };
 $("demoBtn").onclick = () => runImport("demo=1", undefined, "Opening Demo Quest 64…");
@@ -520,9 +545,27 @@ async function openProject(slug, tab = "overview") {
   }
   document.querySelectorAll("#ptabs [data-ptab]").forEach((a) => { a.href = `#/p/${slug}/${a.dataset.ptab}`; });
   const fork = S.ov.kind === "fork";
-  $("mapTitle").textContent = fork ? "Function map" : "ROM map";
-  $("mapHint").textContent = fork ? "Every square is a function, grouped by source file. Click one to see it." : "Every square is a function, in ROM order. Click one to see it.";
+  const analysis = S.ov.kind === "analysis";
+  $("mapTitle").textContent = analysis ? "Work map" : fork ? "Function map" : "ROM map";
+  $("mapHint").textContent = analysis ? "Every square is a procedure or task. Click one to read it." : fork ? "Every square is a function, grouped by source file. Click one to see it." : "Every square is a function, in ROM order. Click one to see it.";
   $("thAddr").textContent = fork ? "File" : "Address";
+  $("thInsns").textContent = analysis ? "Size" : "Instructions";
+  $("fnSearch").placeholder = analysis ? "Find a work item or address  ( / )" : "Find a function, address or file  ( / )";
+  $("fnTabLabel").textContent = analysis ? "Work items" : "Functions";
+  $("kpiMatchedLabel").textContent = analysis ? "Analyzed" : "Matched code";
+  $("kpiFnLabel").textContent = analysis ? "Work items" : "Functions";
+  $("kpiPaceLabel").textContent = analysis ? "Findings" : "Pace";
+  $("recentTitle").textContent = analysis ? "Recently analyzed" : "Recent matches";
+  $("recentAll").textContent = analysis ? "All analyzed" : "All matched";
+  $("boardTitle").textContent = analysis ? "Who analyzed what" : "Who matched what";
+  $("sourceTab").hidden = analysis;
+  $("teamTab").hidden = analysis;
+  $("addTask").hidden = !analysis;
+  $("thBest").hidden = analysis;
+  $("thTries").hidden = analysis;
+  $("addTask").onclick = analysis ? addAnalysisTask : null;
+  S.analysis = analysis;
+  if (analysis && (tab === "source" || tab === "team")) tab = "overview";
   groups.clear(); S.claimSig = "";
   L.q = ""; L.filter = "all"; L.limit = 200; $("fnSearch").value = "";
   $("instrEdit").value = S.ov.instructions || "";
@@ -542,6 +585,25 @@ async function openProject(slug, tab = "overview") {
   loadStats();
 }
 
+function addAnalysisTask() {
+  const body = dialog("Add a task", `<p class="muted">A task is a work item without an address: an area, a question or a goal for one agent. Procedures already in the target are listed as their own items.</p>
+    <label class="field"><span>Task</span><input id="taskName" placeholder="Map the update protocol"></label>
+    <label class="field"><span>Brief for the agent</span><textarea id="taskBrief" rows="5" placeholder="What to find out, where to start, what counts as done"></textarea></label>
+    <div class="row"><button class="primary" id="taskGo" type="button">Add task</button><button class="ghost" data-close type="button">Cancel</button></div>`);
+  body.querySelector("#taskGo").onclick = async (e) => {
+    const name = body.querySelector("#taskName").value.trim();
+    if (!name) return;
+    e.target.disabled = true;
+    try {
+      await api("/api/analysis/task", { method: "POST", body: { slug: S.slug, name, brief: body.querySelector("#taskBrief").value } });
+      $("dialog").hidden = true;
+      document.body.classList.remove("locked");
+      await refreshMap(true);
+      toast("Task added.", "match");
+    } catch (err) { toast(esc(err.message), "err"); e.target.disabled = false; }
+  };
+}
+
 function stopPolling() {
   if (S.timer) clearInterval(S.timer);
   if (S.statsTimer) clearInterval(S.statsTimer);
@@ -549,6 +611,7 @@ function stopPolling() {
 }
 
 function setTab(tab) {
+  if (S.ov && S.ov.kind === "analysis" && (tab === "source" || tab === "team")) tab = "overview";
   if (!TABS.includes(tab)) tab = "overview";
   S.tab = tab;
   document.querySelectorAll("#ptabs [data-ptab]").forEach((a) => { a.classList.toggle("on", a.dataset.ptab === tab); a.setAttribute("aria-selected", a.dataset.ptab === tab); });
@@ -683,10 +746,22 @@ function platformStatus(p) {
 }
 function markPlatforms() {
   const any = Object.keys((S.st && S.st.platform_status) || {}).length;
+  const installed = new Set(((S.st && S.st.toolchains) || []).filter((t) => t.installed).map((t) => t.id));
+  const needs = {
+    gc: ["mwcc"], wii: ["mwcc"], nds: ["mwccarm"],
+    n64: ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"],
+    psx: ["gcc-2.7.2-psx", "gcc-2.8.1-psx"], ps2: ["ee-gcc-2.96"], gba: ["agbcc"],
+    windows: ["mingw-x86_64", "mingw-x86", "clang-cl-x86_64", "clang-cl-x86"],
+    linux: ["gcc-linux-x86_64", "gxx-linux-x86_64", "clang-linux-x86_64", "clangxx-linux-x86_64",
+            "gcc-linux-x86", "gxx-linux-x86", "clang-linux-x86", "clangxx-linux-x86"],
+  };
   document.querySelectorAll("#platRow [data-p]").forEach((s) => {
     const rec = platformStatus(s.dataset.p) === "recommended";
+    const on = (needs[s.dataset.p] || []).some((id) => installed.has(id));
     s.classList.toggle("rec", rec);
-    s.title = rec ? "Recommended: the most tested path to a full decomp you can port and mod" : "Beta: works, less tested on real games";
+    s.classList.toggle("on", on);
+    s.title = rec ? "Recommended: the most tested path to a full decomp you can port and mod"
+      : on ? "Tools installed for this platform" : "Tools for this platform aren't installed yet";
     if (rec && !s.querySelector(".rec-mark")) s.insertAdjacentHTML("afterbegin", `<span class="rec-mark">★</span>`);
   });
   $("platLegend").hidden = !any;
@@ -694,19 +769,22 @@ function markPlatforms() {
 
 function renderHeader(ov) {
   const fork = ov.kind === "fork";
+  const analysis = ov.kind === "analysis";
   const chips = [`<span class="plat">${esc(ov.platform_name || "?")}</span>`];
-  if (platformStatus(ov.platform) === "beta") chips.push(`<span class="chip-s beta" title="This platform works and is tested on homemade games, less so on real ones yet">beta</span>`);
+  if (!analysis && platformStatus(ov.platform) === "beta") chips.push(`<span class="chip-s beta" title="This platform works and is tested on homemade games, less so on real ones yet">beta</span>`);
   if (ov.rom && ov.rom.game_code) chips.push(`<span class="chip-s mono">${esc(ov.rom.game_code)}</span>`);
   if (fork) chips.push(`<span class="chip-s">${ov.origin === "scratch" ? `from scratch · ${esc(LAYOUT[ov.platform] || "decomp")}` : "public decomp"}</span>`);
-  else if (ov.rom && ov.rom.region) chips.push(`<span class="chip-s">${esc(ov.rom.region)}</span>`);
+  else if (!analysis && ov.rom && ov.rom.region) chips.push(`<span class="chip-s">${esc(ov.rom.region)}</span>`);
   const comp = fork ? (ov.compiler_name ? cwName(ov.compiler_name) : "") : ov.compiler.name;
-  if (comp) chips.push(`<span class="chip-s" title="${esc(fork ? "" : ov.compiler.flags.join(" "))}">${esc(comp)}</span>`);
+  if (comp) chips.push(`<span class="chip-s" title="${esc(fork || analysis ? "" : ov.compiler.flags.join(" "))}">${esc(comp)}</span>`);
   $("phChips").innerHTML = chips.join("");
   $("phTitle").textContent = ov.title;
-  const pct = ov.bytes ? (100 * ov.matched_bytes) / ov.bytes : 0;
+  const pct = analysis ? (ov.functions ? (100 * ov.matched) / ov.functions : 0) : ov.bytes ? (100 * ov.matched_bytes) / ov.bytes : 0;
   $("phPct").textContent = pctNum(pct);
+  if ($("phPct").nextSibling) $("phPct").nextSibling.textContent = analysis ? "% analyzed" : "% of code";
   $("phBar").style.width = pct + "%";
   $("phSub").textContent = fork && !ov.ready ? "set up the project to start"
+    : analysis ? `${ov.matched.toLocaleString()} / ${ov.functions.toLocaleString()} work items analyzed · ${plural(ov.findings || 0, "finding")}`
     : `${ov.matched.toLocaleString()} / ${ov.functions.toLocaleString()} functions${linkedText(ov)} · ${plural(ov.attempts || 0, "compile")}${S.today ? ` · ${S.today} matched today` : ""}`;
   const w = workingAgents();
   $("phWorking").hidden = !w.n;
@@ -716,8 +794,7 @@ function renderHeader(ov) {
   const room = ov.room;
   const pill = $("phRoom");
   pill.hidden = !room;
-  // a project nobody shares yet: one click opens a room (a git project once it's set up)
-  $("phTogether").hidden = !!room || (S.ov.kind === "fork" && !S.ov.ready);
+  $("phTogether").hidden = analysis || !!room || (S.ov.kind === "fork" && !S.ov.ready);
   if (room) {
     const members = room.members || [];
     const online = members.filter((m) => m.online).length;
@@ -737,8 +814,8 @@ $("phTogether").onclick = () => openTogether();
    every option (an address of your own, approving members, who's in). */
 function openTogether() {
   const ov = S.ov, fork = ov.kind === "fork";
-  const body = dialog("Decompile together", `<p>Friends who own this game join from their own decomp.wtf, and their agents work with yours: nobody does the same function twice, and every match is checked here, against your copy, before it counts.</p>
-    <p class="muted small">${fork ? "They get this project's source tree from you and build it with their own copy of the game and their own compilers." : "Each of them brings their own copy, and decomp.wtf checks it's exactly this game."} Only the work travels between you, never the game. You decide who's in.</p>
+  const body = dialog("Decompile together", `<p>Friends who own this game join from their own decomp.anything, and their agents work with yours: nobody does the same function twice, and every match is checked here, against your copy, before it counts.</p>
+    <p class="muted small">${fork ? "They get this project's source tree from you and build it with their own copy of the game and their own compilers." : "Each of them brings their own copy, and decomp.anything checks it's exactly this game."} Only the work travels between you, never the game. You decide who's in.</p>
     <div class="field"><span>Who can join</span><div class="seg" id="tgVis"><button type="button" data-vis="private" class="on">Private: an invite link</button><button type="button" data-vis="public">Public: anyone with the address</button></div></div>
     <label class="check"><input type="checkbox" id="tgApprove"><span>I let each new member in (they wait until I say yes)</span></label>
     <div class="row"><button class="primary" id="tgGo" type="button">Open the room</button><a class="link small" href="#/p/${esc(S.slug)}/team">More options: your own address (LAN, Tailscale, a server)</a></div>
@@ -753,7 +830,7 @@ function openTogether() {
       const res = await followJob(job, body.querySelector("#tgLog"));
       body.querySelector("#tgLog").hidden = true;
       body.querySelector("#tgDone").innerHTML = `<p><b>The room is open.</b> Send this link to friends who own the game:</p>${cmdBox(res.link)}
-        <p class="muted small">They open decomp.wtf, choose <b>Join a team</b>, paste it and pick their own copy (or run <code>decomp join &lt;link&gt; &lt;their copy&gt; --name &lt;name&gt;</code>). The link works while this app is open; for a room that stays up, use your own address in the Team tab.</p>
+        <p class="muted small">They open decomp.anything, choose <b>Join a team</b>, paste it and pick their own copy (or run <code>decomp join &lt;link&gt; &lt;their copy&gt; --name &lt;name&gt;</code>). The link works while this app is open; for a room that stays up, use your own address in the Team tab.</p>
         <div class="row"><a class="primary small-btn as-btn" href="#/p/${esc(S.slug)}/team">See who's in</a></div>`;
       wireCopies(body.querySelector("#tgDone"));
       S.ov = await api(`/api/project?slug=${S.slug}`);
@@ -770,9 +847,12 @@ function linkedText(ov) {
 
 function renderStats(ov) {
   renderHeader(ov);
-  const pct = ov.bytes ? (100 * ov.matched_bytes) / ov.bytes : 0;
+  const analysis = ov.kind === "analysis";
+  const pct = analysis ? (ov.functions ? (100 * ov.matched) / ov.functions : 0) : ov.bytes ? (100 * ov.matched_bytes) / ov.bytes : 0;
   $("pct").textContent = pctNum(pct);
-  $("pctSub").textContent = (ov.bytes ? `${bytes(ov.matched_bytes)} of ${bytes(ov.bytes)}` : "") + linkedText(ov) + (S.today ? ` · ${S.today} matched today` : "");
+  $("pctSub").textContent = analysis
+    ? `${ov.matched.toLocaleString()} of ${ov.functions.toLocaleString()} work items analyzed · ${plural(ov.findings || 0, "finding")}`
+    : (ov.bytes ? `${bytes(ov.matched_bytes)} of ${bytes(ov.bytes)}` : "") + linkedText(ov) + (S.today ? ` · ${S.today} matched today` : "");
   $("fnCount").textContent = `${ov.matched.toLocaleString()} / ${ov.functions.toLocaleString()}`;
   renderAutopilot(ov);
   renderSteering(ov);
@@ -784,11 +864,18 @@ function renderStats(ov) {
 
 function renderCompilerNotice(ov) {
   const n = $("compilerNotice");
+  if (ov.kind === "analysis") {
+    const t = (ov.analysis || {}).target || {};
+    n.hidden = false;
+    n.className = "notice";
+    n.innerHTML = `<span><b>${esc(ov.platform_name || "Binary")}</b> · ${esc(t.path || "")} — REA reads this target; agents claim its procedures and record findings. No compiler is needed.</span>`;
+    return;
+  }
   const unc = ov.kind === "fork" && ov.ready ? ov.uncovered : null;
   if (unc && unc.functions) {
     n.hidden = false;
     n.className = "notice";
-    n.innerHTML = `<span><b>${unc.functions.toLocaleString()} functions</b> are in code no source file covers yet, so agents can't decompile them. decomp.wtf can give each stretch of code a file (checked against the game's checksum, committed to git).</span><span class="grow"></span><button class="primary small-btn" id="startFiles" type="button"${S.startingFiles ? " disabled" : ""}>${S.startingFiles ? "Splitting the game…" : "Give them source files"}</button>`;
+    n.innerHTML = `<span><b>${unc.functions.toLocaleString()} functions</b> are in code no source file covers yet, so agents can't decompile them. decomp.anything can give each stretch of code a file (checked against the game's checksum, committed to git).</span><span class="grow"></span><button class="primary small-btn" id="startFiles" type="button"${S.startingFiles ? " disabled" : ""}>${S.startingFiles ? "Splitting the game…" : "Give them source files"}</button>`;
     $("startFiles").onclick = async () => {
       S.startingFiles = true;
       renderCompilerNotice(ov);
@@ -827,8 +914,10 @@ function fnCounts() {
 /* The overview's numbers: function states, pace, who matched what, recent matches. */
 function renderOverview() {
   if (!S.ov || S.tab !== "overview") return;
+  const analysis = S.ov.kind === "analysis";
+  const label = analysis ? "analyzed" : "matched";
   const c = fnCounts(), total = Math.max(1, S.map.length);
-  const seg = (k, cls) => (c[k] ? `<i class="${cls}" data-w="${(100 * c[k]) / total}" title="${c[k]} ${k === "open" ? "to do" : k}"></i>` : "");
+  const seg = (k, cls) => (c[k] ? `<i class="${cls}" data-w="${(100 * c[k]) / total}" title="${c[k]} ${k === "open" ? "to do" : k === "matched" ? label : k}"></i>` : "");
   $("fnStack").innerHTML = seg("matched", "s-match") + seg("working", "s-work") + seg("tried", "s-tried") + seg("asm", "s-asm") + seg("open", "s-open");
   setWidths($("fnStack"));
   const togo = S.ov.functions - S.ov.matched;
@@ -837,16 +926,18 @@ function renderOverview() {
   if (st) {
     const ph = st.matches_per_hour, max = Math.max(1, ...ph);
     const last3 = ph.slice(-3).reduce((a, b) => a + b, 0) / 3;
-    $("paceNum").textContent = `${ph[23]}`;
-    $("paceBars").innerHTML = ph.map((n, i) => `<rect x="${i * 10 + 1}" y="${28 - Math.max(n ? 3 : 1, (26 * n) / max)}" width="8" height="${Math.max(n ? 3 : 1, (26 * n) / max)}" rx="1.5" class="${n ? "on" : ""}"><title>${n} matched ${23 - i ? `${23 - i} h ago` : "this hour"}</title></rect>`).join("");
-    $("paceSub").textContent = `matched in the last hour · ${plural(st.compiles_last_hour, "compile")}` + (last3 > 0 && togo > 0 ? ` · ≈ ${duration(togo / last3)} to go at this pace` : "");
+    $("paceNum").textContent = analysis ? `${st.compiles_last_hour}` : `${ph[23]}`;
+    $("paceBars").innerHTML = ph.map((n, i) => `<rect x="${i * 10 + 1}" y="${28 - Math.max(n ? 3 : 1, (26 * n) / max)}" width="8" height="${Math.max(n ? 3 : 1, (26 * n) / max)}" rx="1.5" class="${n ? "on" : ""}"><title>${n} ${label} ${23 - i ? `${23 - i} h ago` : "this hour"}</title></rect>`).join("");
+    $("paceSub").textContent = analysis
+      ? `${ph[23]} analyzed in the last hour · ${plural(st.compiles_last_hour, "note")}`
+      : `matched in the last hour · ${plural(st.compiles_last_hour, "compile")}` + (last3 > 0 && togo > 0 ? ` · ≈ ${duration(togo / last3)} to go at this pace` : "");
     $("board").innerHTML = st.agents.length ? st.agents.slice(0, 8).map((r) => `<li><span class="who">${esc(r.agent)}</span><span class="grow"></span>
-        <span class="mono small">${r.matched ? `<b class="ok">${r.matched.toLocaleString()}</b> matched · ` : ""}${plural(r.compiles, "compile")}</span></li>`).join("")
-      : `<li class="muted small">Nobody yet. Matches by agents, the autopilot and you show up here.</li>`;
+        <span class="mono small">${r.matched ? `<b class="ok">${r.matched.toLocaleString()}</b> ${label} · ` : ""}${plural(r.compiles, analysis ? "note" : "compile")}</span></li>`).join("")
+      : `<li class="muted small">Nobody yet. ${analysis ? "Findings" : "Matches"} by agents, the autopilot and you show up here.</li>`;
   }
   const recent = S.map.filter((f) => f.status === "matched" && f.matched_at).sort((a, b) => b.matched_at - a.matched_at).slice(0, 8);
   $("recentMatches").innerHTML = recent.length ? recent.map((f) => `<li><span class="ok">✓</span>${fnLink(f.name)}<span class="grow"></span><span class="muted small">${esc(f.matched_by || "")} · ${esc(since(f.matched_at))}</span></li>`).join("")
-    : `<li class="muted small">No matches yet.</li>`;
+    : `<li class="muted small">${analysis ? "No work item analyzed yet." : "No matches yet."}</li>`;
   $("recentMatches").querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn); });
 }
 
@@ -856,7 +947,8 @@ function renderAgentsKpi(ov) {
   const names = [...w.running.map((s) => s.label), ...w.outside];
   $("agSub").textContent = names.length ? names.slice(0, 4).join(", ") + (names.length > 4 ? ` +${names.length - 4}` : "") : "none working right now";
   const sp = ov.spend, n = ov.helper_matches || 0, budget = S.st?.settings?.budget_usd || 0;
-  $("spendSub").textContent = sp && sp.usd ? `${money(sp.usd)} spent${n ? ` · ${money(sp.usd / n)} per match` : ""}${budget ? ` · budget ${money(budget)}` : ""}`
+  const unit = ov.kind === "analysis" ? "finding" : "match";
+  $("spendSub").textContent = sp && sp.usd ? `${money(sp.usd)} spent${n ? ` · ${money(sp.usd / n)} per ${unit}` : ""}${budget ? ` · budget ${money(budget)}` : ""}`
     : sp && sp.tokens ? `${(sp.tokens / 1000).toFixed(0)}k tokens used` : budget ? `budget ${money(budget)}` : "";
 }
 
@@ -865,6 +957,26 @@ function renderNext(ov) {
   const box = $("nextStep");
   const w = workingAgents();
   const done = ov.functions > 0 && ov.matched >= ov.functions;
+  if (ov.kind === "analysis") {
+    if (done) {
+      box.hidden = false;
+      box.innerHTML = `<div class="next-text"><b>Every work item is analyzed.</b><span class="muted small">Add tasks to go deeper: a subsystem, a protocol, a question the current items don't cover.</span></div><button class="primary small-btn" id="nextTask" type="button">Add a task</button>`;
+      $("nextTask").onclick = addAnalysisTask;
+      return;
+    }
+    if (w.n || !S.st) { box.hidden = true; return; }
+    launcherInit();
+    const a = S.st.agents.find((x) => x.id === LZ.kind);
+    box.hidden = false;
+    box.innerHTML = `<div class="next-text"><b>Next: start your agents</b><span class="steps-line"><span class="ok">✓</span> Target opened: ${plural(ov.functions, "work item")}<span class="todo">○</span> Agents analyze in parallel</span></div>
+      ${a && (a.installed || a.id === "api") ? `<button class="primary" id="nextGo" type="button">${esc(launchLabel(a, LZ.model, LZ.count))}</button>` : ""}
+      <button class="ghost" id="nextPick" type="button">Choose agent &amp; model</button>`;
+    const go = $("nextGo");
+    if (go) go.onclick = () => a.id !== "api" ? startAgents(a, LZ.model, LZ.count, go)
+      : (LZ.eps || []).length ? startAgents(a, "", LZ.count, go, { endpoints: LZ.eps }) : showLaunch();
+    $("nextPick").onclick = () => showLaunch();
+    return;
+  }
   const compilerOk = ov.kind === "fork" || ov.compiler.installed;
   if (done) {
     box.hidden = false;
@@ -909,7 +1021,7 @@ async function renderTeam() {
   if (room && room.role === "guest") { renderGuest(box, room); teamTimer = setInterval(() => { if (S.tab === "team" && S.ov.room) renderGuest(box, S.ov.room); }, 4000); return; }
   if (S.ov.kind === "fork" && !S.ov.ready) {
     box.innerHTML = `<h2 class="pane-title">Decompile together</h2>
-      <p class="muted">Set the project up first (Overview): then friends who own the game can join it from their own decomp.wtf.</p>
+      <p class="muted">Set the project up first (Overview): then friends who own the game can join it from their own decomp.anything.</p>
       <div class="row"><button class="ghost" id="tmJoin" type="button">Join a team's room</button></div>`;
     $("tmJoin").onclick = openJoin;
     return;
@@ -947,7 +1059,7 @@ function renderGuest(box, room) {
 
 function renderHost(box, info) {
   const intro = `<h2 class="pane-title">Decompile together</h2>
-    <p class="muted">Your team works on this game from their own computers, each with <b>their own copy of exactly this game</b> (decomp.wtf checks it's identical) and their own agents. This computer is the room's host: it keeps the shared work and checks every match against your copy.${S.ov.kind === "fork" ? " Members get this project's source tree from you (only what git tracks: never your game or its extracted files) and follow every commit made here." : ""} Only the work travels, never ROM data. You host the room and decide who's in.</p>`;
+    <p class="muted">Your team works on this game from their own computers, each with <b>their own copy of exactly this game</b> (decomp.anything checks it's identical) and their own agents. This computer is the room's host: it keeps the shared work and checks every match against your copy.${S.ov.kind === "fork" ? " Members get this project's source tree from you (only what git tracks: never your game or its extracted files) and follow every commit made here." : ""} Only the work travels, never ROM data. You host the room and decide who's in.</p>`;
   const opts = (inf) => `<div class="setup-group"><h3>Who can join</h3>
       <div class="seg" id="visSeg"><button type="button" data-vis="private" class="${inf.settings.visibility !== "public" ? "on" : ""}">Private: invite link</button><button type="button" data-vis="public" class="${inf.settings.visibility === "public" ? "on" : ""}">Public: anyone with the address</button></div>
       <label class="check"><input type="checkbox" id="apprChk" ${inf.settings.approve ? "checked" : ""}><span>I let each new member in (they wait until you approve)</span></label></div>`;
@@ -988,7 +1100,7 @@ function renderHost(box, info) {
   const waiting = (info.pending || []).map((p) => `<div class="line-item"><div class="txt"><b>${esc(p.name)}</b><span>asks to join</span></div>
       <button class="primary small-btn" data-approve="${esc(p.name)}" type="button">Let in</button><button class="ghost small-btn" data-decline="${esc(p.name)}" type="button">Decline</button></div>`).join("");
   box.innerHTML = `${intro}<label class="field"><span>${info.settings.visibility === "public" ? "The room's address (anyone with it and their own copy of the game can join)" : "Invite link (send it to teammates who own this game)"}</span></label>${cmdBox(info.link || "")}
-    <p class="muted small">${info.mode === "address" ? "Shared at your own address: the room reopens by itself when this app restarts." : "Shared through a quick tunnel: the address changes if this app restarts."} Teammates choose <i>Join a team</i> in decomp.wtf, or run <code>decomp join &lt;link&gt; &lt;their copy&gt; --name &lt;name&gt;</code>.</p>
+    <p class="muted small">${info.mode === "address" ? "Shared at your own address: the room reopens by itself when this app restarts." : "Shared through a quick tunnel: the address changes if this app restarts."} Teammates choose <i>Join a team</i> in decomp.anything, or run <code>decomp join &lt;link&gt; &lt;their copy&gt; --name &lt;name&gt;</code>.</p>
     ${waiting ? `<div class="setup-group"><h3>Waiting to join</h3>${waiting}</div>` : ""}
     <div class="setup-group"><h3>In the room · ${members.length} member${members.length === 1 ? "" : "s"}, ${online} online</h3>${people || `<p class="muted small">Nobody yet.</p>`}</div>
     ${opts(info)}
@@ -1009,18 +1121,18 @@ function renderHost(box, info) {
     await api("/api/collab/stop", { method: "POST", body: { slug: S.slug } });
     renderHost(box, await api(`/api/collab?slug=${S.slug}`));
   };
-  serviceRow(box.querySelector("#svcRow"), "The room is open while decomp.wtf runs.");
+  serviceRow(box.querySelector("#svcRow"), "The room is open while decomp.anything runs.");
 }
 
-/* Start decomp.wtf with the computer (systemd user service, launchd, or a log-on task). */
+/* Start decomp.anything with the computer (systemd user service, launchd, or a log-on task). */
 function serviceRow(row, offText) {
   if (!row) return;
-  if (S.st && S.st.runtime === "docker") { row.innerHTML = `<span class="muted small">Docker keeps decomp.wtf running in the background.</span>`; return; }
-  if (S.st && S.st.runtime === "wsl") { row.innerHTML = `<span class="muted small">decomp.wtf runs while its window is open (the Start menu's decomp.wtf).</span>`; return; }
+  if (S.st && S.st.runtime === "docker") { row.innerHTML = `<span class="muted small">Docker keeps decomp.anything running in the background.</span>`; return; }
+  if (S.st && S.st.runtime === "wsl") { row.innerHTML = `<span class="muted small">decomp.anything runs while its window is open (the Start menu's decomp.anything).</span>`; return; }
   api("/api/service").then((sv) => {
     if (!row.isConnected) return;
-    row.innerHTML = sv.installed ? `<span class="ok-mark">decomp.wtf starts with this computer</span><button class="ghost small-btn" data-svc="remove" type="button">Don't</button>`
-      : `<span class="muted small grow">${esc(offText)}</span><button class="ghost small-btn" data-svc="install" type="button">Start decomp.wtf with this computer</button>`;
+    row.innerHTML = sv.installed ? `<span class="ok-mark">decomp.anything starts with this computer</span><button class="ghost small-btn" data-svc="remove" type="button">Don't</button>`
+      : `<span class="muted small grow">${esc(offText)}</span><button class="ghost small-btn" data-svc="install" type="button">Start decomp.anything with this computer</button>`;
     row.querySelector("[data-svc]").onclick = async (e) => {
       try {
         const r = await api("/api/service", { method: "POST", body: { action: e.target.dataset.svc } });
@@ -1032,7 +1144,7 @@ function serviceRow(row, offText) {
 }
 
 function openReconnect() {
-  const body = dialog("Reconnect to the room", `<p class="muted">When the host restarts decomp.wtf with a quick tunnel, their invite link changes. Paste the new one; you stay the same member and keep everything you've done.</p>
+  const body = dialog("Reconnect to the room", `<p class="muted">When the host restarts decomp.anything with a quick tunnel, their invite link changes. Paste the new one; you stay the same member and keep everything you've done.</p>
     <label class="field"><span>New invite link</span><input id="rLink" class="mono" placeholder="https://….trycloudflare.com/join/…"></label>
     <div class="row"><button class="primary" id="rGo" type="button">Reconnect</button></div><pre class="joblog" id="rLog" hidden></pre>`);
   body.querySelector("#rGo").onclick = async () => {
@@ -1049,7 +1161,7 @@ function openReconnect() {
 }
 
 function openJoin() {
-  const body = dialog("Join a team's room", `<p class="muted">Paste the invite link (or a public room's address), then pick <b>your own copy</b> of the same game. decomp.wtf checks it's identical to the host's; your copy itself is never sent.</p>
+  const body = dialog("Join a team's room", `<p class="muted">Paste the invite link (or a public room's address), then pick <b>your own copy</b> of the same game. decomp.anything checks it's identical to the host's; your copy itself is never sent.</p>
     <label class="field"><span>Invite link</span><input id="jLink" class="mono" placeholder="https://….trycloudflare.com/join/…"></label>
     <label class="field"><span>Your name in the room</span><input id="jName" maxlength="24" placeholder="e.g. alex"></label>
     <label class="field"><span>Your copy of the game</span><input id="jRom" type="file"></label>
@@ -1131,7 +1243,7 @@ function renderCatalog() {
   const rows = all.filter((p) => (!cat.plat || p.platform === cat.plat) && (cat.done || p.matched < 99.99)
     && (!q || `${p.name} ${p.id}`.toLowerCase().includes(q)));
   const when = cat.downloaded ? new Date(cat.downloaded * 1000).toLocaleDateString() : "earlier";
-  $("catNote").textContent = `${rows.length} of ${all.length} projects${cat.done ? "" : " (finished ones hidden)"}: the list decomp.wtf downloaded from decomp.dev ${cat.downloaded ? "on " + when : when}, before its directory was retired, with the progress of then. decomp.wtf isn't affiliated with these projects.`;
+  $("catNote").textContent = `${rows.length} of ${all.length} projects${cat.done ? "" : " (finished ones hidden)"}: the list decomp.anything downloaded from decomp.dev ${cat.downloaded ? "on " + when : when}, before its directory was retired, with the progress of then. decomp.anything isn't affiliated with these projects.`;
   $("catGrid").innerHTML = rows.slice(0, 240).map((p) => `<button class="cat-card" type="button" data-id="${esc(p.id)}">
       <div class="cc-top"><span class="plat">${esc(PLAT_SHORT[p.platform] || p.platform_name)}</span>${forked.has(p.repo_url) ? `<span class="badge matched">forked</span>` : p.matched >= 99.99 ? `<span class="badge">done</span>` : ""}</div>
       <h4>${esc(p.name)}</h4>
@@ -1169,12 +1281,12 @@ function policyHtml(pol) {
 }
 
 function openForkDialog(p) {
-  const body = dialog(`Fork ${p.name}`, `<p>decomp.wtf clones <a class="link" href="${esc(p.repo_url)}" target="_blank" rel="noopener">${esc(p.id)}</a> to this computer and sets it up for your agents.</p>
+  const body = dialog(`Fork ${p.name}`, `<p>decomp.anything clones <a class="link" href="${esc(p.repo_url)}" target="_blank" rel="noopener">${esc(p.id)}</a> to this computer and sets it up for your agents.</p>
     ${p.functions ? `<dl class="facts">${[["Platform", p.platform_name || "?"], ["Version", p.version || "the project's default"], ["Progress", `${p.matched.toFixed(1)}% of code`]]
       .map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>
       <p class="muted small">Progress as decomp.dev last listed it; <a class="link" href="https://decomp.dev/${esc(p.id)}" target="_blank" rel="noopener">its page there</a> has the project's history, files and contributors.</p>` : ""}
     <div id="forkPolicy"><p class="muted small">Reading what the project says about AI and contributions…</p></div>
-    <p class="muted small">Next you add <b>your own copy of the game</b>. Its code stays on your computer; your agent's provider sees the functions it works on. Setting up runs the project's own build scripts, as building it yourself would, so fork projects you trust. Matches are committed to a local <code>decomp-wtf</code> branch, and decomp.wtf never pushes it anywhere: anything you send upstream is up to you and the project's rules.</p>
+    <p class="muted small">Next you add <b>your own copy of the game</b>. Its code stays on your computer; your agent's provider sees the functions it works on. Setting up runs the project's own build scripts, as building it yourself would, so fork projects you trust. Matches are committed to a local <code>decomp-wtf</code> branch, and decomp.anything never pushes it anywhere: anything you send upstream is up to you and the project's rules.</p>
     <div class="row"><button class="primary" id="forkGo" type="button" disabled>Fork it</button><button class="ghost" data-close type="button">Cancel</button></div>
     <pre class="joblog" id="forkLog" hidden></pre>`);
   api("/api/fork/policy", { method: "POST", body: { repo: p.repo_url } }).catch((e) => ({ error: e.message, lines: [], files: [], lean: "silent" })).then((pol) => {
@@ -1221,8 +1333,8 @@ async function renderForkSetup() {
   box.innerHTML = `<p class="muted">Looking at the project…</p>`;
   let n;
   try { n = await api(`/api/fork/needs?slug=${S.slug}`); } catch (e) { box.innerHTML = `<p class="muted">${esc(e.message)}</p>`; return; }
-  const kinds = { manifest: "decomp.wtf manifest", dtk: "dtk-template (configure.py + ninja)", configure: "configure.py + ninja", splat: "splat + make", objdiff: "objdiff project", custom: "its own setup" };
-  const facts = `<dl class="facts one">${[["Repository", (S.ov.repo_url || "").replace(/^https?:\/\//, "") || "made by decomp.wtf"], ["Layout", kinds[n.kind] || n.kind], ["Version", n.version || "—"], ["Game goes to", n.path || "see the README"]]
+  const kinds = { manifest: "decomp.anything manifest", dtk: "dtk-template (configure.py + ninja)", configure: "configure.py + ninja", splat: "splat + make", objdiff: "objdiff project", custom: "its own setup" };
+  const facts = `<dl class="facts one">${[["Repository", (S.ov.repo_url || "").replace(/^https?:\/\//, "") || "made by decomp.anything"], ["Layout", kinds[n.kind] || n.kind], ["Version", n.version || "—"], ["Game goes to", n.path || "see the README"]]
     .map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>
     <div class="row"><button class="ghost small-btn" id="fsFolder" type="button">Open project folder</button></div>`;
   const run = async (start) => {
@@ -1252,7 +1364,7 @@ async function renderForkSetup() {
           <span class="muted small">or</span><input id="fsPath" class="mono grow" placeholder="paste its path on this computer"><button class="ghost" id="fsPathGo" type="button">Use path</button></div>
         <div class="upbar" id="fsUp" hidden><i></i></div>
         <pre class="joblog tall" id="fsLog" hidden></pre>
-        <p class="muted small">Then decomp.wtf runs the project's setup and build, which can download the project's own tools and take a few minutes. Put the game in place yourself? <button class="link-btn" id="fsBuild" type="button">Just build</button></p>
+        <p class="muted small">Then decomp.anything runs the project's setup and build, which can download the project's own tools and take a few minutes. Put the game in place yourself? <button class="link-btn" id="fsBuild" type="button">Just build</button></p>
       </div><aside class="fs-side">${facts}</aside>`;
     $("fsOwn").onchange = () => { $("fsGo").disabled = !$("fsOwn").checked; };
     $("fsGo").onclick = () => $("fsFile").click();
@@ -1419,10 +1531,12 @@ $("map").addEventListener("mousemove", (ev) => {
   const i = mapIndexAt(ev), tip = $("tip");
   if (i < 0) { tip.hidden = true; return; }
   const f = S.map[i];
+  const analysis = S.ov && S.ov.kind === "analysis";
   const p = pctOf(f.best, f.insns);
-  const status = f.status === "matched" ? `matched${f.matched_by ? " by " + esc(f.matched_by) : ""}` : f.status === "working" ? `${esc(f.agent)} is on it` : f.best != null ? `best ${pctText(p)}` : "not started";
-  const where = S.ov && S.ov.kind === "fork" ? esc(f.unit || "") : hex8(f.vram);
-  tip.innerHTML = `<b>${esc(f.name)}</b><br>${where} · ${f.insns} instructions<br>${status}`;
+  const status = f.status === "matched" ? `${analysis ? "analyzed" : "matched"}${f.matched_by ? " by " + esc(f.matched_by) : ""}` : f.status === "working" ? `${esc(f.agent)} is on it` : f.best != null ? `best ${pctText(p)}` : "not started";
+  const where = S.ov && S.ov.kind === "fork" ? esc(f.unit || "") : analysis && !f.vram ? "task" : hex8(f.vram);
+  const measure = analysis ? (f.size ? bytes(f.size) : "task") : `${f.insns} instructions`;
+  tip.innerHTML = `<b>${esc(f.name)}</b><br>${where} · ${measure}<br>${status}`;
   tip.hidden = false;
   const wrap = $("mapWrap").getBoundingClientRect();
   let left = ev.clientX - wrap.left + 14, top = ev.clientY - wrap.top + 14;
@@ -1697,14 +1811,17 @@ function eventHtml(ev) {
   switch (ev.kind) {
     case "claim": return `${who} started ${fnLink(d)}`;
     case "match": return `<span class="ok">✓</span> ${who} matched ${fnLink(d)}`;
+    case "analyze": return `<span class="ok">✓</span> ${who} analyzed ${fnLink(d)}`;
+    case "task": return `${who ? who + " " : ""}added the task ${esc(d)}`;
     case "link": return `<span class="ok">🔗</span> ${esc(d)} is linked: the game builds from its C, byte for byte`;
     case "release": return `${who} set ${fnLink(d)} aside, with notes for the next agent`;
+    case "note": return `${who}: ${esc(d)}`;
     case "expired": return `${fnLink(d)} was left unfinished`;
     case "context": return `${who} updated ${ev.agent ? "shared code" : "context"}: ${esc(d)}`;
     case "rename": return `${who} renamed ${esc(d)}`;
     case "split": return `${who} split ${esc(d)}`;
     case "files": return `${who ? who + " " : ""}gave code without a source file one: ${esc(d)}`;
-    case "import": return `ROM analysed: ${esc(d)}`;
+    case "import": return `Target opened: ${esc(d)}`;
     case "compiler": return `compiler set to ${esc(d)}`;
     case "collab": return esc(d);
     default: return `${who} ${esc(ev.kind)} ${esc(d)}`;
@@ -1806,7 +1923,7 @@ function addThoughts(sessions, first) {
     list.prepend(li);
   }
   while (list.children.length > 400) list.lastChild.remove();
-  if (!list.children.length) list.innerHTML = `<li class="placeholder"><time></time><span class="muted">Helper agents you start from decomp.wtf think out loud here.</span></li>`;
+  if (!list.children.length) list.innerHTML = `<li class="placeholder"><time></time><span class="muted">Helper agents you start from decomp.anything think out loud here.</span></li>`;
   else list.querySelector(".placeholder")?.remove();
 }
 
@@ -1830,6 +1947,14 @@ function highlightC(text) {
 }
 
 async function openFn(name) {
+  if (S.ov && S.ov.kind === "analysis") {
+    const f = S.map.find((x) => x.name === name);
+    const t = (S.ov.analysis || {}).target || {};
+    if (!t.path) return;
+    const fn = f && f.vram ? `&fn=0x${f.vram.toString(16)}` : "";
+    location.hash = `#/console?path=${encodeURIComponent(t.path)}${fn}`;
+    return;
+  }
   const again = S.fn === name && !$("drawer").hidden;
   if (!again) { giveBack(name); S.editDirty = false; $("tryMsg").hidden = true; }
   S.fn = name;
@@ -2100,9 +2225,10 @@ const STATE_RANK = { working: 0, tried: 1, open: 2, matched: 3, asm: 4 };
 
 function renderList() {
   if (!S.map.length || S.tab !== "functions") return;
+  const analysis = S.ov && S.ov.kind === "analysis";
   const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0 };
   for (const f of S.map) counts[fnState(f)]++;
-  $("fnFilter").innerHTML = FILTERS.map(([k, label]) => `<button type="button" role="radio" aria-checked="${L.filter === k}" class="${L.filter === k ? "on" : ""}" data-filter="${k}">${label}<span>${counts[k].toLocaleString()}</span></button>`).join("");
+  $("fnFilter").innerHTML = FILTERS.map(([k, label]) => `<button type="button" role="radio" aria-checked="${L.filter === k}" class="${L.filter === k ? "on" : ""}" data-filter="${k}">${analysis && k === "matched" ? "Analyzed" : label}<span>${counts[k].toLocaleString()}</span></button>`).join("");
   const q = L.q.trim().toLowerCase();
   let rows = S.map.filter((f) => (L.filter === "all" || fnState(f) === L.filter)
     && (!q || f.name.toLowerCase().includes(q) || hex8(f.vram).toLowerCase().includes(q) || (f.unit || "").toLowerCase().includes(q)));
@@ -2116,13 +2242,15 @@ function renderList() {
   $("fnRows").innerHTML = rows.slice(0, L.limit).map((f) => {
     const st = fnState(f), p = pctOf(f.best, f.insns);
     const best = st === "matched" ? `<span class="ok">100%</span>` : p == null ? `<span class="dim">–</span>` : pctText(p);
-    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">matched</span>` : st === "asm" ? `<span class="st" title="hand-written assembly: no C compiles to it">assembly</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
-      : st === "tried" ? `<span class="st tried">tried</span>` : `<span class="st">to do</span>`;
-    return `<tr data-fn="${esc(f.name)}" class="${S.fn === f.name ? "sel" : ""}" tabindex="0"><td class="mono dim">${fork ? esc(f.unit || "") : hex8(f.vram)}</td>
-      <td class="mono name">${(S.ov && (S.ov.priority || []).includes(f.name)) ? `<span class="star" title="agents take it next">★</span>` : ""}${esc(f.name)}</td><td class="r mono">${f.insns.toLocaleString()}</td><td class="r mono">${best}</td>
-      <td class="r mono">${f.attempts || `<span class="dim">0</span>`}</td><td>${status}</td></tr>`;
-  }).join("") || `<tr class="none"><td colspan="6">No function matches${q ? ` “${esc(L.q)}”` : ""}.</td></tr>`;
-  $("fnShown").textContent = rows.length > L.limit ? `${L.limit.toLocaleString()} of ${rows.length.toLocaleString()} shown` : plural(rows.length, "function");
+    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">${analysis ? "analyzed" : "matched"}</span>` : st === "asm" ? `<span class="st" title="hand-written assembly: no C compiles to it">assembly</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
+      : st === "tried" ? `<span class="st tried">tried</span>` : `<span class="st">${analysis ? "to do" : "to do"}</span>`;
+    const where = analysis ? (f.vram ? hex8(f.vram) : "task") : fork ? esc(f.unit || "") : hex8(f.vram);
+    const measure = analysis ? (f.size ? bytes(f.size) : "—") : f.insns.toLocaleString();
+    return `<tr data-fn="${esc(f.name)}" class="${S.fn === f.name ? "sel" : ""}" tabindex="0"><td class="mono dim">${where}</td>
+      <td class="mono name">${(S.ov && (S.ov.priority || []).includes(f.name)) ? `<span class="star" title="agents take it next">★</span>` : ""}${esc(f.name)}</td><td class="r mono">${measure}</td>
+      ${analysis ? "" : `<td class="r mono">${best}</td><td class="r mono">${f.attempts || `<span class="dim">0</span>`}</td>`}<td>${status}</td></tr>`;
+  }).join("") || `<tr class="none"><td colspan="${analysis ? 4 : 6}">No work item matches${q ? ` “${esc(L.q)}”` : ""}.</td></tr>`;
+  $("fnShown").textContent = rows.length > L.limit ? `${L.limit.toLocaleString()} of ${rows.length.toLocaleString()} shown` : plural(rows.length, analysis ? "work item" : "function");
   $("fnMore").hidden = rows.length <= L.limit;
   document.querySelectorAll(".fn-table th").forEach((th) => {
     th.classList.toggle("sorted", th.dataset.sort === L.sort || (th.dataset.sort === "vram" && L.sort === "i"));
@@ -2208,7 +2336,7 @@ $("askBtn").onclick = openConnect;
 $("talkBtn").onclick = openConnect;
 $("connectBtn").onclick = openConnect;
 
-/* Your own agent with decomp.wtf's tools: registered once, then you just ask it. */
+/* Your own agent with decomp.anything's tools: registered once, then you just ask it. */
 async function connectRows(box) {
   const render = (rows) => {
     box.innerHTML = rows.map((a) => `<div class="line-item"><div class="txt"><b>${esc(a.name)}</b><span class="mono">${esc(a.command)}</span></div>
@@ -2233,26 +2361,26 @@ async function connectRows(box) {
 const HOST_NAMES = { windows: "Windows", macos: "your Mac", linux: "this computer" };
 async function openConnect() {
   if (S.st && S.st.runtime && S.st.runtime !== "native") return openHostConnect();
-  const body = dialog("Use decomp.wtf from your AI agent", `<p>Connect the agent you already use, once. Then ask it in your terminal, for example:</p>
+  const body = dialog("Use decomp.anything from your AI agent", `<p>Connect the agent you already use, once. Then ask it in your terminal, for example:</p>
     ${cmdBox("decompile my game at ~/roms/game.z64")}
     <p class="muted small">It confirms the game is your own copy, imports it, opens this live view and works with every tool here: the byte-for-byte judge, the autopilot, helper agents, export. Anything it does shows up here as it happens.</p>
     <div class="setup-group" id="connectRows"><p class="muted small">Looking for your agents…</p></div>
     <div class="setup-group"><h3>Any other MCP client (Cursor, Claude Desktop, Windsurf, your own)</h3><pre class="code" id="bridgeJson"></pre>
-      <p class="muted small">It starts decomp.wtf when needed; no token, nothing to update when the app restarts.</p></div>`);
+      <p class="muted small">It starts decomp.anything when needed; no token, nothing to update when the app restarts.</p></div>`);
   const r = await connectRows(body.querySelector("#connectRows"));
   if (r) body.querySelector("#bridgeJson").textContent = JSON.stringify({ mcpServers: { decomp: { command: r.bridge[0], args: r.bridge.slice(1) } } }, null, 2);
 }
 
-/* decomp.wtf in WSL (Windows) or in Docker: the agents you talk to run on the computer itself, so they're
+/* decomp.anything in WSL (Windows) or in Docker: the agents you talk to run on the computer itself, so they're
    connected from there, by the `decomp` command the installer put on it. */
 async function openHostConnect() {
   const host = HOST_NAMES[S.st.host_os] || "your computer";
   const shell = S.st.host_os === "windows" ? "PowerShell" : "a terminal";
-  const body = dialog("Use decomp.wtf from your AI agent", `<p>Run this once in ${esc(shell)} on ${esc(host)}: it connects Claude Code, Codex, Antigravity CLI and opencode there.</p>
+  const body = dialog("Use decomp.anything from your AI agent", `<p>Run this once in ${esc(shell)} on ${esc(host)}: it connects Claude Code, Codex, Antigravity CLI and opencode there.</p>
     ${cmdBox("decomp connect")}
     <p>Then ask your agent, for example:</p>
     ${cmdBox(S.st.host_os === "windows" ? "decompile my game at C:\\Games\\game.z64" : "decompile my game at ~/roms/game.z64")}
-    <p class="muted small">decomp.wtf runs in ${S.st.runtime === "wsl" ? "its own WSL 2 Linux on Windows" : "Docker"}; your agent reaches it through the command below. Anything it does shows up here as it happens.</p>
+    <p class="muted small">decomp.anything runs in ${S.st.runtime === "wsl" ? "its own WSL 2 Linux on Windows" : "Docker"}; your agent reaches it through the command below. Anything it does shows up here as it happens.</p>
     <div class="setup-group"><h3>Any other MCP client (Cursor, Claude Desktop, Windsurf, your own)</h3><pre class="code" id="bridgeJson"></pre></div>`);
   try {
     const r = await api("/api/connect");
@@ -2264,7 +2392,8 @@ async function openHostConnect() {
 function renderSteering(ov) {
   const sp = ov.spend;
   const n = ov.helper_matches || 0;
-  $("spendLine").textContent = sp && sp.usd ? `· ${money(sp.usd)} spent${n ? ` · ${money(sp.usd / n)}/match` : ""}`
+  const unit = ov.kind === "analysis" ? "finding" : "match";
+  $("spendLine").textContent = sp && sp.usd ? `· ${money(sp.usd)} spent${n ? ` · ${money(sp.usd / n)}/${unit}` : ""}`
     : sp && sp.tokens ? `· ${(sp.tokens / 1000).toFixed(0)}k tokens` : "";
   $("instrState").textContent = ov.instructions ? "agents get these" : "none yet";
 }
@@ -2287,6 +2416,7 @@ function renderPrio() {
   const list = (S.ov && S.ov.priority) || [];
   const box = $("prioList");
   if (S.ov && S.ov.kind === "fork") { box.innerHTML = `<li class="muted small">Agents pick the easiest open functions first.</li>`; return; }
+  if (S.ov && S.ov.kind === "analysis") { box.innerHTML = `<li class="muted small">Nothing pinned: agents take the next open work item. Add tasks in Work items.</li>`; return; }
   box.innerHTML = list.length ? list.map((n) => `<li><span class="star">★</span>${fnLink(n)}<span class="grow"></span><button class="link-btn" data-unpin="${esc(n)}" type="button">remove</button></li>`).join("")
     : `<li class="muted small">Nothing pinned: agents take the easiest open functions first. Open a function and click ★ Next to put it first.</li>`;
   box.querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn); });
@@ -2297,6 +2427,7 @@ function renderPrio() {
    function's machine draft through the judge; the permuter works on near misses meanwhile. */
 function renderAutopilot(ov) {
   const box = $("autopilot"), ap = ov.autopilot, tw = ov.twins, pm = ov.permuter;
+  if (ov.kind === "analysis") { box.hidden = true; return; }
   const canRun = (ov.kind !== "fork" || ov.ready) && ov.functions - ov.matched > 0;
   box.hidden = !ap && !canRun && !tw && !pm;
   if (box.hidden) return;
@@ -2381,7 +2512,7 @@ function renderSource(ov) {
     $("srcState").innerHTML = "";
     return;
   }
-  $("srcText").innerHTML = "decomp.wtf writes a complete decompilation project: the matched functions as C, everything else as assembly, a linker script and <code>build.py</code>. Then it builds it to prove it rebuilds your game <b>byte for byte</b>. It's the base for ports and mods; game code and data stay out of git, so the tree is safe to put in a repository.";
+  $("srcText").innerHTML = "decomp.anything writes a complete decompilation project: the matched functions as C, everything else as assembly, a linker script and <code>build.py</code>. Then it builds it to prove it rebuilds your game <b>byte for byte</b>. It's the base for ports and mods; game code and data stay out of git, so the tree is safe to put in a repository.";
   const stale = ex && ex.matched != null && ex.matched < ov.matched;
   $("srcState").innerHTML = !ex ? `<span class="muted small">Not exported yet.</span>`
     : `<div class="src-line ${ex.identical === false ? "bad" : "ok"}">${ex.identical === false ? "✕ the last rebuild differed" : "✓ rebuilds byte for byte"}</div>
@@ -2411,13 +2542,20 @@ async function renderProjectSettings() {
   const ov = S.ov;
   if (!ov) return;
   const fork = ov.kind === "fork";
-  $("compilerPanel").hidden = fork;
-  if (!fork) {
+  const analysis = ov.kind === "analysis";
+  $("compilerPanel").hidden = fork || analysis;
+  if (!fork && !analysis) {
     if (!S.st) await loadState();
     fillCompilers($("setTc"), ov.compiler.toolchain, { n64: "N64", psx: "PS1", ps2: "PS2", gba: "GBA" }[ov.platform]);
     $("setFlags").value = ov.compiler.flags.join(" ");
   }
-  const facts = [["Platform", ov.platform_name], ["Game", ov.rom?.title || ov.title], [fork ? "Version" : "Game code", ov.rom?.game_code || ov.version],
+  const t = (ov.analysis || {}).target || {};
+  const facts = analysis ? [
+    ["Target", t.path], ["Format", t.format || "unknown"], ["Architecture", t.architecture || "unknown"],
+    ["Provider", (ov.analysis || {}).provider || "automatic"], ["Work items", `${ov.functions.toLocaleString()}`],
+    ["Analyzed", `${ov.matched.toLocaleString()}`], ["Findings", `${(ov.findings || 0).toLocaleString()}`],
+    ["Folder", ov.folder],
+  ] : [["Platform", ov.platform_name], ["Game", ov.rom?.title || ov.title], [fork ? "Version" : "Game code", ov.rom?.game_code || ov.version],
     !fork && ov.rom?.region ? ["Region", ov.rom.region] : null, fork ? ["Layout", ov.origin === "scratch" ? (LAYOUT[ov.platform] || "decomp") + " (from scratch)" : ov.fork_kind] : ["Compiler", `${ov.compiler.name} ${ov.compiler.flags.join(" ")}`],
     fork && ov.repo_url ? ["Repository", ov.repo_url.replace(/^https?:\/\//, "")] : null,
     ["Functions", `${ov.functions.toLocaleString()} (${bytes(ov.bytes || 0)} of code)`], ["Folder", ov.folder]].filter(Boolean);
@@ -2435,7 +2573,7 @@ $("setTcSave").onclick = async () => {
 };
 $("folderBtn").onclick = () => openFolder();
 $("deleteBtn").onclick = () => {
-  dialog("Remove project", `<p>Remove <b>${esc(S.ov.title)}</b> from decomp.wtf? Matched functions and notes are deleted.</p>
+  dialog("Remove project", `<p>Remove <b>${esc(S.ov.title)}</b> from decomp.anything? Matched functions and notes are deleted.</p>
     <label class="check"><input type="checkbox" id="delFiles"><span>Also delete the project folder (your ROM copy and exported sources in it)</span></label>
     <div class="row"><button class="primary" id="delGo" type="button">Remove</button><button class="ghost" data-close type="button">Cancel</button></div>`);
   $("delGo").onclick = async () => {
@@ -2486,7 +2624,7 @@ function renderAgentsPage() {
       <div class="row"><button class="primary small-btn" data-save type="button">${e.id ? "Save" : "Add"}</button>
         ${e.has_key ? `<button class="ghost small-btn" data-forget type="button">Forget the key</button>` : ""}
         ${e.id ? `<button class="ghost small-btn danger" data-remove type="button">Remove</button>` : eps.length ? `<button class="ghost small-btn" data-cancel type="button">Cancel</button>` : ""}</div></div>`;
-  $("apiBox").innerHTML = `<p class="muted small">Any OpenAI-compatible API runs through decomp.wtf's built-in agent loop: DeepSeek, OpenRouter, OpenAI, or models on your own machines with llama.cpp, Ollama or LM Studio. Save one endpoint per machine or provider: when you start agents you tick the ones to use, and the sessions are spread across them. Each key stays on this computer and is only sent to its own endpoint.</p>
+  $("apiBox").innerHTML = `<p class="muted small">Any OpenAI-compatible API runs through decomp.anything's built-in agent loop: DeepSeek, OpenRouter, OpenAI, or models on your own machines with llama.cpp, Ollama or LM Studio. Save one endpoint per machine or provider: when you start agents you tick the ones to use, and the sessions are spread across them. Each key stays on this computer and is only sent to its own endpoint.</p>
     ${eps.map(card).join("")}
     <div id="epNew" ${eps.length && !S.addingEndpoint ? "hidden" : ""}>${card({ provider: "custom" })}</div>
     ${eps.length && !S.addingEndpoint ? `<div class="row"><button class="ghost small-btn" id="epAdd" type="button">Add an endpoint</button></div>` : ""}
@@ -2563,12 +2701,12 @@ async function showSettingsPage() {
     <div class="field"><span>Projects live in</span>${cmdBox(st.home)}</div>`;
   const where = { wsl: " (in its own WSL 2 Linux)", docker: " (in Docker)" }[st.runtime] || "";
   const inst = st.install || {};
-  const from = inst.channel === "branch" ? `the ${esc(inst.branch)} branch @ <code>${esc((inst.commit || "?").slice(0, 7))}</code>` : "releases on decomp.wtf";
-  $("setAbout").innerHTML = `<p class="small">decomp.wtf ${esc(st.version)} on ${esc(st.platform)}${esc(where)}. Free and open source (MIT). Everything runs on this computer: no account, nothing sent to us.</p>
+  const from = inst.channel === "branch" ? `the ${esc(inst.branch)} branch @ <code>${esc((inst.commit || "?").slice(0, 7))}</code>` : "the upstream decomp.wtf release feed";
+  $("setAbout").innerHTML = `<p class="small">decomp.anything ${esc(st.version)} on ${esc(st.platform)}${esc(where)}. Free and open source (MIT). Everything runs on this computer: no account, nothing sent to us.</p>
     <div class="field"><span>Updates come from ${from}</span><div class="row"><span class="muted small grow" id="upText">Checking…</span><button class="ghost small-btn" id="upCheck" type="button">Check now</button></div></div>
-    <label class="check"><input type="checkbox" id="checkUpdateSet" ${st.settings.check_updates ? "checked" : ""}><span><b>Look for updates</b> now and then (it only asks ${inst.channel === "branch" ? "GitHub for the branch's newest commit" : "decomp.wtf which version is current"}; nothing about you or your projects is sent).</span></label>
+    <label class="check"><input type="checkbox" id="checkUpdateSet" ${st.settings.check_updates ? "checked" : ""}><span><b>Look for updates</b> now and then (it only asks ${inst.channel === "branch" ? "GitHub for the branch's newest commit" : "the upstream release feed which version is current"}; nothing about you or your projects is sent).</span></label>
     <label class="check"><input type="checkbox" id="autoUpdateSet" ${st.settings.auto_update ? "checked" : ""}><span><b>Install updates by itself</b> when no helper agent is working (it restarts in a few seconds; agents carry on).</span></label>
-    <div class="row"><a class="link small" href="https://decomp.wtf" target="_blank" rel="noopener">decomp.wtf</a><a class="link small" href="https://github.com/giveen/decomp.anything" target="_blank" rel="noopener">Source code</a></div>`;
+    <div class="row"><a class="link small" href="https://decomp.wtf" target="_blank" rel="noopener">decomp.wtf (upstream)</a><a class="link small" href="https://github.com/giveen/decomp.anything" target="_blank" rel="noopener">Source code</a></div>`;
   const showUpdate = (u) => {
     if (!$("upText") || !u) return;
     $("upText").textContent = u.error ? u.error : u.available ? `New: ${updateName(u)}` : u.disabled ? "Not looking for updates." : "Up to date.";
@@ -2581,10 +2719,10 @@ async function showSettingsPage() {
   };
   checkUpdate(false, false).then(showUpdate);
   $("upCheck").onclick = async () => { $("upText").textContent = "Checking…"; showUpdate(await checkUpdate(true, false)); };
-  $("checkUpdateSet").onchange = () => save({ check_updates: $("checkUpdateSet").checked }, $("checkUpdateSet").checked ? "decomp.wtf looks for updates." : "decomp.wtf won't look for updates (Check now still does).");
-  $("autoUpdateSet").onchange = () => save({ auto_update: $("autoUpdateSet").checked }, $("autoUpdateSet").checked ? "decomp.wtf installs updates by itself." : "decomp.wtf asks before updating.");
+  $("checkUpdateSet").onchange = () => save({ check_updates: $("checkUpdateSet").checked }, $("checkUpdateSet").checked ? "decomp.anything looks for updates." : "decomp.anything won't look for updates (Check now still does).");
+  $("autoUpdateSet").onchange = () => save({ auto_update: $("autoUpdateSet").checked }, $("autoUpdateSet").checked ? "decomp.anything installs updates by itself." : "decomp.anything asks before updating.");
   wireCopies($("setComputer"));
-  serviceRow($("svcRow2"), "decomp.wtf runs while you have it open.");
+  serviceRow($("svcRow2"), "decomp.anything runs while you have it open.");
   $("themeSeg").querySelectorAll("[data-theme]").forEach((b) => { b.onclick = () => { setTheme(b.dataset.theme); $("themeSeg").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b)); }; });
   const save = (body, msg) => api("/api/settings", { method: "POST", body }).then((s) => { S.st.settings = s; toast(msg); }).catch((e) => toast(esc(e.message), "err"));
   $("perSession").onchange = () => save({ per_session: Number($("perSession").value) }, "Saved.");
@@ -2601,7 +2739,7 @@ const updateTarget = (u) => (u && u.latest ? u.latest.commit || u.latest.version
 function updateName(u) {
   const l = u.latest || {}, c = u.current || {};
   if (c.channel === "branch") return `${c.branch} @ ${(l.commit || "").slice(0, 7)}${l.version && l.version !== c.version ? ` (${l.version})` : ""}`;
-  return `decomp.wtf ${l.version}`;
+  return `decomp.anything ${l.version}`;
 }
 async function checkUpdate(refresh = false, ask = true) {
   try { updateInfo = await api(`/api/update${refresh ? "?refresh=1" : ""}`); } catch { return null; }
@@ -2618,12 +2756,12 @@ function offerUpdate() {
   if (!u) return;
   const c = u.current || {};
   const notes = (u.notes || []).map((n) => `<li>${esc(n)}</li>`).join("");
-  const body = dialog("A new decomp.wtf is ready", `<p>${c.channel === "branch"
+  const body = dialog("A new decomp.anything is ready", `<p>${c.channel === "branch"
       ? `New on the <b>${esc(c.branch)}</b> branch: <code>${esc((u.latest.commit || "").slice(0, 7))}</code> (you have <code>${esc((c.commit || "?").slice(0, 7))}</code>).`
-      : `decomp.wtf <b>${esc(u.latest.version)}</b> is out. You have ${esc(c.version)}.`}</p>
+      : `decomp.anything <b>${esc(u.latest.version)}</b> is out. You have ${esc(c.version)}.`}</p>
     ${notes ? `<ul class="up-notes">${notes}</ul>` : ""}
     ${u.link ? `<p class="small"><a class="link" href="${esc(u.link)}" target="_blank" rel="noopener">Every change</a></p>` : ""}
-    <p class="muted small">${u.can_apply ? "One click: decomp.wtf installs it and restarts by itself, and this tab follows along. Helper agents pause for a moment and carry on." : esc(u.why_not)}</p>
+    <p class="muted small">${u.can_apply ? "One click: decomp.anything installs it and restarts by itself, and this tab follows along. Helper agents pause for a moment and carry on." : esc(u.why_not)}</p>
     <div class="row"><button class="primary" id="upGo" type="button" ${u.can_apply ? "" : "disabled"}>Update now</button><button class="ghost" id="upLater" type="button">Later</button></div>`);
   body.querySelector("#upLater").onclick = () => {
     try { localStorage.setItem(UPDATE_SKIP, updateTarget(u)); } catch { /* storage off */ }
@@ -2639,7 +2777,7 @@ async function showUpdating() {
   if (S.updating) return;
   S.updating = true;
   const was = { version: S.st ? S.st.version : "", build: S.st ? S.st.build || "" : "" };
-  dialog("Updating decomp.wtf", `<p id="upStep">Installing the update…</p><pre class="joblog tall" id="upLog"></pre>
+  dialog("Updating decomp.anything", `<p id="upStep">Installing the update…</p><pre class="joblog tall" id="upLog"></pre>
     <p class="muted small">This tab reloads by itself once the new version is running.</p>`);
   let away = 0;
   for (;;) {
@@ -2660,7 +2798,7 @@ async function showUpdating() {
     } catch { /* not back yet */ }
     if (away > 180) {
       S.updating = false;
-      if ($("upStep")) $("upStep").textContent = "decomp.wtf didn't come back after the update. Start it again (decomp.wtf in your apps, or the decomp command).";
+      if ($("upStep")) $("upStep").textContent = "decomp.anything didn't come back after the update. Start it again (decomp.anything in your apps, or the decomp command).";
       return;
     }
   }
@@ -2668,9 +2806,9 @@ async function showUpdating() {
 $("navUpdate").onclick = () => (updateInfo && updateInfo.available ? offerUpdate() : checkUpdate(true, true));
 
 $("quitBtn").onclick = async () => {
-  if (!confirm("Quit decomp.wtf? Running agents stop.")) return;
+  if (!confirm("Quit decomp.anything? Running agents stop.")) return;
   await api("/api/quit", { method: "POST" }).catch(() => {});
-  document.body.innerHTML = `<main class="view"><p class="muted">decomp.wtf has stopped. You can close this tab.</p></main>`;
+  document.body.innerHTML = `<main class="view"><p class="muted">decomp.anything has stopped. You can close this tab.</p></main>`;
 };
 
 loadNav();

@@ -8,7 +8,7 @@ call any tool. Nothing here is required for matching: without REA, PC programs s
 judged byte for byte.
 
 Setup (optional): the console's REA settings (saved in rea.json next to the database), or
-``DECOMP_REA`` set to the command (``DECOMP_REA="npx -y rea-agents@6.4.0 mcp"``), or ``rea`` on PATH,
+``DECOMP_REA`` set to the command (``DECOMP_REA="npx -y rea-agents@6.7.0 mcp"``), or ``rea`` on PATH,
 or REA installed from Compilers & tools, or an ``rea`` server registered with Claude Code
 (~/.claude.json), or npx. ``DECOMP_REA=off`` disables it.
 """
@@ -29,7 +29,7 @@ from pathlib import Path
 
 from . import toolchains
 
-PACKAGE = "rea-agents@6.4.0"  # the version tested with decomp.wtf
+PACKAGE = "rea-agents@6.7.0"  # the version tested with decomp.anything
 PROVIDERS = ("ghidra", "hopper", "ida", "rizin")
 CONFIG: Path | None = None  # rea.json, set by the app at start
 _SECRET = re.compile(r"key|token|secret|password|auth|cookie|credential", re.I)
@@ -40,6 +40,14 @@ ALLOWED = {
     "open_binary", "binary_overview", "list_procedures", "analyze_function", "procedure_pseudo_code",
     "procedure_assembly", "procedure_info", "procedure_callers", "procedure_callees", "procedure_references",
     "xrefs", "search_procedures", "search_strings", "read_bytes", "list_segments", "list_names", "close_binary",
+}
+# Analysis projects never reopen or close the target under an agent; everything else here only reads it.
+ANALYSIS_ALLOWED = (ALLOWED - {"open_binary", "close_binary"}) | {
+    "list_procedures", "list_strings", "inspect_android_package", "search_android_classes", "inspect_android_class",
+    "inspect_android_method", "inspect_managed_artifact", "inspect_managed_members", "inspect_managed_native_boundaries",
+    "analyze_javascript_application", "inspect_analysis_view", "inspect_firmware_regions", "inspect_artifact",
+    "inspect_pe_resources", "inspect_macho", "inspect_plist", "inspect_signature", "inspect_binary_layout",
+    "inspect_native_data_type", "inspect_native_instruction", "inspect_address_context",
 }
 
 
@@ -63,10 +71,12 @@ def _claude_code() -> dict | None:
 
 
 def _installed_toolchain() -> dict | None:
-    """REA installed from Compilers & tools (toolchains.install("rea"))."""
+    """REA installed from Compilers & tools (toolchains.install("rea")), with the environment an existing
+    Claude Code registration already has (GHIDRA_INSTALL_DIR, JAVA_HOME...)."""
     try:
         if toolchains.installed("rea") is not None:
-            return {"command": [str(toolchains.binary("rea")), "mcp"], "env": {}}
+            env = (_claude_code() or {}).get("env") or {}
+            return {"command": [str(toolchains.binary("rea")), "mcp"], "env": env}
     except (toolchains.ToolchainError, OSError, ValueError):
         return None
     return None
@@ -390,9 +400,56 @@ def _addr_list(value, symbols) -> str:
 atexit.register(lambda: close_all())
 
 
+_analysis_clients: dict[tuple, Client] = {}
+_analysis_results: dict[tuple, object] = {}
+_analysis_lock = threading.Lock()
+
+
+def _target_key(target: dict, provider: str = "") -> tuple:
+    import json
+
+    return (str(target.get("path")), str(target.get("tool") or "open_binary"),
+            json.dumps(target.get("arguments") or {}, sort_keys=True), provider or "")
+
+
+def open_analysis(target: dict, provider: str = "") -> tuple[Client, object]:
+    """The REA process for an analysis project's target, opened with the tool the user picked, and its answer."""
+    key = _target_key(target, provider)
+    with _analysis_lock:
+        client = _analysis_clients.get(key)
+        if client is None or not client.alive():
+            client = Client(provider=provider or None, timeout=1800)
+            tool = str(target.get("tool") or "open_binary")
+            args = dict(target.get("arguments") or {})
+            arg = "input_path" if tool == "analyze_javascript_application" else "path"
+            if tool != "inspect_artifact":
+                args.setdefault(arg, str(target["path"]))
+            if tool == "open_binary" and provider and "provider_id" not in args:
+                args["provider_id"] = provider
+            try:
+                _analysis_results[key] = client.call(tool, args, any_tool=True, timeout=1800)
+            except BaseException:
+                client.close()
+                raise
+            _analysis_clients[key] = client
+        return client, _analysis_results.get(key)
+
+def analysis_client(target: dict, provider: str = "") -> Client:
+    return open_analysis(target, provider)[0]
+
+
+def analysis_result(target: dict, provider: str = "") -> object:
+    return open_analysis(target, provider)[1]
+
+
 def close_all() -> None:
     with _lock:
         for client in _clients.values():
             client.close()
         _clients.clear()
         _opened.clear()
+    with _analysis_lock:
+        for client in _analysis_clients.values():
+            client.close()
+        _analysis_clients.clear()
+        _analysis_results.clear()

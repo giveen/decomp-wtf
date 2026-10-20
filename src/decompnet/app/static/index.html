@@ -4,20 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
-<title>decomp.wtf</title>
+<title>decomp.anything</title>
 <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/assets/app.css">
-<link rel="stylesheet" href="/assets/console.css">
+<link rel="stylesheet" href="/assets/app.css?v=2">
+<link rel="stylesheet" href="/assets/console.css?v=2">
 </head>
 <body>
 <div class="app">
 
 <!-- ================================================================ sidebar -->
-<aside class="nav" id="nav" aria-label="decomp.wtf">
+<aside class="nav" id="nav" aria-label="decomp.anything">
   <div class="nav-top">
-    <a class="brand" href="#/" aria-label="decomp.wtf home">
+    <a class="brand" href="#/" aria-label="decomp.anything home">
       <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="1" width="6" height="6"/><rect x="9" y="1" width="6" height="6"/><rect x="1" y="9" width="6" height="6"/><rect class="hollow" x="9.75" y="9.75" width="4.5" height="4.5"/></svg>
-      <span>decomp<b>.wtf</b></span>
+      <span>decomp<b>.anything</b></span>
     </a>
     <button class="ghost icon nav-close" id="navClose" type="button" aria-label="Close menu">✕</button>
   </div>
@@ -27,7 +27,6 @@
     <div class="nav-projects" id="navProjects"><p class="nav-empty">None yet: drop in a game.</p></div>
     <p class="nav-label">Explore</p>
     <a class="nav-item" href="#/catalog" data-route="catalog"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h5v4H2zm7 0h5v4H9zM2 9h5v4H2zm7 0h5v4H9z"/></svg>Public decomps</a>
-    <a class="nav-item" href="#/console" data-route="console"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2h13A1.5 1.5 0 0 1 16 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 0 12.5v-9A1.5 1.5 0 0 1 1.5 2Zm1.8 3.2-1 1L4.6 8.5 2.3 10.8l1 1 3.3-3.3-3.3-3.3ZM8 10.5V12h5v-1.5H8Z"/></svg>RE console</a>
     <button class="nav-item" id="navJoin" type="button"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 7a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Zm5.5 0a2 2 0 1 1 0-4 2 2 0 0 1 0 4ZM1 13c0-2.4 2-4 4.5-4S10 10.6 10 13v1H1v-1Zm10.5 1v-1c0-1.3-.4-2.4-1.1-3.3.2 0 .4-.1.6-.1 2.2 0 4 1.3 4 3.4v1h-3.5Z"/></svg>Join a team</button>
   </div>
   <div class="nav-foot">
@@ -36,10 +35,10 @@
     <a class="nav-item" href="#/settings" data-route="settings"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.9 1h2.2l.4 1.9 1.3.6 1.7-1 1.5 1.5-1 1.7.6 1.3L15 6.9v2.2l-1.9.4-.6 1.3 1 1.7-1.5 1.5-1.7-1-1.3.6L9.1 15H6.9l-.4-1.9-1.3-.6-1.7 1-1.5-1.5 1-1.7-.6-1.3L1 9.1V6.9l1.9-.4.6-1.3-1-1.7 1.5-1.5 1.7 1 1.3-.6L6.9 1ZM8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z"/></svg>Settings</a>
     <div class="nav-meta">
       <span class="muted small" id="navVersion"></span>
-      <button class="nav-update" id="navUpdate" type="button" hidden title="A new decomp.wtf is ready">Update</button>
+      <button class="nav-update" id="navUpdate" type="button" hidden title="A new decomp.anything is ready">Update</button>
       <span class="grow"></span>
       <button class="ghost icon sm" id="themeBtn" type="button" aria-label="Switch light/dark" title="Light / dark"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Zm0 1.5v10a5 5 0 0 1 0-10Z"/></svg></button>
-      <button class="ghost icon sm" id="quitBtn" type="button" aria-label="Quit decomp.wtf" title="Quit decomp.wtf"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7.25 1.5h1.5v6h-1.5zM4.1 3.6l1.06 1.06A4.5 4.5 0 1 0 10.84 4.66L11.9 3.6A6 6 0 1 1 4.1 3.6Z"/></svg></button>
+      <button class="ghost icon sm" id="quitBtn" type="button" aria-label="Quit decomp.anything" title="Quit decomp.anything"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7.25 1.5h1.5v6h-1.5zM4.1 3.6l1.06 1.06A4.5 4.5 0 1 0 10.84 4.66L11.9 3.6A6 6 0 1 1 4.1 3.6Z"/></svg></button>
     </div>
   </div>
 </aside>
@@ -48,19 +47,19 @@
 <div class="main" id="main">
 <header class="mbar">
   <button class="ghost icon" id="navOpen" type="button" aria-label="Menu"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12v1.5H2zm0 3.25h12v1.5H2zM2 10.5h12V12H2z"/></svg></button>
-  <a class="brand" href="#/"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="1" width="6" height="6"/><rect x="9" y="1" width="6" height="6"/><rect x="1" y="9" width="6" height="6"/><rect class="hollow" x="9.75" y="9.75" width="4.5" height="4.5"/></svg><span>decomp<b>.wtf</b></span></a>
+  <a class="brand" href="#/"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="1" width="6" height="6"/><rect x="9" y="1" width="6" height="6"/><rect x="1" y="9" width="6" height="6"/><rect class="hollow" x="9.75" y="9.75" width="4.5" height="4.5"/></svg><span>decomp<b>.anything</b></span></a>
 </header>
 
 <!-- ================================================================ new project -->
 <main id="home" class="view" hidden>
   <section class="hero">
     <div class="hero-text">
-      <p class="eyebrow">Matching decompilation</p>
-      <h1>Pick your game.<br>Your agents turn it into C.</h1>
-      <p class="lede">N64, PlayStation 1 and 2, GameCube, Wii, Game Boy Advance and DS from scratch, or any public decomp. Every function is checked against your copy, byte for byte, and the result rebuilds your game: the base for ports and mods.</p>
+      <p class="eyebrow">Reverse engineering</p>
+      <h1>Pick your binary.<br>Your agents take it apart.</h1>
+      <p class="lede">Games, Windows and Linux programs, apps, firmware — anything you own. Matchable targets rebuild byte for byte; anything else becomes a project where agents read its functions and record findings. Every match is checked against your copy.</p>
       <ol class="how">
-        <li><b>Drop your game</b><span>decomp.wtf finds every function and the compiler</span></li>
-        <li><b>Free matches first</b><span>the autopilot tries a machine draft of each one</span></li>
+        <li><b>Drop your binary</b><span>decomp.anything finds every function, or opens it with REA</span></li>
+        <li><b>Free matches first</b><span>the autopilot tries a machine draft of each game function</span></li>
         <li><b>Agents do the rest</b><span>Claude Code, Codex, Antigravity, opencode or any API model</span></li>
       </ol>
     </div>
@@ -68,11 +67,11 @@
       <input type="file" id="file" hidden>
       <div class="drop-idle" id="dropIdle">
         <div class="cart" aria-hidden="true"><span></span></div>
-        <p class="drop-title">Drop a game here</p>
-        <p class="muted small">ROM, disc image or program file · or <span class="link">choose a file</span></p>
+        <p class="drop-title">Drop your binary here</p>
+        <p class="muted small">ROM, disc image, .exe/.dll, ELF or any binary · or <span class="link">choose a file</span></p>
         <div class="plat-row" id="platRow"><span data-p="gc">GameCube</span><span data-p="wii">Wii</span><span data-p="n64">N64</span><span data-p="psx">PS1</span><span data-p="ps2">PS2</span><span data-p="gba">GBA</span><span data-p="nds">DS</span><span data-p="windows">PC</span><span data-p="linux">Linux</span></div>
-        <p class="plat-legend muted small" id="platLegend" hidden><span class="rec-mark">★</span> recommended: the most tested path to a full decomp you can port and mod · the rest are beta</p>
-        <button class="link-btn" id="pathPick" type="button">Big disc? Use its path instead</button>
+        <p class="plat-legend muted small" id="platLegend" hidden><span class="rec-mark">★</span> recommended: the most tested path to a full decomp you can port and mod · a lit chip means its tools are installed</p>
+        <button class="link-btn" id="pathPick" type="button">Any binary? Use its path instead</button>
       </div>
       <div class="drop-picked" id="dropPicked" hidden>
         <div class="rom-card">
@@ -81,7 +80,7 @@
           <dl class="facts" id="romFacts"></dl>
           <p class="plat-status" id="romStatus" hidden></p>
         </div>
-        <label class="check"><input type="checkbox" id="own"><span>This is my own copy of this game, obtained legally (for example, dumped from my own console or cartridge). The results stay with me for my own use.</span></label>
+        <label class="check"><input type="checkbox" id="own"><span id="ownText">This is my own copy of this game, obtained legally (for example, dumped from my own console or cartridge). The results stay with me for my own use.</span></label>
         <div class="row" id="compilerRow">
           <label class="field grow"><span>Compiler</span><select id="compilerPick"></select></label>
         </div>
@@ -148,9 +147,9 @@
   <header class="page-head">
     <p class="eyebrow">Public decomps</p>
     <h1>Continue a public decomp</h1>
-    <p class="muted">Paste a community decomp's repository and add your own copy of its game. Before anything is cloned, decomp.wtf shows what the project says about AI and contributions: every project decides that for itself. Your fork stays on this computer; decomp.wtf never pushes it or opens pull requests.</p>
+    <p class="muted">Paste a community decomp's repository and add your own copy of its game. Before anything is cloned, decomp.anything shows what the project says about AI and contributions: every project decides that for itself. Your fork stays on this computer; decomp.anything never pushes it or opens pull requests.</p>
     <div class="row repo-row"><input id="repoUrl" class="mono" placeholder="https://github.com/owner/repo or a git checkout on this computer" aria-label="Repository address"><button class="primary" id="repoFork" type="button">Look at it</button></div>
-    <p class="credit small"><a href="https://decomp.dev" target="_blank" rel="noopener">decomp.dev</a>, the community's home for matching decompilation progress, made by <a href="https://github.com/encounter" target="_blank" rel="noopener">encounter</a> (who also makes decomp-toolkit and objdiff, two of the tools decomp.wtf is built on), retired its project directory on 15 October 2026. Each project's page there still has its history, files and contributors.</p>
+    <p class="credit small"><a href="https://decomp.dev" target="_blank" rel="noopener">decomp.dev</a>, the community's home for matching decompilation progress, made by <a href="https://github.com/encounter" target="_blank" rel="noopener">encounter</a> (who also makes decomp-toolkit and objdiff, two of the tools decomp.anything is built on), retired its project directory on 15 October 2026. Each project's page there still has its history, files and contributors.</p>
   </header>
   <div class="cat-tools" id="catTools">
     <input id="catSearch" class="search" type="search" placeholder="Search games and teams" aria-label="Search projects">
@@ -187,11 +186,11 @@
     </div>
     <nav class="ptabs" id="ptabs" role="tablist" aria-label="Project">
       <a role="tab" data-ptab="overview">Overview</a>
-      <a role="tab" data-ptab="functions">Functions <span class="count" id="fnTabCount"></span></a>
+      <a role="tab" data-ptab="functions"><span id="fnTabLabel">Functions</span> <span class="count" id="fnTabCount"></span></a>
       <a role="tab" data-ptab="agents">Agents <span class="count" id="agTabCount"></span></a>
       <a role="tab" data-ptab="activity">Activity</a>
-      <a role="tab" data-ptab="team">Team <span class="count" id="teamTabCount"></span></a>
-      <a role="tab" data-ptab="source">Source</a>
+      <a role="tab" data-ptab="team" id="teamTab">Team <span class="count" id="teamTabCount"></span></a>
+      <a role="tab" data-ptab="source" id="sourceTab">Source</a>
       <a role="tab" data-ptab="settings">Settings</a>
     </nav>
   </header>
@@ -203,18 +202,18 @@
   <section class="ptab" data-pane="overview">
     <div class="kpis">
       <div class="kpi">
-        <span class="label">Matched code</span>
+        <span class="label" id="kpiMatchedLabel">Matched code</span>
         <div class="big-row"><span class="num"><span id="pct">0</span><small>%</small></span><svg id="progress" class="progress" viewBox="0 0 200 44" preserveAspectRatio="none" aria-label="Matched code over time"></svg></div>
         <span class="sub" id="pctSub"></span>
       </div>
       <div class="kpi">
-        <span class="label">Functions</span>
+        <span class="label" id="kpiFnLabel">Functions</span>
         <span class="num mono" id="fnCount">0</span>
         <div class="stack" id="fnStack" aria-hidden="true"></div>
         <span class="sub" id="fnSub"></span>
       </div>
       <div class="kpi">
-        <span class="label">Pace</span>
+        <span class="label" id="kpiPaceLabel">Pace</span>
         <span class="num mono" id="paceNum">–</span>
         <svg class="bars" id="paceBars" viewBox="0 0 240 28" preserveAspectRatio="none" aria-label="Matches per hour, last 24 hours"></svg>
         <span class="sub" id="paceSub"></span>
@@ -249,11 +248,11 @@
 
     <div class="cols">
       <section class="panel">
-        <header class="panel-head"><h2>Recent matches</h2><a class="link small" data-goto="functions" data-filter="matched">All matched</a></header>
+        <header class="panel-head"><h2 id="recentTitle">Recent matches</h2><a class="link small" id="recentAll" data-goto="functions" data-filter="matched">All matched</a></header>
         <ol class="mini-list" id="recentMatches"></ol>
       </section>
       <section class="panel">
-        <header class="panel-head"><h2>Who matched what</h2><a class="link small" data-goto="agents">Agents</a></header>
+        <header class="panel-head"><h2 id="boardTitle">Who matched what</h2><a class="link small" data-goto="agents">Agents</a></header>
         <ol class="mini-list board" id="board"></ol>
       </section>
     </div>
@@ -264,12 +263,13 @@
     <div class="list-tools">
       <input id="fnSearch" class="search" type="search" placeholder="Find a function, address or file  ( / )" aria-label="Find a function" autocomplete="off" spellcheck="false">
       <div class="seg" id="fnFilter" role="radiogroup" aria-label="Show"></div>
+      <button class="ghost small-btn" id="addTask" type="button" hidden>Add task</button>
     </div>
     <div class="fn-table-wrap">
       <table class="fn-table">
         <thead><tr>
-          <th data-sort="vram" id="thAddr">Address</th><th data-sort="name">Function</th><th data-sort="insns" class="r">Instructions</th>
-          <th data-sort="best" class="r">Best</th><th data-sort="attempts" class="r">Tries</th><th data-sort="status">Status</th>
+          <th data-sort="vram" id="thAddr">Address</th><th data-sort="name">Function</th><th data-sort="insns" class="r" id="thInsns">Instructions</th>
+          <th data-sort="best" class="r" id="thBest">Best</th><th data-sort="attempts" class="r" id="thTries">Tries</th><th data-sort="status">Status</th>
         </tr></thead>
         <tbody id="fnRows"></tbody>
       </table>
@@ -370,7 +370,7 @@
     </div>
     <section class="panel danger-zone">
       <header class="panel-head"><h2>Remove project</h2></header>
-      <div class="pad row"><p class="muted small grow">Matched functions and notes are deleted from decomp.wtf. You can keep or delete the project folder.</p><button class="ghost danger" id="deleteBtn" type="button">Remove project…</button></div>
+      <div class="pad row"><p class="muted small grow">Matched functions and notes are deleted from decomp.anything. You can keep or delete the project folder.</p><button class="ghost danger" id="deleteBtn" type="button">Remove project…</button></div>
     </section>
   </section>
 </main>
@@ -383,7 +383,7 @@
     <section class="panel"><header class="panel-head"><h2>Agent apps on this computer</h2><button class="ghost small-btn" id="agRefresh" type="button">Refresh</button></header><div class="pad" id="agList"></div></section>
     <div class="stack-col">
       <section class="panel"><header class="panel-head"><h2>Models with an API key</h2></header><div class="pad" id="apiBox"></div></section>
-      <section class="panel"><header class="panel-head"><h2>Use decomp.wtf from your agent</h2></header><div class="pad" id="mcpBox"></div></section>
+      <section class="panel"><header class="panel-head"><h2>Use decomp.anything from your agent</h2></header><div class="pad" id="mcpBox"></div></section>
     </div>
   </div>
 </main>
@@ -391,14 +391,14 @@
 <!-- ================================================================ compilers & tools -->
 <main id="toolsPage" class="view" hidden>
   <header class="page-head"><p class="eyebrow">Compilers &amp; tools</p><h1>What builds your games</h1>
-    <p class="muted">decomp.wtf installs what a project needs by itself. Proprietary compilers (IDO, CodeWarrior) are only installed when you accept that.</p></header>
+    <p class="muted">decomp.anything installs what a project needs by itself. Proprietary compilers (IDO, CodeWarrior) are only installed when you accept that.</p></header>
   <div class="chips" id="toolChips"></div>
   <div class="tool-grid" id="toolGrid"></div>
 </main>
 
 <!-- ================================================================ settings -->
 <main id="settingsPage" class="view" hidden>
-  <header class="page-head"><p class="eyebrow">Settings</p><h1>How decomp.wtf works for you</h1></header>
+  <header class="page-head"><p class="eyebrow">Settings</p><h1>How decomp.anything works for you</h1></header>
   <div class="cols">
     <section class="panel"><header class="panel-head"><h2>Agents</h2></header><div class="pad" id="setAgents"></div></section>
     <div class="stack-col">
@@ -509,7 +509,7 @@
 </div>
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
-<script src="/assets/app.js"></script>
-<script src="/assets/console.js"></script>
+<script src="/assets/app.js?v=2"></script>
+<script src="/assets/console.js?v=2"></script>
 </body>
 </html>
