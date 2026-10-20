@@ -496,7 +496,8 @@ class RomNetwork(Network):
             "SELECT n.text, n.created_at, a.name AS agent FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
             "WHERE n.project_id=? AND n.function_id IS NULL ORDER BY n.id DESC", proj["id"])
         now = time.time()
-        summary = (f"{len(analyzed)}/{len(rows)} work items analyzed · {len(analyzed)} findings"
+        findings = f"{len(analyzed)} finding" + ("" if len(analyzed) == 1 else "s")
+        summary = (f"{len(analyzed)}/{len(rows)} work items analyzed · {findings}"
                    + (f" · {artifact.get('entries')} archive entries" if artifact.get("entries") else ""))
         lines = [f"# Analysis summary: {proj['name']}", "",
                  f"Generated {time.strftime('%Y-%m-%d %H:%M:%S')} for project `{proj['slug']}`.", "",
@@ -506,8 +507,8 @@ class RomNetwork(Network):
                  f"- provider: {cfg.get('provider') or 'auto'}",
                  f"- progress: {summary}"]
         if artifact.get("entries"):
-            dirs = artifact.get("directories") or 0
-            lines.append(f"- archive: {artifact.get('entries')} entries · {artifact.get('files')} files · "
+            dirs, files = artifact.get("directories") or 0, artifact.get("files") or 0
+            lines.append(f"- archive: {artifact.get('entries')} entries · {files} file{'' if files == 1 else 's'} · "
                          f"{dirs} director{'y' if dirs == 1 else 'ies'}")
         lines += ["", "## Findings"]
         if not analyzed:
