@@ -302,6 +302,26 @@ def signin(k: Kind) -> str:
     return f"{hostenv.terminal_hint()}, then: {text[0].lower()}{text[1:]}"
 
 
+def version(kind: str, path: str) -> str | None:
+    """What the agent's `--version` says (cached for 5 minutes), or None."""
+    cached = _versions.get(kind)
+    if cached is None or time.time() - cached[0] > 300:
+        try:
+            res = subprocess.run(argv([path, "--version"]), capture_output=True, text=True, encoding="utf-8",
+                                 errors="replace", timeout=15)
+            said = (res.stdout or res.stderr).strip()
+            _versions[kind] = (time.time(), said.splitlines()[0][:60] if said else None)
+        except (OSError, subprocess.TimeoutExpired):
+            _versions[kind] = (time.time(), None)
+    return _versions[kind][1]
+
+
+def major(said: str | None) -> int:
+    """The major version in what `--version` said ("opencode v2.0.32" -> 2), 0 when there's none."""
+    m = re.search(r"(\d+)\.\d+", said or "")
+    return int(m.group(1)) if m else 0
+
+
 def detect() -> list[dict]:
     out = []
     for k in KINDS.values():
@@ -311,16 +331,7 @@ def detect() -> list[dict]:
             row.update(installed=True, version=None, path=None)
         else:
             path = _which(k.command)
-            cached = _versions.get(k.id)
-            if path and (cached is None or time.time() - cached[0] > 300):
-                try:
-                    res = subprocess.run(argv([path, "--version"]), capture_output=True, text=True, encoding="utf-8",
-                                         errors="replace", timeout=15)
-                    version = (res.stdout or res.stderr).strip().splitlines()[0][:60] if (res.stdout or res.stderr).strip() else None
-                except (OSError, subprocess.TimeoutExpired):
-                    version = None
-                _versions[k.id] = (time.time(), version)
-            row.update(installed=path is not None, path=path, version=_versions.get(k.id, (0, None))[1] if path else None)
+            row.update(installed=path is not None, path=path, version=version(k.id, path) if path else None)
             if path:
                 row.update(models=models(k.id, path), default_model=_config_model(k.id))
         if row["install"].startswith("npm ") and not row["installed"] and not shutil.which("npm", path=search_path()):
@@ -409,8 +420,11 @@ def clean_stderr(kind: str, line: str) -> str:
     """One line of an agent's stderr as worth showing, or "" for noise."""
     line = line.strip()
     if kind == "opencode" and "level=" in line:  # opencode --print-logs: keep the error itself, drop stack noise
-        m = re.search(r'\berror="((?:[^"\\]|\\.)*)"', line)
-        return m.group(1).replace('\\"', '"') if m and "level=ERROR" in line else ""
+        # (the error is error="..." before OpenCode 2, cause="..." from 2 on, its stack trace escaped inside it)
+        m = re.search(r'\b(?:error|cause)="((?:[^"\\]|\\.)*)"', line)
+        return m.group(1).replace('\\"', '"').split("\\n")[0] if m and "level=ERROR" in line else ""
+    if kind == "opencode" and line.startswith("at "):  # a stack frame of a crash: its message came lines before
+        return ""
     if line.startswith("AGY_ERROR:"):  # agy: a structured error line
         try:
             return _error_text(json.loads(line.split(":", 1)[1]))[:300]
@@ -766,6 +780,10 @@ class Manager:
                      f"add_note and no function):\n{learned}\n")
         if (wish := self.net.instructions(s.slug)):
             text += f"\nThe user's instructions for this project (they come first):\n{wish}\n"
+        if (roots := self.net.references(s.slug)):
+            from . import references
+
+            text += f"\n{references.prompt_line(roots)}\n"
         return text
 
     def _prompt(self, s: Session) -> str:
@@ -832,17 +850,28 @@ class Manager:
         elif s.kind == "opencode":
             # "deny" takes the tools out of the request, and OpenCode Zen's free models then refuse it ("can only be
             # used from within OpenCode"). "ask" keeps the usual tools, and `opencode run` rejects every ask itself.
-            zen = (model or _config_model("opencode") or "opencode/").startswith("opencode/")
+            # (Zen's and Go's free models alike: opencode/... and opencode-go/...)
+            zen = (model or _config_model("opencode") or "opencode/").split("/", 1)[0] in ("opencode", "opencode-go")
             never = "ask" if zen else "deny"
-            (workdir / "opencode.json").write_text(json.dumps({
-                "$schema": "https://opencode.ai/config.json",
-                "mcp": {"decomp": {"type": "remote", "url": self.mcp_url, "enabled": True,
-                                   "headers": {"Authorization": f"Bearer {token}"}}},
-                "permission": {"edit": never, "bash": never, "webfetch": never},
-            }), encoding="utf-8")
+            server = {"type": "remote", "url": self.mcp_url, "headers": {"Authorization": f"Bearer {token}"}}
+            v2 = major(version("opencode", exe)) >= 2
+            if v2:
+                # OpenCode 2 reaches MCP tools through one `execute` tool by default (Code Mode), where models wander
+                # off to the user's other servers: decomp's tools are offered as themselves and `execute` is denied.
+                cfg = {"mcp": {"servers": {"decomp": {**server, "oauth": False, "codemode": False}}},
+                       "permissions": [{"action": "execute", "resource": "*", "effect": "deny"},
+                                       {"action": "decomp_*", "resource": "*", "effect": "allow"},
+                                       *({"action": a, "resource": "*", "effect": never} for a in ("edit", "shell", "webfetch"))]}
+            else:
+                cfg = {"mcp": {"decomp": {**server, "enabled": True}},
+                       "permission": {"edit": never, "bash": never, "webfetch": never}}
+            (workdir / "opencode.json").write_text(json.dumps({"$schema": "https://opencode.ai/config.json", **cfg}),
+                                                   encoding="utf-8")
             # --print-logs: opencode's JSON error only says "Unexpected server error"; the log line says what failed.
-            # (No --dir: it runs in workdir, and OpenCode before 1.4 stops at the flag.)
-            cmd = [exe, "run", "--format", "json", "--print-logs", "--log-level", "ERROR"]
+            # (No --dir: it runs in workdir, and OpenCode before 1.4 stops at the flag. No --log-level: OpenCode 2
+            # stops at "ERROR", earlier ones at "error"; clean_stderr keeps only the errors anyway.) OpenCode 2 runs
+            # on a shared background service unless --standalone: then the server's own errors reach stderr too.
+            cmd = [exe, "run", "--format", "json", "--print-logs", *(["--standalone"] if v2 else [])]
             if model:
                 cmd += ["-m", model]
         else:
@@ -1073,9 +1102,11 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
         "find_similar": ("Functions that look like this one, matched ones first, with the best one's source.",
                          s(function=st("function", True), limit=it("how many"))),
         "guide": ("Decompilation know-how; no topic lists topics.", s(topic=st("topic"))),
-        "read_file": ("Read a project file with line numbers.", s(path=st("path from the project root", True),
-                                                                 start=it("first line"), count=it("lines"))),
-        "search_code": ("Regex search over the project's C/C++ sources and headers.",
+        "read_file": ("Read a file with line numbers (forks: the project's; ROM projects: the reference folders the "
+                      "user named).", s(path=st("path from the project (or first reference folder) root", True),
+                                        start=it("first line"), count=it("lines"))),
+        "search_code": ("Regex search (forks: the project's C/C++ sources and headers; ROM projects: the reference "
+                        "folders' text files, case-insensitive, an address as 0x401070).",
                         s(pattern=st("regular expression", True), glob=st("optional file glob"))),
         "edit_file": ("Replace `old` (exactly once) with `new` in a source/header file, or append when old is empty. "
                       "Undone if any match breaks.", s(path=st("file", True), old=st("text to replace, or empty", True),

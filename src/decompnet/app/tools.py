@@ -13,6 +13,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from .. import __version__
 from ..network import Agent, NetworkError
+from . import references
 from .engine import RomNetwork
 
 GUIDES = {
@@ -34,7 +35,7 @@ GUIDES = {
     "ps2": "matching PlayStation 2 (EE-GCC, MWCC PS2) code",
     "arm": "ARM and Thumb (GBA, DS, 3DS): registers, conditional code, literal pools",
     "agbcc": "matching Game Boy Advance code built with agbcc",
-    "x86": "x86 and MSVC (PC, Xbox): calling conventions, SEH, matching MSVC output",
+    "x86": "x86 and x86-64 (PC, Xbox, Linux): calling conventions, SEH, matching MSVC, GCC and Clang output",
     "aarch64": "AArch64 and Clang (Switch): registers, matching Clang output",
     "similarity": "finding similar functions and reusing matched code",
 }
@@ -44,11 +45,11 @@ PLATFORM_GUIDES = {
     "n64": ["mips"], "ps": ["mips", "psx"], "ps2": ["mips", "ps2"], "psp": ["mips"],
     "gc": ["ppc", "mwcc", "cpp"], "wii": ["ppc", "mwcc", "cpp"], "nds": ["arm", "mwcc"], "3ds": ["arm", "cpp"],
     "gba": ["arm", "agbcc"], "switch": ["aarch64", "cpp"], "win32": ["x86", "cpp"], "xbox": ["x86", "cpp"],
-    "xbox360": ["ppc", "cpp"], "windows": ["x86", "cpp"],
+    "xbox360": ["ppc", "cpp"], "windows": ["x86", "cpp"], "linux": ["x86", "cpp"],
 }
 
 INSTRUCTIONS = """\
-decomp.wtf: you are decompiling a game the user owns (a ROM, a disc program or a Windows executable) into C
+decomp.wtf: you are decompiling a game the user owns (a ROM, a disc program, a Windows or Linux program) into C
 that compiles to exactly the same machine code. Your C is compiled with the game's original compiler, linked at
 the function's real address and compared with the original: score 0 means byte-identical, and the function is
 saved as matched.
@@ -131,10 +132,30 @@ def _fork(net: RomNetwork, slug: str, what: str) -> str:
     return slug
 
 
+def _refs(net: RomNetwork, slug: str) -> list:
+    if not (roots := net.references(slug)):
+        raise NetworkError("this project has no reference folders: the user can name one (its full path) in the "
+                           "project's instructions")
+    return roots
+
+
+def _read_file(net: RomNetwork, slug: str, path: str, start: int = 1, count: int = 200) -> str:
+    if net.fork_slug(slug):
+        return net.forks.read_file(slug, path, start, count)
+    return references.read(_refs(net, slug), path, start, count)
+
+
+def _search_code(net: RomNetwork, slug: str, pattern: str, glob: str = "") -> str:
+    if net.fork_slug(slug):
+        return net.forks.search(slug, pattern, glob)
+    return references.search(_refs(net, slug), pattern, glob)
+
+
 def project_info(net: RomNetwork, slug: str) -> str:
     wish = net.instructions(slug)
     text = _project_info(net, slug)
-    return text + (f"\nThe user's instructions for this project (they come first):\n{wish}" if wish else "")
+    text += f"\nThe user's instructions for this project (they come first):\n{wish}" if wish else ""
+    return text + (f"\n{references.prompt_line(roots)}" if (roots := net.references(slug)) else "")
 
 
 def _project_info(net: RomNetwork, slug: str) -> str:
@@ -195,9 +216,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "search_notes": lambda net, agent, slug, query: net.search_notes(slug, query),
     "find_similar": lambda net, agent, slug, function, limit=5: net.find_similar(slug, function, limit),
     "guide": lambda net, agent, slug, topic="": _guide(topic),
-    "read_file": lambda net, agent, slug, path, start=1, count=200:
-        net.forks.read_file(_fork(net, slug, "read_file"), path, start, count),
-    "search_code": lambda net, agent, slug, pattern, glob="": net.forks.search(_fork(net, slug, "search_code"), pattern, glob),
+    "read_file": lambda net, agent, slug, path, start=1, count=200: _read_file(net, slug, path, start, count),
+    "search_code": lambda net, agent, slug, pattern, glob="": _search_code(net, slug, pattern, glob),
     "edit_file": lambda net, agent, slug, path, old, new, message:
         net.forks.edit_file(agent, _fork(net, slug, "edit_file"), path, old, new, message),
     "file_status": lambda net, agent, slug, path: net.forks.file_status(_fork(net, slug, "file_status"), path),
@@ -206,7 +226,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
 }
 
 ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function"}
-FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file"}
+FORK_ONLY = {"edit_file", "file_status", "split_file"}
 
 
 def tool_names(fork: bool) -> list[str]:
@@ -324,7 +344,7 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def inspect_binary(ctx: Context, function: str, what: str = "") -> str:
-        """Windows projects: ask REA (Ghidra/IDA/Hopper) for this function's pseudocode, signature and
+        """Windows and Linux projects: ask REA (Ghidra/IDA/Hopper) for this function's pseudocode, signature and
         callers, plus decomp.wtf's own assembly and cross references. Needs REA installed and configured;
         without it you get the assembly and references decomp.wtf already has.
 
@@ -336,7 +356,7 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def search_binary(ctx: Context, query: str) -> str:
-        """Windows projects: find strings and procedure names in the game (REA's inventories when it is set
+        """Windows and Linux projects: find strings and procedure names in the game (REA's inventories when it is set
         up, decomp.wtf's symbol table otherwise). Useful before naming a function or a global."""
         return await run(ctx, "search_binary", query=query)
 
@@ -375,13 +395,16 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def read_file(ctx: Context, path: str, start: int = 1, count: int = 200) -> str:
-        """Forks only: read a file of the project (path relative to its root), with line numbers."""
+        """Read a file with line numbers (a folder: what's in it). Forks: the project's files, path relative to
+        its root. ROM projects: the reference folders the user named in the instructions (project_info lists
+        them), path relative to the first one or absolute."""
         return await run(ctx, "read_file", path=path, start=start, count=count)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def search_code(ctx: Context, pattern: str, glob: str = "") -> str:
-        """Forks only: search the project's C/C++ sources and headers with a regular expression. `glob`
-        narrows the files (e.g. "include/**/*.h")."""
+        """Search with a regular expression. Forks: the project's C/C++ sources and headers. ROM projects: the
+        text files of the reference folders the user named (case-insensitive; an address as 0x401070).
+        `glob` narrows the files (e.g. "include/**/*.h")."""
         return await run(ctx, "search_code", pattern=pattern, glob=glob)
 
     @mcp.tool(meta=ALWAYS_LOAD)

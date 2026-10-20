@@ -561,3 +561,104 @@ system = true
 platform = "Windows"
 arch = "x86"
 cmd = ["clang-cl", "--target=i686-pc-windows-msvc", "/c", "/O2", "/GS-", "/TC", "/I{include}", "/Fo{obj}", "--", "{src}"]
+
+# ---------------------------------------------------------------- Linux programs
+# The GCC and Clang already on the machine. A program matches byte for byte only with the compiler version
+# and flags that built it (.comment usually says which: the import shows it); a project can point its
+# [compiler] cmd at another version. Position-independent programs are imported with -fPIE instead of -fno-pie.
+
+[gcc-linux-x86_64]
+name = "GCC (x86-64 Linux)"
+kind = "compiler"
+license = "GPL-3.0-or-later"
+source = "system gcc"
+description = "The GCC on this machine, for 64-bit Linux programs."
+system = true
+platform = "Linux"
+arch = "x86_64"
+flags = ["-O2", "-fno-pic", "-fno-pie", "-fno-stack-protector", "-fcf-protection=none", "-fno-asynchronous-unwind-tables", "-fno-ident", "-ffunction-sections", "-fdata-sections"]
+cmd = ["gcc", "-c", "{flags}", "-I{include}", "{src}", "-o", "{obj}"]
+
+[gxx-linux-x86_64]
+name = "G++ (x86-64 Linux, C++)"
+kind = "compiler"
+license = "GPL-3.0-or-later"
+source = "system g++"
+description = "The GCC on this machine compiling C++, for 64-bit Linux programs."
+system = true
+platform = "Linux"
+arch = "x86_64"
+flags = ["-O2", "-fno-pic", "-fno-pie", "-fno-stack-protector", "-fcf-protection=none", "-fno-asynchronous-unwind-tables", "-fno-ident", "-ffunction-sections", "-fdata-sections"]
+cmd = ["g++", "-c", "-x", "c++", "{flags}", "-I{include}", "{src}", "-o", "{obj}"]
+
+[clang-linux-x86_64]
+name = "Clang (x86-64 Linux)"
+kind = "compiler"
+license = "Apache-2.0 WITH LLVM-exception"
+source = "system clang"
+description = "The Clang on this machine, for 64-bit Linux programs."
+system = true
+platform = "Linux"
+arch = "x86_64"
+flags = ["-O2", "-fno-pic", "-fno-pie", "-fno-stack-protector", "-fcf-protection=none", "-fno-asynchronous-unwind-tables", "-fno-ident", "-ffunction-sections", "-fdata-sections"]
+cmd = ["clang", "-c", "{flags}", "-I{include}", "{src}", "-o", "{obj}"]
+
+[clangxx-linux-x86_64]
+name = "Clang++ (x86-64 Linux, C++)"
+kind = "compiler"
+license = "Apache-2.0 WITH LLVM-exception"
+source = "system clang++"
+description = "The Clang on this machine compiling C++, for 64-bit Linux programs."
+system = true
+platform = "Linux"
+arch = "x86_64"
+flags = ["-O2", "-fno-pic", "-fno-pie", "-fno-stack-protector", "-fcf-protection=none", "-fno-asynchronous-unwind-tables", "-fno-ident", "-ffunction-sections", "-fdata-sections"]
+cmd = ["clang++", "-c", "-x", "c++", "{flags}", "-I{include}", "{src}", "-o", "{obj}"]
+
+[gcc-linux-x86]
+name = "GCC (32-bit x86 Linux)"
+kind = "compiler"
+license = "GPL-3.0-or-later"
+source = "system gcc -m32"
+description = "The GCC on this machine, for 32-bit Linux programs (needs gcc-multilib)."
+system = true
+platform = "Linux"
+arch = "x86"
+flags = ["-O2", "-fno-pic", "-fno-pie", "-fno-stack-protector", "-fcf-protection=none", "-fno-asynchronous-unwind-tables", "-fno-ident", "-ffunction-sections", "-fdata-sections"]
+cmd = ["gcc", "-m32", "-c", "{flags}", "-I{include}", "{src}", "-o", "{obj}"]
+
+[gxx-linux-x86]
+name = "G++ (32-bit x86 Linux, C++)"
+kind = "compiler"
+license = "GPL-3.0-or-later"
+source = "system g++ -m32"
+description = "The GCC on this machine compiling C++, for 32-bit Linux programs (needs g++-multilib)."
+system = true
+platform = "Linux"
+arch = "x86"
+flags = ["-O2", "-fno-pic", "-fno-pie", "-fno-stack-protector", "-fcf-protection=none", "-fno-asynchronous-unwind-tables", "-fno-ident", "-ffunction-sections", "-fdata-sections"]
+cmd = ["g++", "-m32", "-c", "-x", "c++", "{flags}", "-I{include}", "{src}", "-o", "{obj}"]
+
+[clang-linux-x86]
+name = "Clang (32-bit x86 Linux)"
+kind = "compiler"
+license = "Apache-2.0 WITH LLVM-exception"
+source = "system clang -m32"
+description = "The Clang on this machine, for 32-bit Linux programs."
+system = true
+platform = "Linux"
+arch = "x86"
+flags = ["-O2", "-fno-pic", "-fno-pie", "-fno-stack-protector", "-fcf-protection=none", "-fno-asynchronous-unwind-tables", "-fno-ident", "-ffunction-sections", "-fdata-sections"]
+cmd = ["clang", "-m32", "-c", "{flags}", "-I{include}", "{src}", "-o", "{obj}"]
+
+[clangxx-linux-x86]
+name = "Clang++ (32-bit x86 Linux, C++)"
+kind = "compiler"
+license = "Apache-2.0 WITH LLVM-exception"
+source = "system clang++ -m32"
+description = "The Clang on this machine compiling C++, for 32-bit Linux programs."
+system = true
+platform = "Linux"
+arch = "x86"
+flags = ["-O2", "-fno-pic", "-fno-pie", "-fno-stack-protector", "-fcf-protection=none", "-fno-asynchronous-unwind-tables", "-fno-ident", "-ffunction-sections", "-fdata-sections"]
+cmd = ["clang++", "-m32", "-c", "-x", "c++", "{flags}", "-I{include}", "{src}", "-o", "{obj}"]
