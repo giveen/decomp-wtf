@@ -53,6 +53,10 @@ def test_opencode_errors_say_what_failed():
            'error="ProviderModelNotFoundError: Model not found: nosuch/model." cause="ProviderModelNotFoundError: x\\n at y"')
     assert agents.clean_stderr("opencode", log) == "ProviderModelNotFoundError: Model not found: nosuch/model."
     assert agents.clean_stderr("opencode", "timestamp=1 level=WARN message=slow") == ""
+    v2 = ('timestamp=2026-10-20T01:29:59.690Z level=ERROR run=88fd477f message="cli process failed" '
+          'cause="AI.Error: Go usage limit exceeded\\n    at vV (/$bunfs/root/chunk.js:6:3619)" role=cli')
+    assert agents.clean_stderr("opencode", v2) == "AI.Error: Go usage limit exceeded"  # OpenCode 2 says cause=
+    assert agents.clean_stderr("opencode", "    at guarded (internal:shared:114:26)") == ""
     agy = 'AGY_ERROR: {"message": "quota exhausted", "code": 429}'
     assert agents.clean_stderr("antigravity", agy) == "quota exhausted"
 
@@ -104,6 +108,26 @@ def test_opencode_free_models_keep_their_tools_but_never_get_to_use_them(tmp_pat
         work.mkdir()
         m._command(s, "tok", work)
         assert json.loads((work / "opencode.json").read_text())["permission"] == {"edit": rule, "bash": rule, "webfetch": rule}
+
+
+def test_opencode_2_gets_its_own_config_shape(tmp_path, monkeypatch):
+    """OpenCode 2: servers under mcp.servers, decomp's tools offered as themselves (no Code Mode), a permissions
+    list, and a private server whose errors reach stderr. Go's free models keep their tools like Zen's."""
+    monkeypatch.setattr(agents, "_config_model", lambda kind: None)
+    monkeypatch.setattr(agents, "version", lambda kind, path: "opencode v2.0.32")
+    for model, rule in (("opencode-go/minimax-m3.1-flash-free", "ask"), ("deepseek/deepseek-chat", "deny")):
+        m = _manager(tmp_path, monkeypatch, "opencode")
+        s = agents.Session("opencode-1", "opencode", "o", "demo", "opencode-1", {"model": model})
+        work = tmp_path / f"oc2-{rule}"
+        work.mkdir()
+        cmd, _, _ = m._command(s, "tok", work)
+        assert "--standalone" in cmd and "--log-level" not in cmd
+        cfg = json.loads((work / "opencode.json").read_text())
+        assert cfg["mcp"] == {"servers": {"decomp": {"type": "remote", "url": "http://127.0.0.1:6464/mcp", "oauth": False,
+                                                     "codemode": False, "headers": {"Authorization": "Bearer tok"}}}}
+        rules = {r["action"]: r["effect"] for r in cfg["permissions"]}
+        assert rules == {"execute": "deny", "decomp_*": "allow", "edit": rule, "shell": rule, "webfetch": rule}
+    assert agents.major("opencode v2.0.32") == 2 and agents.major("1.4.3") == 1 and agents.major(None) == 0
 
 
 def test_gemini_cli_helpers_carry_on_as_antigravity():

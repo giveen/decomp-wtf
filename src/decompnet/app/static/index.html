@@ -7,6 +7,7 @@
 <title>decomp.wtf</title>
 <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/console.css">
 </head>
 <body>
 <div class="app">
@@ -26,6 +27,7 @@
     <div class="nav-projects" id="navProjects"><p class="nav-empty">None yet: drop in a game.</p></div>
     <p class="nav-label">Explore</p>
     <a class="nav-item" href="#/catalog" data-route="catalog"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h5v4H2zm7 0h5v4H9zM2 9h5v4H2zm7 0h5v4H9z"/></svg>Public decomps</a>
+    <a class="nav-item" href="#/console" data-route="console"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2h13A1.5 1.5 0 0 1 16 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 0 12.5v-9A1.5 1.5 0 0 1 1.5 2Zm1.8 3.2-1 1L4.6 8.5 2.3 10.8l1 1 3.3-3.3-3.3-3.3ZM8 10.5V12h5v-1.5H8Z"/></svg>RE console</a>
     <button class="nav-item" id="navJoin" type="button"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 7a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Zm5.5 0a2 2 0 1 1 0-4 2 2 0 0 1 0 4ZM1 13c0-2.4 2-4 4.5-4S10 10.6 10 13v1H1v-1Zm10.5 1v-1c0-1.3-.4-2.4-1.1-3.3.2 0 .4-.1.6-.1 2.2 0 4 1.3 4 3.4v1h-3.5Z"/></svg>Join a team</button>
   </div>
   <div class="nav-foot">
@@ -68,7 +70,7 @@
         <div class="cart" aria-hidden="true"><span></span></div>
         <p class="drop-title">Drop a game here</p>
         <p class="muted small">ROM, disc image or program file · or <span class="link">choose a file</span></p>
-        <div class="plat-row" id="platRow"><span data-p="gc">GameCube</span><span data-p="wii">Wii</span><span data-p="n64">N64</span><span data-p="psx">PS1</span><span data-p="ps2">PS2</span><span data-p="gba">GBA</span><span data-p="nds">DS</span><span data-p="windows">PC</span></div>
+        <div class="plat-row" id="platRow"><span data-p="gc">GameCube</span><span data-p="wii">Wii</span><span data-p="n64">N64</span><span data-p="psx">PS1</span><span data-p="ps2">PS2</span><span data-p="gba">GBA</span><span data-p="nds">DS</span><span data-p="windows">PC</span><span data-p="linux">Linux</span></div>
         <p class="plat-legend muted small" id="platLegend" hidden><span class="rec-mark">★</span> recommended: the most tested path to a full decomp you can port and mod · the rest are beta</p>
         <button class="link-btn" id="pathPick" type="button">Big disc? Use its path instead</button>
       </div>
@@ -105,7 +107,7 @@
           <button class="primary" id="errBack" type="button">Try another file</button>
           <button class="ghost" id="errCopy" type="button">Copy for a bug report</button>
           <a class="ghost btn" id="errLogLink" href="/api/log" target="_blank" rel="noopener">The full log</a>
-          <a class="ghost btn" href="https://github.com/i12bp8/decomp.wtf/issues/new" target="_blank" rel="noopener">Report it</a>
+          <a class="ghost btn" href="https://github.com/giveen/decomp.anything/issues/new" target="_blank" rel="noopener">Report it</a>
         </div>
       </div>
     </div>
@@ -405,6 +407,39 @@
     </div>
   </div>
 </main>
+
+<main id="consolePage" class="view rc" hidden>
+  <header class="rc-top">
+    <div class="rc-brand"><span class="rc-glyph" aria-hidden="true">▚</span><span>RE<b>console</b></span></div>
+    <form class="rc-target" id="rcOpen" autocomplete="off">
+      <input class="rc-input" id="rcPath" placeholder="Path to a program, library, .apk, .dll, .NET assembly, firmware image…" aria-label="Target path" spellcheck="false">
+      <select id="rcProvider" aria-label="Analysis engine" title="Analysis engine for native code"></select>
+      <button class="rc-btn go" type="submit">Open</button>
+    </form>
+    <button class="rc-btn" id="rcDecomp" type="button" hidden title="Start a byte-matching decomp project from this program">Decompile it</button>
+    <div class="rc-status"><span class="rc-led" id="rcLed"></span><span id="rcState">starting</span></div>
+    <button class="rc-btn small" id="rcSetBtn" type="button">REA settings</button>
+  </header>
+  <section class="rc-setup" id="rcSetup" hidden></section>
+  <div class="rc-body">
+    <aside class="rc-side">
+      <nav class="rc-stabs" id="rcSideTabs" aria-label="Lists">
+        <button type="button" data-side="functions">Functions<span class="n" id="rcNF"></span></button>
+        <button type="button" data-side="strings">Strings<span class="n" id="rcNS"></span></button>
+        <button type="button" data-side="segments">Memory</button>
+        <button type="button" data-side="tools">Tools<span class="n" id="rcNT"></span></button>
+      </nav>
+      <input class="rc-input rc-filter" id="rcFilter" placeholder="Filter" aria-label="Filter the list" spellcheck="false">
+      <div class="rc-list" id="rcList"></div>
+    </aside>
+    <section class="rc-stage" id="rcStage"></section>
+  </div>
+  <section class="rc-term" id="rcTerm">
+    <header><span>Terminal</span><span class="grow"></span><button type="button" id="rcClear">clear</button><button type="button" id="rcMin">hide</button></header>
+    <div class="rc-log" id="rcLog" aria-live="polite"></div>
+    <form id="rcCmd" autocomplete="off"><span>rea›</span><input id="rcCmdIn" placeholder="help · open PATH · fn ADDRESS · TOOL key=value …" aria-label="Command" spellcheck="false"></form>
+  </section>
+</main>
 </div>
 </div>
 
@@ -419,6 +454,7 @@
       <div class="row">
         <span class="badge" id="fnStatus"></span>
         <button class="ghost small-btn pin" id="fnPin" type="button" title="Agents take this function next">★ Next</button>
+        <button class="ghost small-btn" id="fnConsole" type="button" title="Open this function in the RE console (REA: Ghidra pseudocode, flow graph, callers)" hidden>RE console</button>
         <button class="ghost icon" id="fnPrev" type="button" aria-label="Previous function" title="Previous function (K)"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.3 2.7 11.4 3.8 7.2 8l4.2 4.2-1.1 1.1L5 8z"/></svg></button>
         <button class="ghost icon" id="fnNext" type="button" aria-label="Next function" title="Next function (J)"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.7 2.7 4.6 3.8 8.8 8l-4.2 4.2 1.1 1.1L11 8z"/></svg></button>
         <button class="ghost icon" data-close type="button" aria-label="Close" title="Close (Esc)">✕</button>
@@ -474,5 +510,6 @@
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <script src="/assets/app.js"></script>
+<script src="/assets/console.js"></script>
 </body>
 </html>

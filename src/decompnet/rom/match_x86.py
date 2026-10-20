@@ -23,11 +23,14 @@ from .symbols import SymbolTable
 
 # Relocation types (ELF and COFF share the two encodings the matcher needs to distinguish):
 # a PC-relative displacement or an absolute address.
-_REL = {"x86_64": {2, 4, 5, 6, 7, 8, 9}, "x86": {2, 20}}
+_REL = {"x86_64": {2, 4, 5, 6, 7, 8, 9, 41, 42}, "x86": {2, 4, 20}}
 _ABS = {"x86_64": {1, 10, 11}, "x86": {1, 6, 7, 11}}
+# ELF relocations through the GOT (R_X86_64_GOTPCREL, GOTPCRELX, REX_GOTPCRELX): they point at the
+# symbol's slot, named `<symbol>@got` by elfexe.py.
+_GOT = {"x86_64": {9, 41, 42}, "x86": set()}
 _FIELD_SIZE = {("x86_64", 1): 8, ("x86_64", 2): 4, ("x86_64", 4): 4, ("x86_64", 5): 4, ("x86_64", 6): 4,
          ("x86_64", 7): 4, ("x86_64", 8): 4, ("x86_64", 9): 4, ("x86_64", 10): 4, ("x86_64", 11): 4,
-         ("x86", 1): 4, ("x86", 2): 4, ("x86", 6): 4, ("x86", 7): 4, ("x86", 11): 4, ("x86", 20): 4}
+         ("x86", 1): 4, ("x86", 2): 4, ("x86", 4): 4, ("x86", 6): 4, ("x86", 7): 4, ("x86", 11): 4, ("x86", 20): 4}
 
 
 @dataclass
@@ -119,7 +122,8 @@ def link(obj: bytes, name: str, target: X86Target, symbols: SymbolTable) -> Link
         field_type, original = t[1], t[2]
         same_kind = (r.type in _REL[target.arch] and field_type in _REL[target.arch]) or \
                     (r.type in _ABS[target.arch] and field_type in _ABS[target.arch])
-        base = _resolve(symbols, r.symbol)
+        got = candidate.format == "elf" and r.type in _GOT[target.arch]
+        base = _resolve(symbols, f"{r.symbol}@got") if got else _resolve(symbols, r.symbol)
         if base is None:
             # A section-relative or local reference: the encoded value is what a linker would keep.
             size = _field_size(target.arch, r.type)
@@ -133,7 +137,7 @@ def link(obj: bytes, name: str, target: X86Target, symbols: SymbolTable) -> Link
         if candidate.format == "elf" and r.type in _REL[target.arch]:
             # ELF RELA stores the addend with P subtracted; COFF REL32 is relative to the field's end.
             dest += t[3] - r.offset
-        dest &= (1 << 64) - 1
+        dest &= (1 << (32 if target.arch == "x86" else 64)) - 1  # i386 REL addends are read unsigned (-4 = 0xfffffffc)
         if dest != original:
             got = symbols.label(dest) if dest < 1 << 63 else hex(dest)
             problems.append(f"refers to {got} where the original refers to {symbols.label(original)} (byte 0x{r.offset:X})")

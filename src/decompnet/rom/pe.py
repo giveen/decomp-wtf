@@ -270,12 +270,13 @@ def _md(arch: str) -> capstone.Cs:
     return capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
 
 
-def _decode(code: bytes, vram: int, arch: str, image_lo: int, image_hi: int):
+def _decode(code: bytes, vram: int, arch: str, image_lo: int, image_hi: int, absolute: bool = False):
     """(text lines, insn count, refs) for a function's bytes.
 
     A ref is (offset of the field, relocation type, the address it points at, offset where the
     instruction ends). The relocation type uses the compiler's own numbering so it can mask the
-    same bytes in a candidate object."""
+    same bytes in a candidate object. `absolute` also takes indexed absolute operands (`arr(,%rax,4)`)
+    and 32-bit immediates that point into the image (`mov $str, %edi`): non-PIC ELF code is full of both."""
     md = _md(arch)
     md.detail = True
     md.skipdata = True
@@ -294,14 +295,16 @@ def _decode(code: bytes, vram: int, arch: str, image_lo: int, image_hi: int):
         if direct and e.imm_size and ins.operands and ins.operands[0].type == capstone.x86.X86_OP_IMM:
             value = ins.operands[0].imm
             field = ins.address - vram + e.imm_offset
-            target = (field, pc_rel, value, end)
+            # A jump inside the function is resolved by the assembler: the candidate has no relocation there.
+            if not vram < value < vram + len(code):
+                target = (field, pc_rel, value, end)
         elif e.disp_size and ins.operands:
             mem = next((o.mem for o in ins.operands if o.type == capstone.x86.X86_OP_MEM), None)
             if mem is not None:
                 if mem.base == rip:
                     value = ins.address + ins.size + mem.disp
-                elif mem.base == 0 and mem.index == 0 and mem.segment == 0:
-                    value = mem.disp
+                elif mem.base == 0 and (mem.index == 0 or absolute) and mem.segment == 0:
+                    value = mem.disp & (0xFFFFFFFF if arch == "x86" else 0xFFFFFFFFFFFFFFFF)
                 else:
                     value = None
                 if value is not None and image_lo <= value < image_hi:
@@ -309,6 +312,10 @@ def _decode(code: bytes, vram: int, arch: str, image_lo: int, image_hi: int):
         if target is not None:
             off, rtype, addr, fin = target
             refs.append((off, rtype, addr & 0xFFFFFFFFFFFFFFFF, fin))
+        if absolute and not direct and e.imm_size == 4:
+            imm = next((o.imm for o in ins.operands if o.type == capstone.x86.X86_OP_IMM), None)
+            if imm is not None and image_lo <= imm < image_hi:
+                refs.append((ins.address - vram + e.imm_offset, abs32, imm, end))
         lines.append(f"/* {ins.address - vram:06X} {ins.address:08X} */  {ins.mnemonic:<8} {ins.op_str}".rstrip())
     return lines, count, refs
 
@@ -333,12 +340,31 @@ def read(data: bytes, name: str = "") -> PeImage:
     for sym in _imports(data, sections, dirs, image_base, plus):
         add(sym)
     pdata = _pdata(data, sections, dirs, image_base, machine)
+    functions, symbols, data_rows = build(data, arch, image_base, sections, symbols, pdata,
+                                          image_base + entry if entry else 0)
+    compiler = "MSVC" if b"Rich" in data[:0x400] and b"rsds" not in data else "MinGW-w64" \
+        if any(s.name.startswith("__mingw") or s.name == "_start" for s in symbols) else "unknown"
+    info = {
+        "title": (name.rsplit(".", 1)[0] if name else "windows-game").replace("_", " ").strip() or "windows-game",
+        "game_code": "", "region": "PC", "size": len(data), "sha1": hashlib.sha1(data).hexdigest(),
+        "compiler_guess": compiler, "byte_order": "little", "entrypoint": image_base + entry if entry else 0,
+        "machine": f"{machine:04X}", "image_base": image_base, "pe32_plus": plus,
+    }
+    return PeImage(arch, machine, image_base, info, sections, functions, symbols, data_rows,
+                   image_base + entry if entry else 0, plus)
 
+
+def build(data: bytes, arch: str, image_base: int, sections: list[PeSection], symbols: list[Symbol],
+          ranges: list[tuple[int, int]], entry: int, *, image_lo: int | None = None, absolute: bool = False):
+    """(functions, symbols, data rows) of an x86 image, PE or ELF. `ranges` are exact function bounds (.pdata,
+    .eh_frame, sized symbols); `entry` is an absolute address (0: none)."""
+    image_lo = image_base if image_lo is None else image_lo
     exec_sections = [s for s in sections if s.code and s.raw_size]
     md = _md(arch)
     md.detail = True
     md.skipdata = True
     image_hi = image_base + max((s.va + max(s.size, s.raw_size) for s in sections), default=0x1000)
+    pdata = ranges
 
     # Function starts: exception directory, symbols, exports, entry, then direct call targets.
     starts: dict[int, str] = {}
@@ -348,7 +374,7 @@ def read(data: bytes, name: str = "") -> PeImage:
         if sym.kind == "func":
             starts.setdefault(sym.address, sym.name)
     if entry:
-        starts.setdefault(image_base + entry, "entry" if not any(s.address == image_base + entry for s in symbols) else "")
+        starts.setdefault(entry, "entry" if not any(s.address == entry for s in symbols) else "")
     for sec in exec_sections:
         body = sec.data(data)
         for ins in md.disasm(body, image_base + sec.va):
@@ -391,7 +417,7 @@ def read(data: bytes, name: str = "") -> PeImage:
             continue
         fname = named.get(start) or starts.get(start) or f"sub_{start:08X}"
         seen.add(start)
-        lines, count, refs = _decode(code, start, arch, image_base, image_hi)
+        lines, count, refs = _decode(code, start, arch, image_lo, image_hi, absolute)
         asm = "\n".join([f"glabel {fname}", *lines, f"endlabel {fname}"])
         functions.append(PeFunction(fname, start, sec.raw + start - (image_base + sec.va), sec.name, code, asm, count,
                                     refs, exact))
@@ -405,7 +431,7 @@ def read(data: bytes, name: str = "") -> PeImage:
             known.add(f.vram)
     for f in functions:
         for _field, _type, addr, _end in f.refs:
-            if image_base <= addr < image_hi and addr not in known:
+            if image_lo <= addr < image_hi and addr not in known:
                 symbols.append(Symbol(f"D_{addr:08X}", addr, 0, "data"))
                 known.add(addr)
 
@@ -437,14 +463,4 @@ def read(data: bytes, name: str = "") -> PeImage:
             continue
         preview = sym.preview if sym.name.startswith("STR_") else ""
         data_rows.append((sym.name, sym.address, sym.size, sym.kind, preview))
-
-    compiler = "MSVC" if b"Rich" in data[:0x400] and b"rsds" not in data else "MinGW-w64" \
-        if any(s.name.startswith("__mingw") or s.name == "_start" for s in symbols) else "unknown"
-    info = {
-        "title": (name.rsplit(".", 1)[0] if name else "windows-game").replace("_", " ").strip() or "windows-game",
-        "game_code": "", "region": "PC", "size": len(data), "sha1": hashlib.sha1(data).hexdigest(),
-        "compiler_guess": compiler, "byte_order": "little", "entrypoint": image_base + entry if entry else 0,
-        "machine": f"{machine:04X}", "image_base": image_base, "pe32_plus": plus,
-    }
-    return PeImage(arch, machine, image_base, info, sections, functions, symbols, data_rows,
-                   image_base + entry if entry else 0, plus)
+    return functions, symbols, data_rows

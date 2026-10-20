@@ -1,7 +1,7 @@
 [project]
 name = "decompnet"
 version = "0.10.6"
-description = "decomp.wtf (What The Function): your AI agent decompiles games you own into C that compiles to the exact same bytes, with a live view. Runs locally."
+description = "decomp.anything: a fork of decomp.wtf that uses AI agents to reverse-engineer games, programs, apps, web pages, firmware and files. Runs locally."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -24,8 +24,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://decomp.wtf"
-Source = "https://github.com/i12bp8/decomp.wtf"
+Homepage = "https://github.com/giveen/decomp.anything"
+Source = "https://github.com/giveen/decomp.anything"
 
 [project.scripts]
 decompnet = "decompnet.cli:main"

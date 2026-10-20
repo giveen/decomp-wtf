@@ -30,10 +30,11 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from .. import __version__, hostenv, toolchains
+from .. import __version__, hostenv, rea, toolchains
 from ..network import NetworkError
 from ..rom.n64 import RomError
 from . import agents, chat, collab, connect, tools, updates
+from .console import Console, ConsoleError
 from .engine import COMPILERS, MW_VERSIONS, PLATFORM_STATUS, SHORT_NAMES, TOOLS, RomNetwork
 
 COOKIE = "decomp_live"
@@ -263,6 +264,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     jobs = Jobs(home / "logs" / "decomp.log")
     settings = Settings(home / "settings.json")
     manager.budget = lambda: float(settings.data.get("budget_usd") or 0)
+    rea.CONFIG = home / "rea.json"  # how REA starts: the RE console's settings, the agents' bridge reads them too
+    console = Console()
 
     def remember(running: list[dict]) -> None:
         settings.data["running_agents"] = running
@@ -947,6 +950,62 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             settings.data["check_updates"] = bool(data["check_updates"])
         settings.save()
         return JSONResponse(settings.public())
+
+    # ------------------------------------------------------------------ RE console (console.py, REA)
+
+    @mcp.custom_route("/api/rea", methods=["GET"])
+    async def api_rea(request: Request) -> Response:
+        return guard(request) or JSONResponse(await call(console.status))
+
+    @mcp.custom_route("/api/rea/settings", methods=["POST"])
+    async def api_rea_settings(request: Request) -> Response:
+        if (bad := guard(request, write=True)):
+            return bad
+        data = await body(request)
+        env = data.get("env") if isinstance(data.get("env"), dict) else {}
+        try:
+            return JSONResponse(await call(console.configure, data.get("command") or "", env,
+                                           str(data.get("provider") or "")))
+        except ConsoleError as e:
+            return fail(e)
+
+    @mcp.custom_route("/api/rea/tools", methods=["GET"])
+    async def api_rea_tools(request: Request) -> Response:
+        if (bad := guard(request)):
+            return bad
+        try:
+            return JSONResponse(await call(console.tools))
+        except ConsoleError as e:
+            return fail(e, 503)
+
+    @mcp.custom_route("/api/rea/call", methods=["POST"])
+    async def api_rea_call(request: Request) -> Response:
+        """Any REA tool, as a job (opening a big program in Ghidra takes minutes). Tools that aren't read-only
+        run only with `confirm`: the page asks the user first."""
+        if (bad := guard(request, write=True)):
+            return bad
+        data = await body(request)
+        tool, args = str(data.get("tool") or ""), data.get("arguments") or {}
+        if not isinstance(args, dict):
+            return fail(ValueError("arguments must be an object"))
+        try:
+            why = await call(console.needs_confirm, tool)
+        except ConsoleError as e:
+            return fail(e)
+        if why and data.get("confirm") is not True:
+            return JSONResponse({"error": f"{tool} {' and '.join(why)}: confirm to run it", "confirm": why},
+                                status_code=409)
+        for jid, job in list(jobs.jobs.items()):  # answers can be megabytes: keep only recent ones
+            if job["kind"] == "rea" and job["state"] != "running" and time.time() - job["t"] > 600:
+                jobs.jobs.pop(jid, None)
+        return JSONResponse({"job": jobs.start("rea", lambda log: console.call(tool, args, log))})
+
+    @mcp.custom_route("/api/rea/stop", methods=["POST"])
+    async def api_rea_stop(request: Request) -> Response:
+        if (bad := guard(request, write=True)):
+            return bad
+        await call(console.stop)
+        return JSONResponse(await call(console.status))
 
     # ------------------------------------------------------------------ updates (updates.py)
 

@@ -70,8 +70,8 @@ def status(kind: str) -> bool:
         if kind == "antigravity":  # a table: NAME TYPE STATUS COMMAND/URL
             return any(line.split()[:1] == [NAME] for line in _run([exe, "mcp", "list"], 30).stdout.splitlines())
         if kind == "opencode":
-            cfg = json.loads(_opencode_config().read_text(encoding="utf-8"))
-            return NAME in (cfg.get("mcp") or {})
+            mcp = json.loads(_opencode_config().read_text(encoding="utf-8")).get("mcp") or {}
+            return NAME in mcp or NAME in (mcp.get("servers") or {})  # OpenCode 2's shape, or the one before
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return False
     return False
@@ -91,8 +91,12 @@ def connect(kind: str) -> str:
                    else {"$schema": "https://opencode.ai/config.json"})
         except ValueError:
             raise ValueError(f"{path} isn't plain JSON (comments?); add this yourself: {shown(kind)}") from None
-        cfg.setdefault("mcp", {})[NAME] = {"type": "local", "command": bridge_command(), "enabled": True,
-                                          "environment": {"DECOMP_AGENT_NAME": LABEL[kind]}}
+        entry = {"type": "local", "command": bridge_command(), "environment": {"DECOMP_AGENT_NAME": LABEL[kind]}}
+        mcp = cfg.setdefault("mcp", {})
+        if "servers" in mcp:  # a file in OpenCode 2's shape (OpenCode 2 still reads the earlier one)
+            mcp["servers"][NAME] = entry
+        else:
+            mcp[NAME] = {**entry, "enabled": True}
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
         return f"added decomp.wtf to {path}"

@@ -36,8 +36,21 @@ DEFAULT_TOOLCHAIN = {"KMC": "gcc-2.7.2-kmc", "IDO": "ido-7.1", "PSYQ": "gcc-2.7.
 # of project as decomp.dev's, linked file by file as it's finished; N64: tested on real games, rebuilt byte for byte).
 # beta: works and is tested on homemade games, less so on real ones yet.
 PLATFORM_STATUS = {"gc": "recommended", "wii": "recommended", "n64": "recommended",
-                   "psx": "beta", "ps2": "beta", "gba": "beta", "nds": "beta", "windows": "beta"}
+                   "psx": "beta", "ps2": "beta", "gba": "beta", "nds": "beta", "windows": "beta", "linux": "beta"}
+# PC programs: split from the executable itself (pe.py, elfexe.py) and judged by the x86 matcher.
+X86_PLATFORMS = ("windows", "linux")
+LINUX_COMPILERS = {
+    "gcc-linux-x86_64": ("GCC (x86-64)", "Linux programs (x86-64), with the GCC on this machine"),
+    "gxx-linux-x86_64": ("G++ (x86-64)", "Linux C++ programs (x86-64), with the G++ on this machine"),
+    "clang-linux-x86_64": ("Clang (x86-64)", "Linux programs (x86-64), with the Clang on this machine"),
+    "clangxx-linux-x86_64": ("Clang++ (x86-64)", "Linux C++ programs (x86-64), with the Clang++ on this machine"),
+    "gcc-linux-x86": ("GCC (x86)", "Linux programs (32-bit x86), with the GCC on this machine"),
+    "gxx-linux-x86": ("G++ (x86)", "Linux C++ programs (32-bit x86), with the G++ on this machine"),
+    "clang-linux-x86": ("Clang (x86)", "Linux programs (32-bit x86), with the Clang on this machine"),
+    "clangxx-linux-x86": ("Clang++ (x86)", "Linux C++ programs (32-bit x86), with the Clang++ on this machine"),
+}
 COMPILERS = {
+    **{k: use for k, (_short, use) in LINUX_COMPILERS.items()},
     "mingw-x86_64": "Windows games (x86-64), with the GCC on this machine",
     "mingw-x86": "Windows games (32-bit x86), with the GCC on this machine",
     "clang-cl-x86_64": "Windows games (x86-64), with LLVM's MSVC-compatible clang-cl",
@@ -53,7 +66,8 @@ COMPILERS = {
 SHORT_NAMES = {"gcc-2.7.2-kmc": "KMC GCC 2.7.2", "ido-7.1": "IDO 7.1", "ido-5.3": "IDO 5.3",
                "gcc-2.7.2-psx": "GCC 2.7.2 (PS1)", "gcc-2.8.1-psx": "GCC 2.8.1 (PS1)", "ee-gcc-2.96": "EE-GCC 2.96",
                "agbcc": "agbcc", "mingw-x86_64": "MinGW-w64 GCC (x86-64)", "mingw-x86": "MinGW-w64 GCC (x86)",
-               "clang-cl-x86_64": "clang-cl (x86-64)", "clang-cl-x86": "clang-cl (x86)"}
+               "clang-cl-x86_64": "clang-cl (x86-64)", "clang-cl-x86": "clang-cl (x86)",
+               **{k: short for k, (short, _use) in LINUX_COMPILERS.items()}}
 # CodeWarrior versions in the `mwcc` pack (GameCube, Wii) and the `mwccarm` pack (DS), for games started from scratch.
 MW_VERSIONS = {
     "gc": ["GC/1.0", "GC/1.1", "GC/1.1p1", "GC/1.2.5", "GC/1.2.5n", "GC/1.3", "GC/1.3.2", "GC/1.3.2r", "GC/2.0",
@@ -71,6 +85,7 @@ TOOLS = {
     "m2c": "machine-made first drafts (MIPS, PowerPC, ARM)",
     "objdiff-cli": "judges forks of public decomps, function by function",
     "ghidra": "drafts for PC, Switch and other platforms m2c can't read (540 MB, needs Java 21+)",
+    "rea": "the RE console and the agents' inspect_binary (needs Node.js; native code needs Ghidra, Hopper or IDA)",
     "mwcc": "CodeWarrior, the compilers of GameCube and Wii games (proprietary)",
     "mwccarm": "CodeWarrior for DS, the compilers of DS games (proprietary)",
     "dsd": "ds-decomp: analyses DS ROMs and rebuilds them",
@@ -81,11 +96,25 @@ WINDOWS_NOTE = """
  * game's direct RIP-relative access. Imported functions are the exception: declare those
  * `__declspec(dllimport)`, which is exactly the indirect call through the import table the game makes. */
 """
+LINUX_NOTE = """
+/* Linux: calls into shared libraries (memcpy, printf, operator new) go through the program's PLT stubs, which
+ * are named after the function: declare them yourself (system headers can't be included). Globals can be
+ * `extern` or defined here. With a C++ compiler the names to match are the mangled ones (_ZN7Archive4OpenEv):
+ * write the C++ that mangles to them, or wrap a sub_<address> you write in `extern "C" { ... }`. */
+"""
 
 # Functions this small are handed out in batches (claim_function count): agents match most on the first try.
 BATCH_INSNS = 48
 PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": ["gcc-2.7.2-psx", "gcc-2.8.1-psx"],
-                      "ps2": ["ee-gcc-2.96"], "gba": ["agbcc"], "windows": ["mingw-x86_64", "mingw-x86", "clang-cl-x86_64", "clang-cl-x86"]}
+                      "ps2": ["ee-gcc-2.96"], "gba": ["agbcc"], "windows": ["mingw-x86_64", "mingw-x86", "clang-cl-x86_64", "clang-cl-x86"],
+                      "linux": list(LINUX_COMPILERS)}
+
+
+def _linux_flags(flags: list[str], pie: bool) -> list[str]:
+    """A Linux toolchain's flags for this program: position-independent programs are compiled -fPIE."""
+    return [f for f in flags if f not in ("-fno-pic", "-fno-pie")] + ["-fPIE"] if pie else list(flags)
+
+
 _AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")
 _ADDRESS = re.compile(r"^(?:0x)?([0-9A-Fa-f]{8})$")
 
@@ -320,7 +349,7 @@ class RomNetwork(Network):
     def _target_obj(self, fn, proj):
         if not self.is_rom(proj):
             return super()._target_obj(fn, proj)
-        if self.cfg(proj).get("platform") == "windows":
+        if self.cfg(proj).get("platform") in X86_PLATFORMS:
             from ..rom import match_x86
 
             return match_x86.target_obj(self._x86_target(fn, proj), self.symbols(proj["id"]))
@@ -331,7 +360,7 @@ class RomNetwork(Network):
     def _evaluate(self, fn, proj, obj: bytes):
         if not self.is_rom(proj):
             return super()._evaluate(fn, proj, obj)
-        if self.cfg(proj).get("platform") == "windows":
+        if self.cfg(proj).get("platform") in X86_PLATFORMS:
             from ..rom import match_x86
 
             res = match_x86.link(obj, fn["name"], self._x86_target(fn, proj), self.symbols(proj["id"]))
@@ -400,7 +429,7 @@ class RomNetwork(Network):
             f"{info['region']}), {size}, looks built with {info['compiler_guess']}")
         if picked.platform == "gba":
             return self._import_gba(picked, slug, workdir, toolchain, flags, log)
-        if picked.platform == "windows":
+        if picked.platform in X86_PLATFORMS:
             return self._import_windows(picked, slug, workdir, toolchain, flags, log)
         if picked.overlays:
             log(f"{len(picked.overlays)} overlay{'s' if len(picked.overlays) != 1 else ''} on the disc: "
@@ -513,17 +542,30 @@ class RomNetwork(Network):
 
     def _import_windows(self, picked, slug: str, workdir: Path, toolchain: str | None, flags: list[str] | None,
                         log) -> str:
-        """Windows: functions from .pdata/exports/symbols/call targets, matched against a compiled object by
-        the x86 matcher. The target is the game's own PE image, so every function's bytes and addresses are final."""
-        image = pe.read(picked.data, picked.filename)
+        """Windows and Linux programs: functions from .pdata/.eh_frame/exports/symbols/call targets, matched
+        against a compiled object by the x86 matcher. The target is the program's own image, so every function's
+        bytes and addresses are final."""
+        from ..rom import elfexe
+
+        linux = picked.platform == "linux"
+        image = (elfexe if linux else pe).read(picked.data, picked.filename)
         info = picked.info  # the name the user picked (not the canonical game.exe the copy is stored as)
-        toolchain = toolchain or ("mingw-x86_64" if image.arch == "x86_64" else "mingw-x86")
+        suffix = "x86_64" if image.arch == "x86_64" else "x86"
+        if linux:
+            # .comment names the compiler; C++ programs call into libstdc++, whose names are mangled (_Z...).
+            family = "clang" if "clang" in info["compiler_guess"].lower() else "gcc"
+            cxx = any(s.name.startswith("_Z") for s in image.symbols)
+            driver = {"gcc": "gxx", "clang": "clangxx"}[family] if cxx else family
+            toolchain = toolchain or f"{driver}-linux-{suffix}"
+        toolchain = toolchain or f"mingw-{suffix}"
         tc = toolchains.get(toolchain)
         if toolchains.installed(toolchain) is None:
             log(f"{tc.name} isn't on this computer: functions import and can be inspected, but compiling needs it "
                 f"(install it, or set another [compiler] for the project)")
+        if linux and not flags:
+            flags = _linux_flags(tc.flags, info.get("pie", False))
         cfg = {
-            "kind": "rom", "platform": "windows", "arch": image.arch, "big_endian": False, "gp": 0,
+            "kind": "rom", "platform": picked.platform, "arch": image.arch, "big_endian": False, "gp": 0,
             "rom": {**info, "file": picked.filename, "program": picked.filename},
             "segments": image.segments,
             "compiler": {"toolchain": toolchain, "flags": flags or [], "timeout": 20},
@@ -553,7 +595,8 @@ class RomNetwork(Network):
                 db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,preview) "
                            "VALUES(?,?,?,?,?,?)", (pid, sym.name, sym.address, sym.size, sym.kind, sym.preview or None))
             db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
-                       "VALUES(?,?,?,?,?,?,?)", (pid, 1, BASE_HEADER.format(title=info["title"]) + WINDOWS_NOTE,
+                       "VALUES(?,?,?,?,?,?,?)", (pid, 1, BASE_HEADER.format(title=info["title"])
+                                                  + (LINUX_NOTE if linux else WINDOWS_NOTE),
                                                   None, "basic types", now, ""))
             self._event(db, pid, None, "import", f"{len(image.functions)} functions from {info['title']}")
         log(f"ready: {len(image.functions)} functions to decompile")
@@ -618,7 +661,7 @@ class RomNetwork(Network):
 
     def _seed_for(self, fn, proj) -> str | None:
         """m2c draft, made the first time someone opens the function (imports stay fast)."""
-        if self.cfg(proj).get("platform") == "windows":
+        if self.cfg(proj).get("platform") in X86_PLATFORMS:
             return self._rea_seed(fn, proj)
         if fn["seed"] is not None or not seeds.available():
             return fn["seed"]
@@ -674,6 +717,9 @@ class RomNetwork(Network):
         funcs = self.store.all("SELECT name, vram, size, relocs FROM functions WHERE project_id=?", proj["id"])
         starts = {f["vram"] for f in funcs}
         calls, called_by, uses, used_by = {}, {}, {}, {}
+        # Calls to something not known as a function are not data: R_MIPS_26, or 10, a Thumb call (GBA). On x86
+        # those numbers are RIP-relative and absolute data references, so nothing is left out there.
+        not_data = () if self.cfg(proj).get("platform") in X86_PLATFORMS else (match.R_MIPS_26, 10)
         for f in funcs:
             for row in json.loads(f["relocs"]):
                 off, rtype, addr = row[0], row[1], row[2]
@@ -682,7 +728,7 @@ class RomNetwork(Network):
                 if addr in starts:
                     calls.setdefault(f["vram"], set()).add(addr)
                     called_by.setdefault(addr, set()).add(f["vram"])
-                elif rtype not in (match.R_MIPS_26, 10):  # 10: a Thumb call (GBA) to something not known as a function
+                elif rtype not in not_data:
                     uses.setdefault(f["vram"], set()).add(addr)
                     used_by.setdefault(addr, set()).add(f["vram"])
         self._xrefs[proj["id"]] = {"calls": calls, "called_by": called_by, "uses": uses, "used_by": used_by}
@@ -724,6 +770,13 @@ class RomNetwork(Network):
                 # nearly the same code: its matching C is the best starting point there is (saves a tool call)
                 lines += [f"Matching C of {r['name']} ({sim * 100:.0f}% similar): start from this",
                           "```c", src["matched_source"].strip(), "```"]
+        if (roots := self.references(proj["slug"])):
+            from . import references
+
+            hits = references.search(roots, rf"0x0*{fn['vram']:x}\b")
+            if hits != "no matches":
+                lines += ["", "### In the reference folders (read_file / search_code for more)",
+                          *hits.splitlines()[:12]]
         lines += ["", "Names: use the names shown here (or rename_symbol to give an address a real name). "
                       "Your code is linked at this function's address and must reproduce the ROM bytes exactly."]
         return lines
@@ -805,8 +858,8 @@ class RomNetwork(Network):
         fn = self._function(function, project)
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
         cfg = self.cfg(proj)
-        if cfg.get("platform") != "windows":
-            raise NetworkError("inspect_binary is for Windows PE projects: use get_function for this one")
+        if cfg.get("platform") not in X86_PLATFORMS:
+            raise NetworkError("inspect_binary is for Windows and Linux programs: use get_function for this one")
         binary = Path(proj["root"]) / cfg["rom"]["program"]
         syms = self.symbols(proj["id"])
         try:
@@ -830,8 +883,8 @@ class RomNetwork(Network):
         decomp.wtf knows (symbol and function names)."""
         proj = self._project(project)
         cfg = self.cfg(proj)
-        if cfg.get("platform") != "windows":
-            raise NetworkError("search_binary is for Windows PE projects")
+        if cfg.get("platform") not in X86_PLATFORMS:
+            raise NetworkError("search_binary is for Windows and Linux programs")
         try:
             from .. import rea
 
@@ -889,9 +942,9 @@ class RomNetwork(Network):
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
         if not self.is_rom(proj):
             raise NetworkError("split_function is for ROM projects")
-        if self.cfg(proj).get("platform") == "windows":
-            raise NetworkError("split_function isn't needed on Windows: PE function boundaries come from the "
-                               "executable (.pdata, its symbol table and call targets)")
+        if self.cfg(proj).get("platform") in X86_PLATFORMS:
+            raise NetworkError("split_function isn't needed for PC programs: function boundaries come from the "
+                               "executable (.pdata or .eh_frame, its symbol table and call targets)")
         if fn["status"] == "matched":
             raise NetworkError(f"{fn['name']} is matched; it can't be split")
         m = _ADDRESS.match(str(at).strip())
@@ -1044,7 +1097,7 @@ class RomNetwork(Network):
                 db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
                            (proj["id"], new, s.address, s.size, s.kind))
             db.execute("UPDATE functions SET name=? WHERE project_id=? AND (name=? OR vram=?)", (new, proj["id"], old, addr))
-            if self.cfg(proj).get("platform") == "windows":  # its listing was generated once, with the old label
+            if self.cfg(proj).get("platform") in X86_PLATFORMS:  # its listing was generated once, with the old label
                 db.execute("UPDATE functions SET asm=replace(replace(asm, ?, ?), ?, ?) WHERE project_id=? AND vram=?",
                            (f"glabel {old}", f"glabel {new}", f"endlabel {old}", f"endlabel {new}", proj["id"], addr))
             for u, header in changed.items():
@@ -1402,9 +1455,9 @@ class RomNetwork(Network):
         from ..rom.export_gba import export_gba
 
         proj = self._project(slug)
-        if self.cfg(proj).get("platform") == "windows":
-            raise NetworkError("exporting a Windows game isn't implemented yet: matching and REA inspection work, "
-                               "but there is no rebuildable PE project to write")
+        if self.cfg(proj).get("platform") in X86_PLATFORMS:
+            raise NetworkError("exporting a PC program isn't implemented yet: matching and REA inspection work, "
+                               "but there is no rebuildable project to write")
         export = export_gba if self.cfg(proj).get("platform") == "gba" else export_rom
         res = export(self, slug, Path(proj["root"]) / "source", log=log)
         with self.store.tx() as db:  # shown on the project page: what's in the tree and whether it rebuilds
@@ -1458,7 +1511,7 @@ class RomNetwork(Network):
             "folder": proj["root"],
             "export": cfg.get("export"),
             "exportable": cfg.get("platform", "n64") in ("n64", "psx", "ps2", "gba"),
-            "binary": cfg.get("rom", {}).get("program") if cfg.get("platform") == "windows" else None,
+            "binary": cfg.get("rom", {}).get("program") if cfg.get("platform") in X86_PLATFORMS else None,
             "room": self._room_info(proj["slug"]),
         }
 
@@ -1529,6 +1582,15 @@ class RomNetwork(Network):
 
     def instructions(self, slug: str) -> str:
         return self.cfg(self._project(slug)).get("instructions") or ""
+
+    def references(self, slug: str) -> list[Path]:
+        """Folders named in the user's instructions that the project's agents may read (ROM projects; not in a
+        room, whose instructions could come from someone else's computer)."""
+        from . import references
+
+        if self.fork_slug(slug) or self.links.get(slug) is not None:
+            return []
+        return references.named(self.instructions(slug))
 
     def set_priority(self, slug: str, name: str, on: bool = True) -> list[str]:
         """Functions the user wants done next: automatic claims take these first."""
@@ -1688,7 +1750,7 @@ class RomNetwork(Network):
             if fn is None or fn["status"] != "open" or db.execute("SELECT 1 FROM claims WHERE function_id=?", (fid,)).fetchone():
                 return "skip"
             db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fid, agent.id, now, now + 300))
-        if self.cfg(proj).get("platform") == "windows":
+        if self.cfg(proj).get("platform") in X86_PLATFORMS:
             return "skip"  # m2c has no x86 target; a draft comes from REA (inspect_binary) instead
         try:
             self._seed_for(fn, proj)  # the readable draft, for the agents that come after
@@ -1836,6 +1898,8 @@ class RomNetwork(Network):
         proj = self._project(slug)
         tc = toolchains.get(toolchain)
         cfg = self.cfg(proj)
+        if not flags and cfg.get("platform") == "linux":
+            flags = _linux_flags(tc.flags, cfg.get("rom", {}).get("pie", False))
         cfg["compiler"] = {"toolchain": tc.id, "flags": flags or tc.flags, "timeout": 20}
         with self.store.tx() as db:
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
