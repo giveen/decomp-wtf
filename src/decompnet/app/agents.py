@@ -527,6 +527,7 @@ class Session:
     seq: int = 0
     stop: threading.Event = field(default_factory=threading.Event)
     proc: subprocess.Popen | None = None
+    http: httpx.Client | None = None  # an API agent's request in flight; closing it aborts the wait
     usd: float = 0.0  # what the agent's provider charged, as the agent reports it
     tokens: int = 0
     signed_out: bool = False  # the agent CLI isn't signed in: trying again won't help
@@ -631,6 +632,11 @@ class Manager:
                 s.stop.set()
                 if s.proc and s.proc.poll() is None:
                     _terminate(s.proc)
+                if s.http is not None:  # a local model can take minutes to answer: don't wait for it
+                    try:
+                        s.http.close()
+                    except Exception:
+                        pass
                 if s.state not in ("error",):
                     s.state = "stopped"
         if sid is not None:
@@ -1000,57 +1006,75 @@ class Manager:
         messages = [{"role": "system", "content": tools.INSTRUCTIONS},
                     {"role": "user", "content": self.prompt(s)}]
         used_tool = False
-        with httpx.Client(timeout=httpx.Timeout(300, connect=15)) as client:
-            window = context_window(client, base, s.options)
-            s.push("info", f"session {s.runs}: {model} via {base} ({window // 1000}K tokens of context)")
-            budget = int(window * 0.7) - _tokens(schema)  # room for the reply and the tools' definitions
-            for _step in range(int(s.options.get("max_steps", 120))):
-                if s.stop.is_set():
-                    return True
-                for _attempt in range(4):
-                    fit(messages, budget)
-                    r = client.post(f"{base}/chat/completions", headers=headers,
-                                    json={"model": model, "messages": messages, "tools": schema, "tool_choice": "auto"})
-                    if r.status_code == 200 or not _too_long(r):
-                        break
-                    budget = int(budget * 0.6)  # the server counts differently, or knows better: trim more
-                if r.status_code != 200:
-                    if (why := no_credit(r.text)) or r.status_code == 402:
-                        raise Fatal(why or no_credit("payment required"))
-                    s.throttled = r.status_code == 429 or bool(_THROTTLED.search(r.text))
-                    s.error = f"API error {r.status_code}: {r.text[:300]}"
-                    if _too_long(r):
-                        s.error = ("the model's context is too small for this work even after trimming: give it at "
-                                   "least 16K tokens (llama.cpp: -c 16384; Ollama: OLLAMA_CONTEXT_LENGTH=16384; LM "
-                                   "Studio: Context Length) and set it in Agents & models")
-                    s.push("error", s.error)
-                    return False
-                reply = r.json()
-                msg = reply["choices"][0]["message"]
-                usage = reply.get("usage") if isinstance(reply.get("usage"), dict) else {}
-                if usage.get("total_tokens"):
-                    self._account(s, {"tokens": usage["total_tokens"]})
-                if msg.get("reasoning_content"):
-                    s.push("think", msg["reasoning_content"][:2000])
-                if msg.get("content"):
-                    s.push("text", msg["content"])
-                calls = msg.get("tool_calls") or []
-                messages.append({k: v for k, v in msg.items() if k in ("role", "content", "tool_calls")} | {"role": "assistant"})
-                if not calls:
-                    return used_tool
-                for c in calls:
-                    name = c["function"]["name"]
-                    try:
-                        args = json.loads(c["function"].get("arguments") or "{}")
-                    except ValueError:
-                        args = {}
-                    used_tool = True
-                    s.push("tool", f"{name}({_args_brief(args)})")
-                    result = tools.call(self.net, agent, s.slug, name, args)
-                    messages.append({"role": "tool", "tool_call_id": c["id"], "content": result})
-                if len(messages) > 80:  # keep the conversation small: summarize by restarting fresh
-                    return True
-        return used_tool
+        client = httpx.Client(timeout=httpx.Timeout(300, connect=15))
+        s.http = client  # stop() closes this, so a long local generation doesn't keep the session alive
+        try:
+            with client:
+                window = context_window(client, base, s.options, s.stop)
+                s.push("info", f"session {s.runs}: {model} via {base} ({window // 1000}K tokens of context)")
+                budget = int(window * 0.7) - _tokens(schema)  # room for the reply and the tools' definitions
+                for _step in range(int(s.options.get("max_steps", 120))):
+                    if s.stop.is_set():
+                        return True
+                    for _attempt in range(4):
+                        if s.stop.is_set():
+                            return True
+                        fit(messages, budget)
+                        r = _request_or_stop(s.stop, client, "post", f"{base}/chat/completions", headers=headers,
+                                             json={"model": model, "messages": messages, "tools": schema,
+                                                   "tool_choice": "auto"})
+                        if r is None:
+                            return True
+                        if r.status_code == 200 or not _too_long(r):
+                            break
+                        budget = int(budget * 0.6)  # the server counts differently, or knows better: trim more
+                    if r.status_code != 200:
+                        if (why := no_credit(r.text)) or r.status_code == 402:
+                            raise Fatal(why or no_credit("payment required"))
+                        s.throttled = r.status_code == 429 or bool(_THROTTLED.search(r.text))
+                        s.error = f"API error {r.status_code}: {r.text[:300]}"
+                        if _too_long(r):
+                            s.error = ("the model's context is too small for this work even after trimming: give it at "
+                                       "least 16K tokens (llama.cpp: -c 16384; Ollama: OLLAMA_CONTEXT_LENGTH=16384; LM "
+                                       "Studio: Context Length) and set it in Agents & models")
+                        s.push("error", s.error)
+                        return False
+                    reply = r.json()
+                    msg = reply["choices"][0]["message"]
+                    usage = reply.get("usage") if isinstance(reply.get("usage"), dict) else {}
+                    if usage.get("total_tokens"):
+                        self._account(s, {"tokens": usage["total_tokens"]})
+                    if msg.get("reasoning_content"):
+                        s.push("think", msg["reasoning_content"][:2000])
+                    if msg.get("content"):
+                        s.push("text", msg["content"])
+                    calls = msg.get("tool_calls") or []
+                    messages.append({k: v for k, v in msg.items() if k in ("role", "content", "tool_calls")} | {"role": "assistant"})
+                    if not calls:
+                        return used_tool
+                    for c in calls:
+                        if s.stop.is_set():
+                            return True
+                        name = c["function"]["name"]
+                        try:
+                            args = json.loads(c["function"].get("arguments") or "{}")
+                        except ValueError:
+                            args = {}
+                        used_tool = True
+                        s.push("tool", f"{name}({_args_brief(args)})")
+                        result = tools.call(self.net, agent, s.slug, name, args)
+                        if s.stop.is_set():
+                            return True
+                        messages.append({"role": "tool", "tool_call_id": c["id"], "content": result})
+                    if len(messages) > 80:  # keep the conversation small: summarize by restarting fresh
+                        return True
+            return used_tool
+        except httpx.HTTPError:
+            if s.stop.is_set():  # stop() closed the request: this isn't an agent failure
+                return True
+            raise
+        finally:
+            s.http = None
 
 
 def _tokens(obj) -> int:
@@ -1082,7 +1106,41 @@ def fit(messages: list[dict], budget: int) -> int:
     return total
 
 
-def context_window(client, base: str, options: dict) -> int:
+def _request_or_stop(stop: threading.Event, client, method: str, url: str, **kwargs):
+    """Run one HTTP request in a worker thread and return early when the session is stopped.
+
+    Closing an httpx client does not interrupt a server that has not sent its headers yet (a local model can
+    think for minutes before that). The session thread must return on Stop regardless; the daemon worker is
+    abandoned, and closing the client still asks the transport to abort when it can."""
+    if stop.is_set():
+        return None
+    box: dict = {}
+    done = threading.Event()
+
+    def call() -> None:
+        try:
+            box["response"] = getattr(client, method)(url, **kwargs)
+        except BaseException as e:  # noqa: BLE001: handed to the waiting thread
+            box["error"] = e
+        finally:
+            done.set()
+
+    threading.Thread(target=call, daemon=True, name="agent-api-request").start()
+    while not done.wait(0.25):
+        if stop.is_set():
+            try:
+                client.close()
+            except Exception:
+                pass
+            return None
+    if stop.is_set():
+        return None
+    if "error" in box:
+        raise box["error"]
+    return box.get("response")
+
+
+def context_window(client, base: str, options: dict, stop: threading.Event | None = None) -> int:
     """The model's context in tokens: what the user set, else what a llama.cpp server reports (/props), else a
     guess (local servers often run small contexts)."""
     try:
@@ -1092,8 +1150,9 @@ def context_window(client, base: str, options: dict) -> int:
         pass
     if is_local(base):
         try:
-            r = client.get(re.sub(r"/v1$", "", base) + "/props", timeout=5)
-            n = (r.json().get("default_generation_settings") or {}).get("n_ctx") if r.status_code == 200 else None
+            r = _request_or_stop(stop, client, "get", re.sub(r"/v1$", "", base) + "/props", timeout=5) if stop else client.get(
+                re.sub(r"/v1$", "", base) + "/props", timeout=5)
+            n = (r.json().get("default_generation_settings") or {}).get("n_ctx") if r is not None and r.status_code == 200 else None
             if isinstance(n, int) and n >= 2048:
                 return n
         except (httpx.HTTPError, ValueError, AttributeError):

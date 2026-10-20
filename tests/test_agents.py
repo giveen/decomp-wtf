@@ -2,6 +2,10 @@
 stdin, `decomp connect`, and the compact context agents get (assembly, diffs)."""
 
 import json
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 
@@ -223,3 +227,42 @@ def test_antigravity_helpers_say_when_it_isnt_connected(tmp_path, monkeypatch):
     s.runs = 1
     with pytest.raises(agents.Fatal, match="decomp connect antigravity"):
         m._run_cli(s, "tok", tmp_path)
+
+
+def test_stopping_an_api_agent_aborts_the_request_in_flight(tmp_path):
+    """A local model can think for minutes. Stop must close the HTTP request, not wait for the answer."""
+    class Net:
+        def is_analysis(self, _project): return False
+        def project_row(self, _slug): return {}
+        def fork_slug(self, _slug): return None
+
+    class Slow(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.server.hit.set()
+            time.sleep(10)  # what a local model does before its first byte
+
+        def log_message(self, *_args): pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    server.daemon_threads = True
+    server.hit = threading.Event()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        manager = agents.Manager(Net(), tmp_path, "http://127.0.0.1:9/mcp")
+        manager.prompt = lambda _s: "work"
+        s = agents.Session("api-1", "api", "Local #1", "game", "api-local",
+                           {"base_url": f"http://127.0.0.1:{server.server_port}/v1", "model": "local",
+                            "context_tokens": 32768})
+        manager.sessions[s.id] = s
+        result = {}
+        thread = threading.Thread(target=lambda: result.update(ok=manager._run_api(s, SimpleNamespace(id=1))))
+        thread.start()
+        assert server.hit.wait(2), "the request did not reach the server"
+        started = time.time()
+        manager.stop(s.id)
+        thread.join(2)
+        assert not thread.is_alive(), "Stop waited for the model instead of closing the request"
+        assert result == {"ok": True} and s.state == "stopped" and time.time() - started < 1
+    finally:
+        server.shutdown()
+        server.server_close()
