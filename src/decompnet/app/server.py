@@ -579,7 +579,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     def p_overview(slug, request, data):
         settings.data["last_project"] = slug
         settings.save()
-        return net.overview(slug)
+        return net.overview(slug, backfill=True)
 
     def p_live(slug, request, data):
         q = request.query_params

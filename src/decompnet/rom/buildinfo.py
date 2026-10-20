@@ -16,6 +16,12 @@ RUST_VERSION = re.compile(rb"rustc(?: version)?[ :]+(\d+\.\d+\.\d+(?:[-+][A-Za-z
 RUST_PATH = re.compile(rb"rustc-(\d+\.\d+(?:\.\d+)?)(?:-([^/\s\x00]+))?")
 GCC_VERSION = re.compile(rb"GCC:\s*\([^)]*\)\s*([0-9][0-9A-Za-z.+-]*)")
 CLANG_VERSION = re.compile(rb"clang version\s+([0-9][0-9A-Za-z.+-]*)")
+# Linker versions that name a Visual C++ release. MSVC 14.x is the 2015-2022 line; the minor
+# number separates them (14.0, 14.1x, 14.2x, 14.3x+).
+MSVC_RELEASES = {5: "Visual C++ 5.0", 6: "Visual C++ 6.0", 7: "Visual C++ .NET",
+                 8: "Visual C++ 2005", 9: "Visual C++ 2008", 10: "Visual C++ 2010",
+                 11: "Visual C++ 2012", 12: "Visual C++ 2013"}
+MSVC_CXX_MARKERS = (b"??2@", b"??3@", b"??_", b".?AV", b".?AU")
 
 
 def _text(raw: bytes) -> bytes:
@@ -70,6 +76,17 @@ def _cc(data: bytes, comment: bytes) -> tuple[str, str]:
     return "unknown", ""
 
 
+def _msvc_release(version: str) -> str:
+    try:
+        major, minor = (int(x) for x in version.split(".", 1))
+    except (ValueError, TypeError):
+        return ""
+    if major == 14:
+        return "Visual C++ 2015" if minor < 10 else "Visual C++ 2017" if minor < 20 else (
+            "Visual C++ 2019" if minor < 30 else "Visual C++ 2022")
+    return MSVC_RELEASES.get(major, "")
+
+
 def analyze(data: bytes, *, comment: bytes = b"", buildinfo: bytes = b"", symbols=(), cxx: bool = False,
             linker: str = "", hint: str = "") -> dict:
     """Language, compiler and version of a PC program, as far as its bytes record them."""
@@ -88,13 +105,14 @@ def analyze(data: bytes, *, comment: bytes = b"", buildinfo: bytes = b"", symbol
             compiler = "MSVC" if linker else (hint or "unknown")
         if compiler == "MSVC":
             version = linker
-    detail = " ".join(x for x in (compiler, version) if x)
+    release = _msvc_release(version) if compiler == "MSVC" else ""
+    detail = " ".join(x for x in (release or compiler, "" if release else version) if x)
     if language in ("Go", "Rust"):
         label = f"{language} {version}".strip()
     else:
         label = f"{language} ({detail})" if detail else language
     return {"language": language, "compiler": compiler or "unknown", "version": version,
-            "label": label, "matchable": language in ("C", "C++")}
+            "release": release, "label": label, "matchable": language in ("C", "C++")}
 
 
 def label_from_guess(guess: str, language: str) -> str:
@@ -105,11 +123,15 @@ def label_from_guess(guess: str, language: str) -> str:
     return f"{language} ({guess})" if guess and guess != "unknown" else language
 
 
-def looks_cxx(symbols) -> bool:
+def looks_cxx(symbols, data: bytes = b"") -> bool:
     """C++ symbols or runtime, excluding a C program that only imports a C++ library by accident."""
     names = [s.name for s in symbols]
     if any(n.startswith("?") for n in names):  # MSVC
         return True
     if any(n.startswith("_Z") for n in names):  # Itanium ABI (GCC, Clang, MinGW)
         return True
-    return any(("libstdc++" in n.lower() or "libc++" in n.lower() or "msvcp" in n.lower()) for n in names)
+    if any(("libstdc++" in n.lower() or "libc++" in n.lower() or "msvcp" in n.lower()) for n in names):
+        return True
+    # A stripped MSVC C++ binary keeps its runtime's decorated names even when the COFF symbols are gone:
+    # operator new (??2@...), RTTI descriptors (.?AVtype_info@@), vtables (??_7...).
+    return any(marker in data for marker in MSVC_CXX_MARKERS)

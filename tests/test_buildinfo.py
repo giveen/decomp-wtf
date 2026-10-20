@@ -37,3 +37,11 @@ def test_go_buildinfo_has_the_exact_toolchain_version():
 def test_msvc_reports_the_linker_version():
     info = buildinfo.analyze(b"", cxx=True, linker="14.44")
     assert info["language"] == "C++" and info["compiler"] == "MSVC" and info["version"] == "14.44"
+    assert info["release"] == "Visual C++ 2022" and info["label"] == "C++ (Visual C++ 2022)"
+
+
+def test_visual_cpp_5_comes_from_its_linker_version_and_runtime_names():
+    data = b"??2@YAPAXI@Z\0.?AVtype_info@@\0"
+    info = buildinfo.analyze(data, cxx=buildinfo.looks_cxx([], data), linker="5.10")
+    assert info["language"] == "C++" and info["release"] == "Visual C++ 5.0"
+    assert info["label"] == "C++ (Visual C++ 5.0)"

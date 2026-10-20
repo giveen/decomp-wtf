@@ -349,7 +349,7 @@ def read(data: bytes, name: str = "") -> PeImage:
     opt = _u32(data, 0x3C) + 24
     linker = f"{data[opt + 2]}.{data[opt + 3]:02d}" if opt + 4 <= len(data) else ""
     detected = buildinfo.analyze(data, comment=comment, linker=linker if compiler == "MSVC" else "",
-                                 hint=compiler, symbols=symbols, cxx=buildinfo.looks_cxx(symbols))
+                                 hint=compiler, symbols=symbols, cxx=buildinfo.looks_cxx(symbols, data))
     info = {
         "title": (name.rsplit(".", 1)[0] if name else "windows-game").replace("_", " ").strip() or "windows-game",
         "game_code": "", "region": "PC", "size": len(data), "sha1": hashlib.sha1(data).hexdigest(),

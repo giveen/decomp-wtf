@@ -196,7 +196,7 @@ def read(data: bytes, name: str = "") -> PeImage:
     functions = [f for f in functions if f.name not in CRT and not (f.vram == entry and f.name == "entry")]
     detected = buildinfo.analyze(data, comment=_section(elf, ".comment"),
                                  buildinfo=_section(elf, ".go.buildinfo"),
-                                 symbols=symbols, cxx=buildinfo.looks_cxx(symbols))
+                                 symbols=symbols, cxx=buildinfo.looks_cxx(symbols, data))
     info = {
         "title": (name.rsplit(".", 1)[0] if name.endswith((".so", ".elf", ".bin")) else name or "linux-program")
         .replace("_", " ").strip() or "linux-program",

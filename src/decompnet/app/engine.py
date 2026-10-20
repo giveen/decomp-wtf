@@ -53,6 +53,15 @@ def source_ext(toolchain: str) -> str:
     return ".cpp" if source_language(toolchain) == "C++" else ".c"
 
 
+def cxx_toolchain(toolchain: str) -> str:
+    """The C++ driver for a C toolchain on the same target, when there is one."""
+    for c, cpp in (("mingw-", "mingwxx-"), ("clang-cl-", "clang-clxx-"),
+                   ("gcc-linux-", "gxx-linux-"), ("clang-linux-", "clangxx-linux-")):
+        if toolchain.startswith(c):
+            return cpp + toolchain[len(c):]
+    return toolchain
+
+
 LINUX_COMPILERS = {
     "gcc-linux-x86_64": ("GCC (x86-64)", "Linux programs (x86-64), with the GCC on this machine"),
     "gxx-linux-x86_64": ("G++ (x86-64)", "Linux C++ programs (x86-64), with the G++ on this machine"),
@@ -1796,7 +1805,7 @@ class RomNetwork(Network):
 
     # ------------------------------------------------------------------ for the GUI
 
-    def overview(self, slug: str) -> dict:
+    def overview(self, slug: str, *, backfill: bool = False) -> dict:
         proj = self._project(slug)
         last = self.store.one("SELECT MAX(created_at) AS t FROM events WHERE project_id=?", proj["id"])["t"]
         cfg = self.cfg(proj)
@@ -1805,7 +1814,7 @@ class RomNetwork(Network):
             "SELECT COUNT(*) AS n FROM functions f JOIN agents a ON a.id=f.matched_agent_id WHERE f.project_id=? "
             "AND f.status='matched' AND a.origin='local' AND a.name NOT IN ('you','autopilot')", proj["id"])["n"]
         twins = self.twins.jobs.get(proj["slug"])
-        return self._overview(slug, proj) | {"last_activity": last, "autopilot": self.autopilot_status(slug),
+        return self._overview(slug, proj, backfill) | {"last_activity": last, "autopilot": self.autopilot_status(slug),
                                              "permuter": self.permuter.status(proj["slug"]),
                                              "twins": None if twins is None else {
                                                  k: getattr(twins, k) for k in ("state", "pairs", "tried", "matched", "asm")},
@@ -1813,7 +1822,41 @@ class RomNetwork(Network):
                                              "spend": cfg.get("spend"), "instructions": cfg.get("instructions") or "",
                                              "priority": cfg.get("priority", [])}
 
-    def _overview(self, slug: str, proj) -> dict:
+    def _backfill_detection(self, proj, cfg) -> dict:
+        """Old PC projects stored only a rough .comment guess; read the target once and keep the details."""
+        rom = cfg["rom"]
+        name = rom.get("program") or rom.get("file")
+        if not name:
+            return rom
+        path = Path(proj["root"]) / name
+        try:
+            if not path.is_file() or path.stat().st_size > 256 * 1024 * 1024:
+                return rom
+            picked = detect.identify(path, name)
+        except Exception:
+            return rom
+        if picked.platform not in X86_PLATFORMS:
+            return rom
+        changed = False
+        for key in ("language_guess", "compiler_version", "build_label", "matchable", "compiler_guess"):
+            value = picked.info.get(key)
+            if value is not None and rom.get(key) != value:
+                rom[key] = value
+                changed = True
+        if picked.info.get("language_guess") == "C++":
+            tc = cfg["compiler"]["toolchain"]
+            if source_language(tc) != "C++":
+                cpp = cxx_toolchain(tc)
+                if cpp != tc:
+                    cfg["compiler"]["toolchain"] = cpp
+                    changed = True
+        if changed:
+            cfg["rom"] = rom
+            with self.store.tx() as db:
+                db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+        return rom
+
+    def _overview(self, slug: str, proj, backfill: bool = False) -> dict:
         if (fork := self.fork_slug(slug)):
             return self.forks.overview(fork)
         if self.is_analysis(proj):
@@ -1823,15 +1866,18 @@ class RomNetwork(Network):
             "SELECT COUNT(*) AS total, SUM(status='matched') AS matched, SUM(size) AS bytes, "
             "SUM(CASE WHEN status='matched' THEN size ELSE 0 END) AS matched_bytes, SUM(attempts) AS attempts "
             "FROM functions WHERE project_id=?", proj["id"])
-        tc = toolchains.get(cfg["compiler"]["toolchain"])
         rom = cfg["rom"]
         detected = None
         if cfg.get("platform") in X86_PLATFORMS:
-            language = rom.get("language_guess") or source_language(tc.id)
+            if backfill and (not rom.get("build_label") or (
+                    rom.get("language_guess") == "C++" and source_language(cfg["compiler"]["toolchain"]) != "C++")):
+                rom = self._backfill_detection(proj, cfg)
+            language = rom.get("language_guess") or source_language(cfg["compiler"]["toolchain"])
             guess = rom.get("compiler_guess") or ""
             label = rom.get("build_label") or buildinfo.label_from_guess(guess, language)
             detected = {"language": language, "compiler": guess, "version": rom.get("compiler_version") or "",
                         "label": label, "matchable": rom.get("matchable", True)}
+        tc = toolchains.get(cfg["compiler"]["toolchain"])
         return {
             "slug": proj["slug"], "title": proj["name"], "description": proj["description"],
             "platform": cfg.get("platform", "n64"), "platform_name": detect.PLATFORMS.get(cfg.get("platform", "n64"), ""),
