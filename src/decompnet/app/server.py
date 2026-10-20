@@ -765,6 +765,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     routes = {
         "/api/project": (p_overview, ["GET"]),
         "/api/intake": (lambda s, r, d: net.write_intake(s, log=lambda *_: None), ["GET"]),
+        "/api/summary": (lambda s, r, d: net.analysis_summary(s), ["GET"]),
         "/api/live": (p_live, ["GET"]),
         "/api/function": (lambda s, r, d: net.function_detail(s, r.query_params.get("name", "")), ["GET"]),
         "/api/diff": (lambda s, r, d: net.function_diff(s, r.query_params.get("name", ""),

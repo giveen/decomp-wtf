@@ -81,7 +81,7 @@ const S = {
   projects: [],
 };
 const VIEWS = ["home", "catalog", "project", "agentsPage", "toolsPage", "settingsPage", "consolePage"];
-const TABS = ["overview", "functions", "data", "agents", "activity", "team", "source", "settings"];
+const TABS = ["overview", "functions", "summary", "data", "agents", "activity", "team", "source", "settings"];
 
 /* The project folder in the computer's file manager (decomp.anything in Docker says where it is instead). */
 function openFolder() {
@@ -626,6 +626,8 @@ async function openProject(slug, tab = "overview") {
   const fork = S.ov.kind === "fork";
   const analysis = S.ov.kind === "analysis";
   const native = isNativeProject(S.ov);
+  $("summaryTab").hidden = !analysis;
+  S.summary = null;
   $("mapTitle").textContent = analysis ? "Work map" : fork ? "Function map" : native ? "Function map" : "ROM map";
   $("mapHint").textContent = analysis ? "Every square is a procedure, file, or task. Click one to read it." : fork ? "Every square is a function, grouped by source file. Click one to see it." : native ? "Every square is a function, in the binary's order. Click one to see it." : "Every square is a function, in ROM order. Click one to see it.";
   $("thAddr").textContent = fork ? "File" : "Address";
@@ -667,6 +669,40 @@ async function openProject(slug, tab = "overview") {
   S.statsTimer = setInterval(loadStats, 8000);
   loadStats();
 }
+
+let summaryReq = 0;
+async function renderSummary() {
+  if (!S.ov || S.slug == null || S.ov.kind !== "analysis") return;
+  const req = ++summaryReq;
+  $("summaryText").textContent = "Building the summary…";
+  $("summaryMeta").textContent = "";
+  try {
+    const report = await api(`/api/summary?slug=${encodeURIComponent(S.slug)}`);
+    if (req !== summaryReq || S.slug == null) return;
+    S.summary = report;
+    $("summaryText").textContent = report.markdown || "Nothing to summarize yet.";
+    $("summaryMeta").textContent = report.summary || "";
+    $("summaryDownload").disabled = !report.markdown;
+    $("summaryCopy").disabled = !report.markdown;
+  } catch (e) {
+    if (req === summaryReq) $("summaryText").textContent = e.message;
+  }
+}
+$("summaryDownload").onclick = () => {
+  if (!S.summary?.markdown) return;
+  const blob = new Blob([S.summary.markdown], { type: "text/markdown;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${S.slug}-summary.md`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+$("summaryCopy").onclick = async () => {
+  if (!S.summary?.markdown) return;
+  try { await navigator.clipboard.writeText(S.summary.markdown); toast("Summary copied."); }
+  catch { toast("Couldn't reach the clipboard: select the text instead.", "err"); }
+};
+$("summaryFolder").onclick = () => openFolder();
 
 async function renderData() {
   if (!S.ov || S.tab !== "data") return;
@@ -711,6 +747,7 @@ function stopPolling() {
 
 function setTab(tab) {
   if (S.ov && S.ov.kind === "analysis" && (tab === "source" || tab === "team")) tab = "overview";
+  if (S.ov && S.ov.kind !== "analysis" && tab === "summary") tab = "overview";
   if (!TABS.includes(tab)) tab = "overview";
   S.tab = tab;
   document.querySelectorAll("#ptabs [data-ptab]").forEach((a) => { a.classList.toggle("on", a.dataset.ptab === tab); a.setAttribute("aria-selected", a.dataset.ptab === tab); });
@@ -718,6 +755,7 @@ function setTab(tab) {
   document.querySelectorAll("[data-pane]").forEach((p) => { p.hidden = p.dataset.pane !== tab; });
   if (tab === "overview") { if (S.map.length) layoutMap(); renderOverview(); }
   if (tab === "functions") renderList();
+  if (tab === "summary") renderSummary();
   if (tab === "data") renderData();
   if (tab === "agents") { renderLauncher($("launcher")); renderSessions(S.sessions); renderPrio(); }
   if (tab === "team") renderTeam();
@@ -1094,7 +1132,9 @@ function renderNext(ov) {
   if (ov.kind === "analysis") {
     if (done) {
       box.hidden = false;
-      box.innerHTML = `<div class="next-text"><b>Every work item is analyzed.</b><span class="muted small">Add tasks to go deeper: a subsystem, a protocol, a question the current items don't cover.</span></div><button class="primary small-btn" id="nextTask" type="button">Add a task</button>`;
+      box.innerHTML = `<div class="next-text"><b>Every work item is analyzed.</b><span class="muted small">Read the findings together, download the report, or add a task to go deeper.</span></div>
+        <a class="primary small-btn as-btn" href="#/p/${esc(S.slug)}/summary">View summary</a>
+        <button class="ghost small-btn" id="nextTask" type="button">Add a task</button>`;
       $("nextTask").onclick = addAnalysisTask;
       return;
     }

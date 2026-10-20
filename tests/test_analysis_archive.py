@@ -79,3 +79,12 @@ def test_import_analysis_maps_archive_files_to_work_items(tmp_path, monkeypatch)
     assert '"kind": "artifact-entry"' in rows[0]["meta"]
     overview = net.overview(slug)
     assert (overview["entries"], overview["files"], overview["functions"]) == (3, 1, 1)
+
+    agent, _ = net.local_agent("archive-tester")
+    net.claim(agent, slug)
+    net.complete_analysis(agent, slug, "dir/a.txt", "A five-byte text file containing hello.")
+    report = net.analysis_summary(slug)
+    assert report["complete"] is True
+    assert "A five-byte text file containing hello." in report["markdown"]
+    assert Path(report["path"]).name == "SUMMARY.md"
+    assert Path(report["path"]).exists()

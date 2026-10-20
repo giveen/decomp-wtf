@@ -481,6 +481,73 @@ class RomNetwork(Network):
             raise NetworkError(f"no entry {entry!r} in this archive (or it couldn't be read)")
         return f"{entry} + 0x{max(0, int(offset)):X} ({len(data)} bytes)\n" + analysis.preview_bytes(data, len(data))
 
+    def analysis_summary(self, slug: str) -> dict:
+        """Write SUMMARY.md: the target, every analyzed work item's finding, and what is still open."""
+        proj, cfg = self.analysis_cfg(slug)
+        target = cfg.get("target") or {}
+        artifact = cfg.get("artifact") or {}
+        rows = self.store.all(
+            "SELECT f.name, f.size, f.status, f.meta, f.matched_source, f.matched_at, a.name AS agent "
+            "FROM functions f LEFT JOIN agents a ON a.id=f.matched_agent_id "
+            "WHERE f.project_id=? ORDER BY f.status='matched' DESC, f.unit, f.name", proj["id"])
+        analyzed = [r for r in rows if r["status"] == "matched"]
+        pending = [r for r in rows if r["status"] != "matched"]
+        notes = self.store.all(
+            "SELECT n.text, n.created_at, a.name AS agent FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
+            "WHERE n.project_id=? AND n.function_id IS NULL ORDER BY n.id DESC", proj["id"])
+        now = time.time()
+        summary = (f"{len(analyzed)}/{len(rows)} work items analyzed · {len(analyzed)} findings"
+                   + (f" · {artifact.get('entries')} archive entries" if artifact.get("entries") else ""))
+        lines = [f"# Analysis summary: {proj['name']}", "",
+                 f"Generated {time.strftime('%Y-%m-%d %H:%M:%S')} for project `{proj['slug']}`.", "",
+                 "## Target",
+                 f"- file: `{target.get('path') or ''}`",
+                 f"- format: {target.get('format') or 'file'} · kind: {target.get('kind') or 'target'}",
+                 f"- provider: {cfg.get('provider') or 'auto'}",
+                 f"- progress: {summary}"]
+        if artifact.get("entries"):
+            dirs = artifact.get("directories") or 0
+            lines.append(f"- archive: {artifact.get('entries')} entries · {artifact.get('files')} files · "
+                         f"{dirs} director{'y' if dirs == 1 else 'ies'}")
+        lines += ["", "## Findings"]
+        if not analyzed:
+            lines += ["Nothing has been analyzed yet.", ""]
+        for row in analyzed:
+            meta = json.loads(row["meta"] or "{}")
+            path = meta.get("path") or row["name"]
+            lines += [f"### `{path}`"]
+            facts = [f"{row['size']} bytes"]
+            if meta.get("artifact_format"):
+                facts.append(str(meta["artifact_format"]))
+            if meta.get("sha256"):
+                facts.append(f"sha256 {meta['sha256']}")
+            lines.append("- " + " · ".join(facts))
+            when = _ago(row["matched_at"]) if row["matched_at"] else "earlier"
+            lines.append(f"- analyzed by {row['agent'] or 'an agent'} {when}")
+            lines += ["", (row["matched_source"] or "").strip() or "(no finding text)", ""]
+        if pending:
+            lines += ["## Still open"]
+            for row in pending:
+                meta = json.loads(row["meta"] or "{}")
+                label = meta.get("path") or row["name"]
+                lines.append(f"- `{label}` — {row['status']}")
+            lines.append("")
+        if notes:
+            lines += ["## Project notes"]
+            for note in notes:
+                lines.append(f"- {note['text'].strip()}" + (f" — {note['agent']}" if note["agent"] else ""))
+            lines.append("")
+        lines += ["", "## What this means",
+                  "The findings above are agent-written observations, not verified original source. Read the target "
+                  "again with REA when a claim matters, and add a task for anything still unanswered."]
+        markdown = "\n".join(lines).rstrip() + "\n"
+        path = Path(proj["root"]) / "SUMMARY.md"
+        path.write_text(markdown, encoding="utf-8")
+        self._update_cfg(slug, lambda c: c.__setitem__("summary", {"file": "SUMMARY.md", "generated_at": now}))
+        return {"slug": slug, "kind": "analysis", "title": proj["name"], "generated_at": now,
+                "summary": summary, "complete": bool(rows) and not pending,
+                "markdown": markdown, "path": str(path)}
+
     def analysis_read_data(self, slug: str, what: str, length: int = 64) -> str:
         _, cfg = self.analysis_cfg(slug)
         address = what
@@ -586,8 +653,16 @@ class RomNetwork(Network):
             db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
                        (proj["id"], fn["id"], agent.id, summary, now))
             self._event(db, proj["id"], agent.id, "analyze", fn["name"])
+        done = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status!='matched'",
+                              proj["id"])["n"] == 0
+        if done:
+            try:
+                self.analysis_summary(proj["slug"])
+            except Exception:
+                pass
         return (f"✅ {fn['name']} is analyzed and saved. Your finding is on it and in the project's notes. "
-                "Call claim_function for the next item, or add_note about the target as a whole.")
+                "Call claim_function for the next item, or add_note about the target as a whole."
+                + (" The project summary is in SUMMARY.md." if done else ""))
 
 
     def project_row(self, slug: str):
