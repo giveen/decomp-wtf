@@ -81,7 +81,7 @@ const S = {
   projects: [],
 };
 const VIEWS = ["home", "catalog", "project", "agentsPage", "toolsPage", "settingsPage", "consolePage"];
-const CT = { slug: null, data: null, collapsed: new Set(), selected: null, busy: false };
+const CT = { slug: null, data: null, collapsed: new Set(), selected: null, pendingSelect: null, busy: false };
 const TABS = ["overview", "functions", "summary", "data", "agents", "activity", "team", "source", "settings"];
 
 /* The project folder in the computer's file manager (decomp.anything in Docker says where it is instead). */
@@ -770,6 +770,15 @@ async function renderContents() {
     const fresh = CT.data === null;
     CT.data = data;
     if (fresh) CT.collapsed = new Set(contentsDirs(data.nodes));
+    if (CT.pendingSelect) {
+      const selected = CT.pendingSelect;
+      CT.pendingSelect = null;
+      if (contentsFind(data.nodes, selected)) {
+        CT.selected = selected;
+        const parts = selected.split("/");
+        for (let i = 1; i < parts.length; i++) CT.collapsed.delete(parts.slice(0, i).join("/"));
+      }
+    }
     renderContentsTree();
   } catch (e) {
     $("contentsTree").innerHTML = `<p class="bad small">${esc(e.message)}</p>`;
@@ -2301,6 +2310,12 @@ function highlightC(text) {
 async function openFn(name) {
   if (S.ov && S.ov.kind === "analysis") {
     const f = S.map.find((x) => x.name === name);
+    if (f && f.kind === "artifact-entry") {
+      if (f.child) { location.hash = `#/p/${f.child}`; return; }
+      if (f.path) CT.pendingSelect = f.path;
+      location.hash = `#/p/${S.slug}/overview`;
+      return;
+    }
     const t = (S.ov.analysis || {}).target || {};
     if (!t.path) return;
     const fn = f && f.vram ? `&fn=0x${f.vram.toString(16)}` : "";

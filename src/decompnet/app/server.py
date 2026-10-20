@@ -575,8 +575,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                     shutil.rmtree(game.parent, ignore_errors=True)
         return JSONResponse({"job": jobs.start("import", work)})
 
-    MAP_KEYS = ("name", "vram", "size", "insns", "unit", "kind", "status", "best", "attempts", "hits", "agent",
-                "matched_at", "matched_by")
+    MAP_KEYS = ("name", "vram", "size", "insns", "unit", "kind", "path", "child", "status", "best", "attempts",
+                "hits", "agent", "matched_at", "matched_by")
 
     @mcp.custom_route("/api/map", methods=["GET"])
     async def api_map(request: Request) -> Response:

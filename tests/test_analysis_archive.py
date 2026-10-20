@@ -124,6 +124,9 @@ def test_import_analysis_maps_archive_files_to_work_items(tmp_path, monkeypatch)
     contents = net.analysis_contents(slug)
     assert contents["nodes"][0]["name"] == "dir"
     assert contents["nodes"][0]["children"][0]["path"] == "dir/a.txt"
+    work_map = net.function_map(slug)
+    assert work_map[0]["kind"] == "artifact-entry"
+    assert work_map[0]["path"] == "dir/a.txt"
 
     agent, _ = net.local_agent("archive-tester")
     net.claim(agent, slug)

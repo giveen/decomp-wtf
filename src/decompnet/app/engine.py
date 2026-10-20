@@ -3223,6 +3223,8 @@ class RomNetwork(Network):
             "a.name AS agent, m.name AS matched_by FROM functions f LEFT JOIN claims c ON c.function_id=f.id "
             "LEFT JOIN agents a ON a.id=c.agent_id LEFT JOIN agents m ON m.id=f.matched_agent_id "
             "WHERE f.project_id=? ORDER BY f.vram, f.unit, f.id", proj["id"])
+        cfg = self.cfg(proj)
+        children = {str(c.get("entry")): c.get("slug") for c in cfg.get("children") or [] if isinstance(c, dict)}
         link = self.links.get(slug)
         # who works on what in the room: by address, or by name in a git project (its functions have no addresses)
         key = (lambda r: r["name"]) if link is not None and link.fork else (lambda r: r["vram"])
@@ -3234,7 +3236,8 @@ class RomNetwork(Network):
                 r["status"] if r["status"] in ("matched", "asm") else
                 "working" if (r["agent"] or key(r) in remote) else "open")
             out.append({"name": r["name"], "vram": r["vram"], "size": r["size"], "insns": r["n_insns"],
-                        "unit": r["unit"], "kind": meta.get("kind") or "", "status": status,
+                        "unit": r["unit"], "kind": meta.get("kind") or "", "path": meta.get("path") or "",
+                        "child": children.get(meta.get("path")) if meta.get("path") else None, "status": status,
                         "library": meta.get("library"),
                         "best": r["best_score"], "attempts": r["attempts"], "hits": int(r["hits"] or 0),
                         "agent": r["agent"] or remote.get(key(r)), "matched_at": r["matched_at"],
