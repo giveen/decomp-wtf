@@ -925,7 +925,7 @@ function renderCompilerNotice(ov) {
 }
 
 function fnCounts() {
-  const c = { matched: 0, working: 0, tried: 0, open: 0, asm: 0 };
+  const c = { matched: 0, working: 0, tried: 0, open: 0, asm: 0, library: 0 };
   for (const f of S.map) c[fnState(f)]++;
   return c;
 }
@@ -937,10 +937,10 @@ function renderOverview() {
   const label = analysis ? "analyzed" : "matched";
   const c = fnCounts(), total = Math.max(1, S.map.length);
   const seg = (k, cls) => (c[k] ? `<i class="${cls}" data-w="${(100 * c[k]) / total}" title="${c[k]} ${k === "open" ? "to do" : k === "matched" ? label : k}"></i>` : "");
-  $("fnStack").innerHTML = seg("matched", "s-match") + seg("working", "s-work") + seg("tried", "s-tried") + seg("asm", "s-asm") + seg("open", "s-open");
+  $("fnStack").innerHTML = seg("matched", "s-match") + seg("working", "s-work") + seg("tried", "s-tried") + seg("asm", "s-asm") + seg("library", "s-lib") + seg("open", "s-open");
   setWidths($("fnStack"));
   const togo = S.ov.functions - S.ov.matched;
-  $("fnSub").textContent = `${togo.toLocaleString()} to go${c.tried ? ` · ${c.tried.toLocaleString()} tried` : ""}${c.working ? ` · ${c.working} in progress` : ""}${c.asm ? ` · ${c.asm} assembly` : ""}`;
+  $("fnSub").textContent = `${togo.toLocaleString()} to go${c.tried ? ` · ${c.tried.toLocaleString()} tried` : ""}${c.working ? ` · ${c.working} in progress` : ""}${c.asm ? ` · ${c.asm} assembly` : ""}${c.library ? ` · ${c.library} library` : ""}`;
   const st = S.stats;
   if (st) {
     const ph = st.matches_per_hour, max = Math.max(1, ...ph);
@@ -1457,7 +1457,7 @@ function applyClaims(draw = true) {
   const working = new Map(S.claims.map((c) => [c.name, c.agent]));
   let changed = false;
   for (const f of S.map) {
-    const status = f.status === "matched" || f.status === "asm" ? f.status : working.has(f.name) ? "working" : "open";
+    const status = f.status === "matched" || f.status === "asm" || f.status === "library" ? f.status : working.has(f.name) ? "working" : "open";
     if (status !== f.status) { f.status = status; changed = true; }
     f.agent = working.get(f.name) || null;
   }
@@ -1479,6 +1479,7 @@ function applyAttempts(attempts) {
 function cellColor(f) {
   if (f.status === "matched") return [colors.match, 1];
   if (f.status === "asm") return [colors.tried, 0.35];
+  if (f.status === "library") return [colors.faint || colors.open, 0.3];
   if (f.best != null) return [mix(colors.tried, colors.hi, Math.pow(pctOf(f.best, f.insns) || 0, 3)), 1];
   return [colors.open, 1];
 }
@@ -2240,14 +2241,14 @@ $("fnNext").onclick = () => stepFn(1);
 
 /* ------------------------------------------------------------------ function list */
 const L = { q: "", filter: "all", sort: "i", dir: 1, limit: 200, rows: [] };
-const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["tried", "Tried"], ["matched", "Matched"]];
-const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "asm" ? "asm" : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
-const STATE_RANK = { working: 0, tried: 1, open: 2, matched: 3, asm: 4 };
+const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["tried", "Tried"], ["matched", "Matched"], ["library", "Library"]];
+const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "library" ? "library" : f.status === "asm" ? "asm" : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
+const STATE_RANK = { working: 0, tried: 1, open: 2, matched: 3, asm: 4, library: 5 };
 
 function renderList() {
   if (!S.map.length || S.tab !== "functions") return;
   const analysis = S.ov && S.ov.kind === "analysis";
-  const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0 };
+  const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0, library: 0 };
   for (const f of S.map) counts[fnState(f)]++;
   $("fnFilter").innerHTML = FILTERS.map(([k, label]) => `<button type="button" role="radio" aria-checked="${L.filter === k}" class="${L.filter === k ? "on" : ""}" data-filter="${k}">${analysis && k === "matched" ? "Analyzed" : label}<span>${counts[k].toLocaleString()}</span></button>`).join("");
   const q = L.q.trim().toLowerCase();
@@ -2263,7 +2264,7 @@ function renderList() {
   $("fnRows").innerHTML = rows.slice(0, L.limit).map((f) => {
     const st = fnState(f), p = pctOf(f.best, f.insns);
     const best = st === "matched" ? `<span class="ok">100%</span>` : p == null ? `<span class="dim">–</span>` : pctText(p);
-    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">${analysis ? "analyzed" : "matched"}</span>` : st === "asm" ? `<span class="st" title="hand-written assembly: no C compiles to it">assembly</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
+    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">${analysis ? "analyzed" : "matched"}</span>` : st === "library" ? `<span class="st" title="library/CRT code: not the program's own">${esc(f.library || "library")}</span>` : st === "asm" ? `<span class="st" title="hand-written assembly: no C compiles to it">assembly</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
       : st === "tried" ? `<span class="st tried">tried</span>` : `<span class="st">${analysis ? "to do" : "to do"}</span>`;
     const where = analysis ? (f.vram ? hex8(f.vram) : "task") : fork ? esc(f.unit || "") : hex8(f.vram);
     const measure = analysis ? (f.size ? bytes(f.size) : "—") : f.insns.toLocaleString();
@@ -2575,6 +2576,26 @@ async function renderProjectSettings() {
     if (!S.st) await loadState();
     fillCompilers($("setTc"), ov.compiler.toolchain, { n64: "N64", psx: "PS1", ps2: "PS2", gba: "GBA" }[ov.platform]);
     $("setFlags").value = ov.compiler.flags.join(" ");
+    const suggested = (ov.detected || {}).suggested_flags || [];
+    const current = ov.compiler.flags || [];
+    if (suggested.length && suggested.join(" ") !== current.join(" ")) {
+      $("flagHint").innerHTML = `Detected build flags: <code>${esc(suggested.join(" "))}</code>
+        <button class="ghost small-btn" id="flagApply" type="button">Use detected flags</button>
+        <span class="muted">${esc(((ov.detected || {}).flag_evidence || []).join(" · "))}</span>`;
+      $("flagApply").onclick = async () => {
+        $("flagApply").disabled = true;
+        try {
+          S.ov = await api("/api/compiler", { method: "POST", body: { slug: S.slug, toolchain: ov.compiler.toolchain, flags: suggested } });
+          renderProjectSettings();
+          renderStats(S.ov);
+          toast("Detected build flags applied.");
+        } catch (e) { toast(esc(e.message), "err"); $("flagApply").disabled = false; }
+      };
+    } else if (suggested.length) {
+      $("flagHint").textContent = "Flags match the detected build.";
+    } else {
+      $("flagHint").textContent = "";
+    }
   }
   const t = (ov.analysis || {}).target || {};
   const native = isNativeProject(ov);

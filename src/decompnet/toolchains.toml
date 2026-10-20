@@ -371,6 +371,39 @@ url = "https://github.com/mkst/maspsx/archive/e85ecb373828aabea96d7e6400974d4f91
 sha256 = "9f8ea9827b785ae41437befa8ebdceb8c00f3b1e8f3a90c506948e2df1079bde"
 subdir = "maspsx-e85ecb373828aabea96d7e6400974d4f91ce8c74"
 
+[upx]
+name = "UPX"
+kind = "tool"
+license = "GPL-2.0-or-later"
+source = "upx/upx 5.2.1"
+description = "Unpacks UPX-compressed PC programs before splitting; packed code otherwise looks like one function. Optional."
+binary_name = "upx"
+[[upx.parts]]
+url = "https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-amd64_linux.tar.xz"
+sha256 = "402162aad30af47e60dbd767fb2e64ca394ace9727ba1f40283641f1d1b91657"
+subdir = "upx-5.2.1-amd64_linux"
+platforms = ["linux-x86_64"]
+
+[rizin]
+name = "Rizin"
+kind = "tool"
+license = "LGPL-3.0-or-later"
+source = "system rizin"
+description = "A lightweight native analysis provider REA can use when Ghidra, Hopper or IDA aren't installed. Install it with your package manager; optional."
+system = true
+cmd = ["rizin"]
+binary_name = "rizin"
+
+[detect-it-easy]
+name = "Detect It Easy"
+kind = "tool"
+license = "MIT"
+source = "system diec (Detect It Easy)"
+description = "Compiler and packer fingerprints from Detect It Easy's command-line tool; useful before choosing a toolchain. Install diec with your package manager; optional."
+system = true
+cmd = ["diec"]
+binary_name = "diec"
+
 [llvm-tools]
 name = "LLVM tools (PDB reader)"
 kind = "tool"
@@ -541,9 +574,9 @@ description = "GCC for 64-bit Windows, used to match x86-64 PC games. Finds the 
 system = true
 platform = "Windows"
 arch = "x86_64"
-cmd = ["x86_64-w64-mingw32-gcc", "-c", "-O2", "-ffreestanding", "-ffunction-sections", "-fdata-sections",
-       "-fno-asynchronous-unwind-tables", "-fno-unwind-tables", "-fno-stack-protector", "-fno-ident",
-       "-fno-pic", "-fno-pie", "-mno-stack-arg-probe", "-I{include}", "{src}", "-o", "{obj}"]
+flags = ["-O2", "-ffreestanding", "-ffunction-sections", "-fdata-sections", "-fno-asynchronous-unwind-tables",
+         "-fno-unwind-tables", "-fno-stack-protector", "-fno-ident", "-fno-pic", "-fno-pie", "-mno-stack-arg-probe"]
+cmd = ["x86_64-w64-mingw32-gcc", "-c", "{flags}", "-I{include}", "{src}", "-o", "{obj}"]
 
 [mingw-x86]
 name = "MinGW-w64 GCC (32-bit Windows target)"
@@ -554,9 +587,9 @@ description = "GCC for 32-bit Windows, used to match x86 PC games. Finds the com
 system = true
 platform = "Windows"
 arch = "x86"
-cmd = ["i686-w64-mingw32-gcc", "-c", "-O2", "-ffreestanding", "-ffunction-sections", "-fdata-sections",
-       "-fno-asynchronous-unwind-tables", "-fno-unwind-tables", "-fno-stack-protector", "-fno-ident",
-       "-fno-pic", "-fno-pie", "-mno-stack-arg-probe", "-I{include}", "{src}", "-o", "{obj}"]
+flags = ["-O2", "-ffreestanding", "-ffunction-sections", "-fdata-sections", "-fno-asynchronous-unwind-tables",
+         "-fno-unwind-tables", "-fno-stack-protector", "-fno-ident", "-fno-pic", "-fno-pie", "-mno-stack-arg-probe"]
+cmd = ["i686-w64-mingw32-gcc", "-c", "{flags}", "-I{include}", "{src}", "-o", "{obj}"]
 
 [mingwxx-x86_64]
 name = "MinGW-w64 G++ (x86-64 Windows target)"
@@ -567,9 +600,9 @@ description = "GCC's C++ driver for 64-bit Windows, used to match x86-64 PC prog
 system = true
 platform = "Windows"
 arch = "x86_64"
-cmd = ["x86_64-w64-mingw32-g++", "-c", "-x", "c++", "-O2", "-ffreestanding", "-ffunction-sections", "-fdata-sections",
-       "-fno-asynchronous-unwind-tables", "-fno-unwind-tables", "-fno-stack-protector", "-fno-ident",
-       "-fno-pic", "-fno-pie", "-mno-stack-arg-probe", "-I{include}", "{src}", "-o", "{obj}"]
+flags = ["-O2", "-ffreestanding", "-ffunction-sections", "-fdata-sections", "-fno-asynchronous-unwind-tables",
+         "-fno-unwind-tables", "-fno-stack-protector", "-fno-ident", "-fno-pic", "-fno-pie", "-mno-stack-arg-probe"]
+cmd = ["x86_64-w64-mingw32-g++", "-c", "-x", "c++", "{flags}", "-I{include}", "{src}", "-o", "{obj}"]
 
 [mingwxx-x86]
 name = "MinGW-w64 G++ (32-bit Windows target)"
@@ -580,9 +613,9 @@ description = "GCC's C++ driver for 32-bit Windows, used to match x86 PC program
 system = true
 platform = "Windows"
 arch = "x86"
-cmd = ["i686-w64-mingw32-g++", "-c", "-x", "c++", "-O2", "-ffreestanding", "-ffunction-sections", "-fdata-sections",
-       "-fno-asynchronous-unwind-tables", "-fno-unwind-tables", "-fno-stack-protector", "-fno-ident",
-       "-fno-pic", "-fno-pie", "-mno-stack-arg-probe", "-I{include}", "{src}", "-o", "{obj}"]
+flags = ["-O2", "-ffreestanding", "-ffunction-sections", "-fdata-sections", "-fno-asynchronous-unwind-tables",
+         "-fno-unwind-tables", "-fno-stack-protector", "-fno-ident", "-fno-pic", "-fno-pie", "-mno-stack-arg-probe"]
+cmd = ["i686-w64-mingw32-g++", "-c", "-x", "c++", "{flags}", "-I{include}", "{src}", "-o", "{obj}"]
 
 [clang-cl-x86_64]
 name = "Clang (clang-cl, x86-64 Windows target)"
@@ -593,7 +626,8 @@ description = "LLVM's MSVC-compatible driver, often a closer match for code buil
 system = true
 platform = "Windows"
 arch = "x86_64"
-cmd = ["clang-cl", "/c", "/O2", "/GS-", "/TC", "/I{include}", "/Fo{obj}", "--", "{src}"]
+flags = ["/O2", "/GS-"]
+cmd = ["clang-cl", "/c", "{flags}", "/TC", "/I{include}", "/Fo{obj}", "--", "{src}"]
 
 [clang-cl-x86]
 name = "Clang (clang-cl, 32-bit Windows target)"
@@ -604,7 +638,8 @@ description = "LLVM's 32-bit MSVC-compatible driver for x86 PC games. Finds clan
 system = true
 platform = "Windows"
 arch = "x86"
-cmd = ["clang-cl", "--target=i686-pc-windows-msvc", "/c", "/O2", "/GS-", "/TC", "/I{include}", "/Fo{obj}", "--", "{src}"]
+flags = ["/O2", "/GS-"]
+cmd = ["clang-cl", "--target=i686-pc-windows-msvc", "/c", "{flags}", "/TC", "/I{include}", "/Fo{obj}", "--", "{src}"]
 
 [clang-clxx-x86_64]
 name = "Clang (clang-cl, x86-64 Windows target, C++)"
@@ -615,7 +650,8 @@ description = "LLVM's MSVC-compatible C++ driver, used to match x86-64 programs 
 system = true
 platform = "Windows"
 arch = "x86_64"
-cmd = ["clang-cl", "/c", "/O2", "/GS-", "/TP", "/I{include}", "/Fo{obj}", "--", "{src}"]
+flags = ["/O2", "/GS-"]
+cmd = ["clang-cl", "/c", "{flags}", "/TP", "/I{include}", "/Fo{obj}", "--", "{src}"]
 
 [clang-clxx-x86]
 name = "Clang (clang-cl, 32-bit Windows target, C++)"
@@ -626,7 +662,8 @@ description = "LLVM's 32-bit MSVC-compatible C++ driver, used to match x86 progr
 system = true
 platform = "Windows"
 arch = "x86"
-cmd = ["clang-cl", "--target=i686-pc-windows-msvc", "/c", "/O2", "/GS-", "/TP", "/I{include}", "/Fo{obj}", "--", "{src}"]
+flags = ["/O2", "/GS-"]
+cmd = ["clang-cl", "--target=i686-pc-windows-msvc", "/c", "{flags}", "/TP", "/I{include}", "/Fo{obj}", "--", "{src}"]
 
 # ---------------------------------------------------------------- Linux programs
 # The GCC and Clang already on the machine. A program matches byte for byte only with the compiler version

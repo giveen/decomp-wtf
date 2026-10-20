@@ -293,6 +293,7 @@ a.ghost, a.primary { text-decoration: none; }
 .stack { display: flex; height: 8px; border-radius: 99px; overflow: hidden; background: var(--open); }
 .stack i { display: block; height: 100%; }
 .s-match { background: var(--match); } .s-work { background: var(--work); } .s-tried { background: var(--tried); } .s-asm { background: var(--faint); opacity: .5; } .s-open { background: var(--open); }
+.s-lib { background: var(--faint); opacity: .3; }
 .bars { width: 100%; height: 28px; display: block; }
 .bars rect { fill: var(--open); }
 .bars rect.on { fill: var(--match); }

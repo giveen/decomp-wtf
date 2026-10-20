@@ -71,7 +71,7 @@ def test_import_and_match_through_the_engine(built):
     slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game.exe", log=lambda *_: None)
     ov = net.overview(slug)
     assert ov["platform"] == "windows" and ov["platform_name"] == "Windows"
-    assert ov["functions"] >= 5 and ov["compiler"]["toolchain"] == "mingw-x86_64"
+    assert ov["functions"] >= 4 and ov["library"] >= 1 and ov["compiler"]["toolchain"] == "mingw-x86_64"
     assert ov["source_language"] == "C" and ov["source_ext"] == ".c"
     agent, _ = net.local_agent("windows-tester")
     assert "MATCH" in net.compile_and_diff(agent, "add", "int add(int a, int b) { return a + b; }", slug)
@@ -148,3 +148,29 @@ def test_cxx_programs_use_cpp_toolchain_and_language(tmp_path):
     agent, _ = net.local_agent("cxx-tester")
     text = net.compile_and_diff(agent, target, "namespace demo { int add(int a, int b) { return a + b; } }", slug)
     assert "MATCH" in text, text
+
+
+def test_library_functions_are_marked_and_never_claimed(built):
+    from decompnet.network import NetworkError
+
+    exe, _obj = built
+    net = RomNetwork(exe.parent / "lib.db", exe.parent)
+    slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game.exe", log=lambda *_: None)
+    rows = {r["name"]: r for r in net.function_map(slug)}
+    assert rows["_start"]["status"] == "library" and rows["_start"]["library"] == "CRT"
+    assert net.overview(slug)["library"] >= 1
+    agent, _ = net.local_agent("lib-tester")
+    with pytest.raises(NetworkError, match="library"):
+        net.claim(agent, slug, "_start")
+
+
+def test_detected_flags_can_be_applied_and_still_match(built):
+    exe, _obj = built
+    net = RomNetwork(exe.parent / "flags.db", exe.parent)
+    slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game.exe", log=lambda *_: None)
+    ov = net.overview(slug)
+    suggested = ov["detected"]["suggested_flags"]
+    assert suggested
+    net.set_compiler(slug, ov["compiler"]["toolchain"], suggested)
+    agent, _ = net.local_agent("flags-tester")
+    assert "MATCH" in net.compile_and_diff(agent, "add", "int add(int a, int b) { return a + b; }", slug)

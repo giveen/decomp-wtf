@@ -416,10 +416,13 @@ Go are identified, but only C and C++ are matched byte for byte.
 where it has one, then exports, the entry point and every direct call target. Matching compiles your C to COFF and
 compares bytes with the original's, with address fields blanked on both sides: a call or RIP-relative load has to
 point at the same function or global. A PDB or MAP beside the program is imported automatically (PDB through LLVM's
-`llvm-pdbutil`); its names and types replace the automatic ones. `inspect_binary` can ask [REA](https://rea.tools)
-for pseudocode, signatures and callers. Matching a real binary byte for byte needs the compiler that built it; point
-the project's `[compiler] cmd` at MSVC if needed. `DECOMP_REA_DRAFTS=1` also lets claims start from REA's pseudocode
-(slower; off by default).
+`llvm-pdbutil`); its names and types replace the automatic ones. Build flags are inferred from the image itself
+(security cookie, C++ frame handlers, RTTI, unwind tables, `.comment`, stack probes): the project's **Settings**
+shows the suggested flags and applies them in one click. CRT, compiler-runtime and static-library functions are
+marked and kept out of the work queue. `inspect_binary` can ask [REA](https://rea.tools) for pseudocode, signatures
+and callers. Matching a real binary byte for byte needs the compiler that built it; point the project's
+`[compiler] cmd` at MSVC if needed. `DECOMP_REA_DRAFTS=1` also lets claims start from REA's pseudocode (slower; off
+by default).
 
 **Linux programs.** Function bounds come from the symbol table or, in a stripped program, from `.eh_frame`. Calls
 into shared libraries go through PLT stubs named after the function, with their GOT slots named `memcpy@got`. The C
@@ -470,6 +473,8 @@ projects folder (`~/Decomp`).
 | **REA install** | Download and install REA from **Compilers & tools**; the console and agents pick it up automatically. |
 | **Debug symbols** | PDB, DWARF, MAP and `symbol_addrs.txt` names and types; export them again for other tools. |
 | **Version compare** | Patch/demo/port triage: same, moved, changed, added and removed functions, matched by normalized instructions. |
+| **Suggested flags** | Security cookie, EH/RTTI, unwind tables, comments and stack probes become the compiler flags that match, one click away. |
+| **Library code out** | CRT, compiler runtime and static-library functions are marked and never handed to agents. |
 | **Reference folders** | Name a folder in instructions and helpers can read and search it. |
 | **Every major disc format** | ROMs, PlayStation discs, GameCube and Wii discs (ISO, GCM, RVZ, WIA, WBFS, CISO, GCZ) and program files, streamed from disk. |
 | **Local-first** | No account, no telemetry, no server dependency. |
@@ -528,6 +533,7 @@ Every download is pinned by version and SHA-256 in `src/decompnet/toolchains.tom
 | **coddog** | 0.6.3 |
 | **Ghidra** | 12.1.4 |
 | **REA** | **rea-agents 6.7.0** |
+| **UPX** | **5.2.1** |
 | **cloudflared** | **2026.10.2** |
 | **ds-decomp** | v0.12.1 |
 | **binutils-mips** | decompals v0.10 |
@@ -537,6 +543,10 @@ Every download is pinned by version and SHA-256 in `src/decompnet/toolchains.tom
 | **maspsx** | `e85ecb3` |
 | **dtk-template** | `95a941f` |
 | **luvdis** | `ec3a4e3` |
+
+System tools (**Compilers & tools** shows whether they are present): **LLVM tools** (`llvm-pdbutil` for PDB names),
+**Rizin** (a lightweight REA provider) and **Detect It Easy** (`diec` fingerprints). They are optional; install them
+with the system package manager or the LLVM installer.
 
 The period compilers are deliberately held at the versions that reproduce the games’ original output. `maspsx` is
 also held at `e85ecb3`: newer upstream commits change assembly expansion and need a PlayStation matching corpus run

@@ -228,7 +228,7 @@ class Twins:
         syms = self.net.symbols(proj["id"])
         arch = "arm" if cfg.get("platform") == "gba" else proj["arch"] or "mips"
         return {r["id"]: rom_print(r, arch, bool(cfg.get("big_endian", True)), syms.label) for r in self.net.store.all(
-            "SELECT id, target, relocs FROM functions WHERE project_id=? AND status!='asm'", proj["id"])}
+            "SELECT id, target, relocs FROM functions WHERE project_id=? AND status NOT IN ('asm', 'library')", proj["id"])}
 
     def _fork_prints(self, proj) -> dict[int, Print]:
         from ..forks.project import ForkError, ForkProject, STATE

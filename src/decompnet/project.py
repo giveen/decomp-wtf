@@ -67,7 +67,7 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
         linux = tc.via_wsl  # Windows: a Linux toolchain, run inside WSL 2
         tc_dir = ""
         if tc.system:  # already on the host (MinGW, cl under wine): nothing to download or mount
-            flags = c.get("flags", tc.flags)
+            flags = c.get("flags") or tc.flags
         else:
             if linux and not (ok := wsl.status())[0]:
                 raise toolchains.ToolchainError(f"{tc.name} is a Linux program: on Windows it runs in WSL 2. {ok[1]}")
@@ -76,7 +76,7 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
             ro_paths += [str(d) for d in dirs]
             if "runtime-i386" in tc.requires and not linux:  # in WSL its programs bring the runtime themselves
                 runtime32 = str(toolchains.require("runtime-i386"))
-            flags = c.get("flags", tc.flags)
+            flags = c.get("flags") or tc.flags
         if c.get("cmd"):
             base = c["cmd"]
         elif tc.cmd:  # a full template ({flags} expands to the flags)

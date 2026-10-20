@@ -135,3 +135,97 @@ def looks_cxx(symbols, data: bytes = b"") -> bool:
     # A stripped MSVC C++ binary keeps its runtime's decorated names even when the COFF symbols are gone:
     # operator new (??2@...), RTTI descriptors (.?AVtype_info@@), vtables (??_7...).
     return any(marker in data for marker in MSVC_CXX_MARKERS)
+
+
+# ------------------------------------------------------------------ build flags
+
+_SECURITY = ("__security_cookie", "__security_check_cookie", "__report_gsfailure", "__GSHandlerCheck")
+_EXCEPTIONS = ("__CxxFrameHandler3", "__CxxFrameHandler4", "_except_handler4", "__C_specific_handler",
+               "__CxxThrowException", "_CxxThrowException")
+_RTTI = (".?AV", "??_7", "__RTDynamicCast", "__RTTI")
+_STACK_GUARD = ("__stack_chk_fail", "__stack_chk_guard")
+_STACK_PROBE = ("__chkstk", "___chkstk_ms", "__alloca_probe")
+_CXA_THROW = ("__cxa_throw", "_CxxThrowException")
+
+
+def _has_any(data: bytes, needles) -> bool:
+    for n in needles:
+        raw = n.encode("ascii", "ignore")
+        if raw and (raw in data or n.encode("utf-16le", "ignore") in data):
+            return True
+    return False
+
+
+def _strip(flags: list[str], prefixes) -> list[str]:
+    return [f for f in flags if not any(f.lower().startswith(p) for p in prefixes)]
+
+
+def infer_flags(data: bytes, *, compiler: str, cxx: bool, base_flags: list[str] | None = None,
+                symbols=(), section_names=(), comment: bytes = b"") -> dict:
+    """Suggested compiler flags from what the binary records and how it is built.
+
+    This is evidence, not a guess dressed as a fact: each flag comes with the symbol, import, section or
+    string that suggested it. Window's MSVC flags are a complete replacement for the current flags; GNU
+    flags adjust the toolchain's own defaults (the result still includes them).
+    """
+    base = list(base_flags or [])
+    names = [s.name for s in symbols]
+    sections = set(section_names)
+    evidence: list[str] = []
+    if compiler == "MSVC":
+        flags = _strip(base, ("/gs", "/eh", "/gr"))
+        security = _has_any(data, _SECURITY) or any(n in _SECURITY for n in names)
+        exceptions = cxx and (_has_any(data, _EXCEPTIONS) or any(n in _EXCEPTIONS for n in names))
+        rtti = cxx and (_has_any(data, _RTTI) or any(n.startswith(("??_7", ".?AV")) for n in names))
+        flags.append("/GS" if security else "/GS-")
+        evidence.append("security cookie: /GS" if security else "no security cookie: /GS-")
+        if cxx:
+            flags.append("/EHsc" if exceptions else "/EHs-c-")
+            evidence.append("C++ frame handlers: /EHsc" if exceptions else "no C++ frame handlers: /EHs-c-")
+            flags.append("/GR" if rtti else "/GR-")
+            evidence.append("RTTI names: /GR" if rtti else "no RTTI names: /GR-")
+        return {"flags": flags, "evidence": evidence, "style": "msvc"}
+
+    flags = list(base)
+    # GNU-style toolchains: keep the defaults, change only what the image gives evidence for.
+    stack = _has_any(data, _STACK_GUARD) or any(n in _STACK_GUARD for n in names)
+    flags = _strip(flags, ("-fstack-protector", "-fno-stack-protector"))
+    if not stack:
+        flags.append("-fno-stack-protector")
+    evidence.append("stack guard: keep the stack protector" if stack else "no stack guard: -fno-stack-protector")
+
+    unwind = bool({".eh_frame", ".pdata"} & sections)
+    if not unwind:
+        flags = _strip(flags, ("-fno-asynchronous-unwind-tables", "-fno-unwind-tables"))
+        flags += ["-fno-asynchronous-unwind-tables", "-fno-unwind-tables"]
+        evidence.append("no unwind tables: -fno-asynchronous-unwind-tables -fno-unwind-tables")
+    else:
+        flags = _strip(flags, ("-fno-asynchronous-unwind-tables", "-fno-unwind-tables"))
+        evidence.append("unwind tables present: keep them")
+
+    if not comment and ".comment" in sections:
+        pass
+    elif not comment:
+        flags = _strip(flags, ("-fno-ident",))
+        flags.append("-fno-ident")
+        evidence.append("no compiler comment: -fno-ident")
+    else:
+        flags = _strip(flags, ("-fno-ident",))
+        evidence.append(".comment present: keep the compiler ident")
+
+    probe = _has_any(data, _STACK_PROBE) or any(n in _STACK_PROBE for n in names)
+    flags = _strip(flags, ("-mno-stack-arg-probe",))
+    if not probe:
+        flags.append("-mno-stack-arg-probe")
+    evidence.append("stack probe: " + ("present" if probe else "-mno-stack-arg-probe"))
+
+    if cxx:
+        throws = _has_any(data, _CXA_THROW) or any(n in _CXA_THROW for n in names)
+        flags = _strip(flags, ("-fexceptions", "-fno-exceptions"))
+        flags.append("-fexceptions" if throws else "-fno-exceptions")
+        evidence.append("C++ exceptions: " + ("present" if throws else "none: -fno-exceptions"))
+        rtti = _has_any(data, _RTTI) or any(n.startswith(("_ZTV", "_ZTI")) for n in names)
+        flags = _strip(flags, ("-frtti", "-fno-rtti"))
+        flags.append("-frtti" if rtti else "-fno-rtti")
+        evidence.append("RTTI: " + ("present" if rtti else "none: -fno-rtti"))
+    return {"flags": list(dict.fromkeys(flags)), "evidence": evidence, "style": "gnu"}

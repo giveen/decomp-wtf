@@ -27,7 +27,7 @@ from pathlib import Path
 from .. import rea, scoring, seeds, similarity, toolchains
 from ..elfobj import FunctionObj
 from ..network import Agent, Network, NetworkError, _ago, _hash_token
-from ..rom import bincompare, buildinfo, debuginfo, detect, match, pe, split
+from ..rom import bincompare, buildinfo, debuginfo, detect, library, match, pe, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 from . import analysis
 
@@ -96,7 +96,7 @@ SHORT_NAMES = {"gcc-2.7.2-kmc": "KMC GCC 2.7.2", "ido-7.1": "IDO 7.1", "ido-5.3"
                "mingwxx-x86_64": "MinGW-w64 G++ (x86-64)", "mingwxx-x86": "MinGW-w64 G++ (x86)",
                "clang-cl-x86_64": "clang-cl (x86-64)", "clang-cl-x86": "clang-cl (x86)",
                "clang-clxx-x86_64": "clang-cl (x86-64, C++)", "clang-clxx-x86": "clang-cl (x86, C++)",
-               "llvm-tools": "LLVM tools",
+               "llvm-tools": "LLVM tools", "upx": "UPX", "rizin": "Rizin", "detect-it-easy": "Detect It Easy",
                **{k: short for k, (short, _use) in LINUX_COMPILERS.items()}}
 # CodeWarrior versions in the `mwcc` pack (GameCube, Wii) and the `mwccarm` pack (DS), for games started from scratch.
 MW_VERSIONS = {
@@ -120,6 +120,9 @@ TOOLS = {
     "mwccarm": "CodeWarrior for DS, the compilers of DS games (proprietary)",
     "dsd": "ds-decomp: analyses DS ROMs and rebuilds them",
     "llvm-tools": "PDB debug symbols for Windows programs (system LLVM; optional)",
+    "upx": "unpack UPX-packed PC programs before splitting (optional)",
+    "rizin": "lightweight analysis provider for REA (optional)",
+    "detect-it-easy": "compiler and packer fingerprints (optional)",
 }
 WINDOWS_NOTE = """
 /* Windows globals: define them here WITHOUT `extern` (for example `int g_counter;`). With `extern`, MinGW
@@ -883,6 +886,8 @@ class RomNetwork(Network):
         if debug is not None:
             self._merge_debug(image, debug)
             log(f"debug information from {debug.source}: {len(debug.symbols)} names, {len(debug.types)} types")
+        if not linux and (b"UPX!" in picked.data[:0x1000] or any(s.name.upper().startswith("UPX") for s in image.sections)):
+            log("this looks UPX-packed: unpack it first (UPX is in Compilers & tools), then import the unpacked program")
         suffix = "x86_64" if image.arch == "x86_64" else "x86"
         cxx = buildinfo.looks_cxx(image.symbols)
         if linux:
@@ -895,6 +900,17 @@ class RomNetwork(Network):
             msvc = info["compiler_guess"] == "MSVC" or any(s.name.startswith("?") for s in image.symbols)
             toolchain = f"{'clang-clxx' if msvc else 'mingwxx'}-{suffix}" if cxx else f"mingw-{suffix}"
         tc = toolchains.get(toolchain)
+        base_flags = flags or (_linux_flags(tc.flags, info.get("pie", False)) if linux else tc.flags)
+        suggestion = buildinfo.infer_flags(
+            picked.data, compiler="MSVC" if toolchain.startswith("clang-cl") else "GNU", cxx=cxx,
+            base_flags=base_flags, symbols=image.symbols, section_names=[s.name for s in image.sections])
+        info["suggested_flags"] = suggestion["flags"]
+        info["flag_evidence"] = suggestion["evidence"]
+        info["flag_style"] = suggestion["style"]
+        if not flags and suggestion["flags"] != list(tc.flags):
+            flags = suggestion["flags"]
+            info["flags_inferred"] = True
+            log("build flags inferred: " + " ".join(flags))
         log(f"detected {info.get('build_label') or info['compiler_guess']}; matching with {tc.name}")
         if info.get("matchable") is False:
             log(f"{info.get('build_label') or 'this language'} can't be rebuilt from C/C++: inspect and annotate it, "
@@ -903,12 +919,12 @@ class RomNetwork(Network):
             log(f"{tc.name} isn't on this computer: functions import and can be inspected, but compiling needs it "
                 f"(install it, or set another [compiler] for the project)")
         if linux and not flags:
-            flags = _linux_flags(tc.flags, info.get("pie", False))
+            flags = base_flags
         cfg = {
             "kind": "rom", "platform": picked.platform, "arch": image.arch, "big_endian": False, "gp": 0,
             "rom": {**info, "file": picked.filename, "program": picked.filename},
             "segments": image.segments,
-            "compiler": {"toolchain": toolchain, "flags": flags or [], "timeout": 20},
+            "compiler": {"toolchain": toolchain, "flags": flags or tc.flags, "timeout": 20},
             "legal": {"basis": "personal-copy", "license": "personal use only",
                       "statement": "imported by the owner of this copy of the game, who confirmed it was legally obtained",
                       "confirmed_at": time.time()},
@@ -936,23 +952,27 @@ class RomNetwork(Network):
                              (slug, info["title"], f"{image.arch} · {len(image.functions)} functions · "
                                                    f"{info['compiler_guess']}", image.arch, 0, str(workdir),
                               json.dumps(cfg))).lastrowid
+            libs = 0
             for f in image.functions:
                 name = f.name
                 if name in names:
                     name = f"{name}_{f.vram:08X}"
                 names.add(name)
+                lib = library.kind(f.name)
+                libs += bool(lib)
                 db.execute(
-                    "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,status,meta) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (pid, name, len(f.code), f.n_insns, f.code, json.dumps([list(r) for r in f.refs]),
-                     f.asm.replace(f.name, name), None, f.section, f.vram, f.rom))
+                     f.asm.replace(f.name, name), None, f.section, f.vram, f.rom,
+                     "library" if lib else "open", json.dumps({"library": lib}) if lib else None))
             for sym in image.symbols:
                 db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,preview) "
                            "VALUES(?,?,?,?,?,?)", (pid, sym.name, sym.address, sym.size, sym.kind, sym.preview or None))
             db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
                        "VALUES(?,?,?,?,?,?,?)", (pid, 1, header, None, "basic types", now, ""))
             self._event(db, pid, None, "import", f"{len(image.functions)} functions from {info['title']}")
-        log(f"ready: {len(image.functions)} functions to decompile")
+        log(f"ready: {len(image.functions)} functions to decompile" + (f" ({libs} library/CRT functions skipped)" if libs else ""))
         return slug
 
     # ------------------------------------------------------------------ debug symbols and types
@@ -1047,6 +1067,7 @@ class RomNetwork(Network):
         self._syms.pop(proj["id"], None)
         self._xrefs.pop(proj["id"], None)
         self._ops.pop(proj["id"], None)
+        self.classify_library(slug, log=log)
 
         types_added = False
         warning = ""
@@ -1088,6 +1109,27 @@ class RomNetwork(Network):
         json_path.write_text(debuginfo.symbols_json(syms), encoding="utf-8")
         return {"symbols": len(syms), "types": debug.get("types", 0), "symbol_addrs": str(sym_path),
                 "types_header": str(type_path), "json": str(json_path)}
+
+    def classify_library(self, slug: str, log=print) -> int:
+        """Mark open functions whose names are CRT/runtime/library code, including projects imported before this.
+        Matched or hand-written functions are never touched."""
+        proj = self._project(slug)
+        rows = self.store.all("SELECT id, name, meta FROM functions WHERE project_id=? AND status='open'",
+                              proj["id"])
+        found = []
+        for row in rows:
+            kind = library.kind(row["name"])
+            if kind:
+                meta = json.loads(row["meta"] or "{}")
+                meta["library"] = kind
+                found.append((json.dumps(meta), row["id"]))
+        if found:
+            with self.store.tx() as db:
+                db.executemany("UPDATE functions SET status='library', meta=? WHERE id=? AND status='open'", found)
+                db.execute("INSERT INTO events(project_id,agent_id,kind,detail,created_at) VALUES(?,?,?,?,?)",
+                           (proj["id"], None, "library", f"{len(found)} library/CRT functions skipped", time.time()))
+            log(f"{len(found)} library/CRT functions marked and skipped")
+        return len(found)
 
     def compare_version(self, slug: str, path: str) -> dict:
         """Compare the project's own target with another build (a patch, demo or port)."""
@@ -2056,6 +2098,22 @@ class RomNetwork(Network):
             if value is not None and rom.get(key) != value:
                 rom[key] = value
                 changed = True
+        want_style = "msvc" if cfg["compiler"]["toolchain"].startswith("clang-cl") else "gnu"
+        if not rom.get("suggested_flags") or rom.get("flag_style") != want_style:
+            try:
+                from ..rom import elfexe
+                image = (elfexe if picked.platform == "linux" else pe).read(picked.data, picked.filename)
+                tc = toolchains.get(cfg["compiler"]["toolchain"])
+                base = cfg["compiler"].get("flags") or tc.flags
+                suggestion = buildinfo.infer_flags(
+                    picked.data, compiler="MSVC" if want_style == "msvc" else "GNU",
+                    cxx=picked.info.get("language_guess") == "C++", base_flags=base, symbols=image.symbols,
+                    section_names=[s.name for s in image.sections])
+                rom["suggested_flags"], rom["flag_evidence"] = suggestion["flags"], suggestion["evidence"]
+                rom["flag_style"] = suggestion["style"]
+                changed = True
+            except Exception:
+                pass
         if picked.info.get("language_guess") == "C++":
             tc = cfg["compiler"]["toolchain"]
             if source_language(tc) != "C++":
@@ -2067,6 +2125,7 @@ class RomNetwork(Network):
             cfg["rom"] = rom
             with self.store.tx() as db:
                 db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+        self.classify_library(proj["slug"], log=lambda *_: None)
         return rom
 
     def _overview(self, slug: str, proj, backfill: bool = False) -> dict:
@@ -2078,11 +2137,15 @@ class RomNetwork(Network):
         agg = self.store.one(
             "SELECT COUNT(*) AS total, SUM(status='matched') AS matched, SUM(size) AS bytes, "
             "SUM(CASE WHEN status='matched' THEN size ELSE 0 END) AS matched_bytes, SUM(attempts) AS attempts "
-            "FROM functions WHERE project_id=?", proj["id"])
+            "FROM functions WHERE project_id=? AND status!='library'", proj["id"])
+        lib = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='library'",
+                             proj["id"])["n"]
         rom = cfg["rom"]
         detected = None
         if cfg.get("platform") in X86_PLATFORMS:
-            if backfill and (not rom.get("build_label") or (
+            want_style = "msvc" if cfg["compiler"]["toolchain"].startswith("clang-cl") else "gnu"
+            if backfill and (not rom.get("build_label") or not rom.get("suggested_flags") or
+                             rom.get("flag_style") != want_style or (
                     rom.get("language_guess") == "C++" and source_language(cfg["compiler"]["toolchain"]) != "C++")):
                 rom = self._backfill_detection(proj, cfg)
             language = rom.get("language_guess") or source_language(cfg["compiler"]["toolchain"])
@@ -2096,14 +2159,15 @@ class RomNetwork(Network):
             "platform": cfg.get("platform", "n64"), "platform_name": detect.PLATFORMS.get(cfg.get("platform", "n64"), ""),
             "compilers": PLATFORM_COMPILERS.get(cfg.get("platform", "n64"), []),
             "rom": {k: rom.get(k) for k in ("title", "game_code", "region", "size", "sha1", "byte_order", "compiler_guess")},
-            "detected": detected,
+            "detected": (detected or {}) | ({"suggested_flags": rom.get("suggested_flags") or [],
+                                            "flag_evidence": rom.get("flag_evidence") or []} if detected else {}),
             "compiler": {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name), "flags": cfg["compiler"]["flags"],
                          "installed": toolchains.installed(tc.id) is not None, "proprietary": tc.proprietary,
                          "supported": tc.supported, "wsl": tc.via_wsl,
                          "why": None if tc.supported else toolchains.unsupported_cpu()},
             "source_language": source_language(tc.id), "source_ext": source_ext(tc.id),
             "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
-            "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0,
+            "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0, "library": lib,
             "context_version": self._context(proj["id"])["version"],
             "folder": proj["root"],
             "export": cfg.get("export"),
@@ -2156,7 +2220,7 @@ class RomNetwork(Network):
     def function_map(self, slug: str) -> list[dict]:
         proj = self._project(slug)
         rows = self.store.all(
-            "SELECT f.name, f.vram, f.size, f.n_insns, f.status, f.best_score, f.attempts, f.unit, f.matched_at, "
+            "SELECT f.name, f.vram, f.size, f.n_insns, f.status, f.meta, f.best_score, f.attempts, f.unit, f.matched_at, "
             "a.name AS agent, m.name AS matched_by FROM functions f LEFT JOIN claims c ON c.function_id=f.id "
             "LEFT JOIN agents a ON a.id=c.agent_id LEFT JOIN agents m ON m.id=f.matched_agent_id "
             "WHERE f.project_id=? ORDER BY f.vram, f.unit, f.id", proj["id"])
@@ -2164,10 +2228,18 @@ class RomNetwork(Network):
         # who works on what in the room: by address, or by name in a git project (its functions have no addresses)
         key = (lambda r: r["name"]) if link is not None and link.fork else (lambda r: r["vram"])
         remote = {key(c): "@" + c["agent"] for c in (link.claims if link is not None else [])}
-        return [{"name": r["name"], "vram": r["vram"], "size": r["size"], "insns": r["n_insns"], "unit": r["unit"],
-                 "status": r["status"] if r["status"] in ("matched", "asm") else "working" if (r["agent"] or key(r) in remote) else "open",
-                 "best": r["best_score"], "attempts": r["attempts"], "agent": r["agent"] or remote.get(key(r)),
-                 "matched_at": r["matched_at"], "matched_by": r["matched_by"]} for r in rows]
+        out = []
+        for r in rows:
+            meta = json.loads(r["meta"] or "{}")
+            status = "library" if r["status"] == "library" else (
+                r["status"] if r["status"] in ("matched", "asm") else
+                "working" if (r["agent"] or key(r) in remote) else "open")
+            out.append({"name": r["name"], "vram": r["vram"], "size": r["size"], "insns": r["n_insns"],
+                        "unit": r["unit"], "status": status, "library": meta.get("library"),
+                        "best": r["best_score"], "attempts": r["attempts"],
+                        "agent": r["agent"] or remote.get(key(r)), "matched_at": r["matched_at"],
+                        "matched_by": r["matched_by"]})
+        return out
 
     def map_signature(self, slug: str) -> str:
         """What the function map shows, summed up: it changes when a function is added, matched, tried or claimed.

@@ -272,6 +272,8 @@ class Network:
                     raise NetworkError(f"{fn['name']} is already matched; use get_function to read its source")
                 if fn["status"] == "asm":
                     raise NetworkError(f"{fn['name']} is hand-written assembly: no C compiles to it, so it's left out")
+                if fn["status"] == "library":
+                    raise NetworkError(f"{fn['name']} is library/CRT code: it isn't the program's own code, so it's left out")
                 other = db.execute("SELECT agent_id, expires_at FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
                 if other is not None:
                     raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(other['agent_id'])} "
