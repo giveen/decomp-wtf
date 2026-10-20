@@ -360,6 +360,26 @@
           <div class="row"><button class="primary small-btn" id="setTcSave" type="button">Save</button><button class="ghost small-btn" id="setTcReset" type="button">Default flags</button></div>
         </div>
       </section>
+      <section class="panel" id="debugPanel">
+        <header class="panel-head"><h2>Symbols &amp; types</h2></header>
+        <div class="pad">
+          <p class="muted small">Import names and types that already exist beside the target: a PDB, ELF DWARF, a MAP file or <code>symbol_addrs.txt</code>. Debug names replace automatic <code>sub_</code>/<code>func_</code> names; types go into the shared header.</p>
+          <label class="field"><span>Debug file (blank: beside the target)</span><input id="debugPath" class="mono" placeholder="game.pdb, game.map, symbol_addrs.txt"></label>
+          <div class="row"><button class="primary small-btn" id="debugImport" type="button">Import</button><button class="ghost small-btn" id="debugExport" type="button">Export</button></div>
+          <pre class="joblog" id="debugLog" hidden></pre>
+          <p class="muted small" id="debugMsg"></p>
+        </div>
+      </section>
+      <section class="panel" id="comparePanel">
+        <header class="panel-head"><h2>Compare versions</h2></header>
+        <div class="pad">
+          <p class="muted small">Point at another copy of this program (a patch, demo or port). Functions are matched by normalized instructions, so moved addresses don't break the comparison.</p>
+          <label class="field"><span>Other program</span><input id="comparePath" class="mono" placeholder="/path/to/other.exe"></label>
+          <div class="row"><button class="primary small-btn" id="compareGo" type="button">Compare</button></div>
+          <p class="muted small" id="compareMsg"></p>
+          <div id="compareResult"></div>
+        </div>
+      </section>
       <section class="panel">
         <header class="panel-head"><h2>About this project</h2></header>
         <div class="pad">

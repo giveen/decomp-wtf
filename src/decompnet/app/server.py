@@ -660,6 +660,23 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             raise ValueError("name the task first")
         return {"name": net.add_analysis_task(None, slug, name, str(data.get("brief", ""))[:4000])}
 
+    def p_debug_import(slug, request, data):
+        path = str(data.get("path") or "").strip()
+
+        def work(log):
+            return net.import_debug_info(slug, path, log=log)
+        return {"job": jobs.start("debug", work)}
+
+    def p_debug_export(slug, request, data):
+        return net.export_debug_info(slug)
+
+    def p_compare(slug, request, data):
+        path = str(data.get("path") or "").strip()
+
+        def work(log):
+            return net.compare_version(slug, path)
+        return {"job": jobs.start("compare", work)}
+
     def p_autopilot(slug, request, data):
         if data.get("action") == "stop":
             net.stop_autopilot(slug)
@@ -679,6 +696,9 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]),
         "/api/analysis/task": (p_add_task, ["POST"]),
+        "/api/debug/import": (p_debug_import, ["POST"]),
+        "/api/debug/export": (p_debug_export, ["POST"]),
+        "/api/compare": (p_compare, ["POST"]),
         "/api/stats": (lambda s, r, d: net.stats(s), ["GET"]),
     }
     for path, (fn, methods) in routes.items():

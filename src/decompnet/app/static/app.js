@@ -2565,6 +2565,12 @@ async function renderProjectSettings() {
   const fork = ov.kind === "fork";
   const analysis = ov.kind === "analysis";
   $("compilerPanel").hidden = fork || analysis;
+  $("debugPanel").hidden = fork || analysis;
+  $("comparePanel").hidden = fork || analysis || !["windows", "linux"].includes(ov.platform);
+  const dbg = ov.debug;
+  $("debugMsg").textContent = dbg
+    ? `${dbg.symbols || 0} names and ${dbg.types || 0} types from ${dbg.source}${dbg.imported_at ? ` · ${since(dbg.imported_at)}` : ""}`
+    : "No debug information imported yet. A PDB beside a Windows program, DWARF in a Linux program, or a MAP file can name functions and provide types.";
   if (!fork && !analysis) {
     if (!S.st) await loadState();
     fillCompilers($("setTc"), ov.compiler.toolchain, { n64: "N64", psx: "PS1", ps2: "PS2", gba: "GBA" }[ov.platform]);
@@ -2599,6 +2605,69 @@ $("setTcSave").onclick = async () => {
     renderProjectSettings();
     toast("Compiler settings saved.");
   } catch (e) { toast(esc(e.message), "err"); }
+};
+$("debugImport").onclick = async () => {
+  const path = $("debugPath").value.trim();
+  $("debugImport").disabled = true;
+  $("debugLog").hidden = false;
+  $("debugLog").textContent = "reading debug information…";
+  $("debugMsg").textContent = "";
+  try {
+    const { job } = await api("/api/debug/import", { method: "POST", body: { slug: S.slug, path } });
+    const r = await followJob(job, $("debugLog"));
+    $("debugMsg").textContent = r.warning
+      ? `Imported ${r.source}: ${r.renamed} renamed, ${r.symbols} new symbols. Types were not added: ${r.warning}`
+      : `Imported ${r.source}: ${r.renamed} renamed, ${r.symbols} new symbols, ${r.types} types${r.types_added ? " added to the header" : ""}.`;
+    toast("Debug information imported.", "match");
+    S.ov = await api(`/api/project?slug=${S.slug}`);
+    await refreshMap(true);
+    renderProjectSettings(S.ov);
+    renderStats(S.ov);
+  } catch (e) {
+    $("debugMsg").textContent = e.message;
+    toast(esc(e.message), "err");
+  } finally { $("debugImport").disabled = false; }
+};
+$("debugExport").onclick = async () => {
+  $("debugExport").disabled = true;
+  try {
+    const r = await api("/api/debug/export", { method: "POST", body: { slug: S.slug } });
+    $("debugMsg").textContent = `Wrote ${r.symbols} symbols to ${r.symbol_addrs} and types to ${r.types_header}.`;
+    toast("Symbols and types exported into the project folder.", "match");
+  } catch (e) { toast(esc(e.message), "err"); }
+  finally { $("debugExport").disabled = false; }
+};
+function compareTable(r) {
+  const s = r.summary;
+  const hex = (n) => n == null ? "—" : `0x${n.toString(16).toUpperCase()}`;
+  const status = (x) => x === "same" ? `<span class="ok">same</span>` : x === "changed"
+    ? `<span class="warn-text">changed</span>` : x === "added" ? `<span class="ok">added</span>` : `<span class="muted">removed</span>`;
+  const rows = r.rows.slice(0, 300).map((x) => `<tr>
+    <td class="name">${esc(x.name || "—")}<div class="mono dim">${hex(x.address)}</div></td>
+    <td>${status(x.status)}</td>
+    <td class="name">${esc(x.other_name || "—")}<div class="mono dim">${hex(x.other_address)}</div></td>
+    <td class="r mono">${x.similarity ? `${Math.round(x.similarity * 100)}%` : ""}</td>
+    <td class="r mono">${x.size == null ? "—" : x.size}${x.other_size == null ? "" : ` → ${x.other_size}`}</td>
+  </tr>`).join("");
+  return `<div class="facts-line" style="margin:10px 0"><b>${s.same}</b> same${s.moved ? ` (${s.moved} moved)` : ""} · <b>${s.changed}</b> changed · <b>${s.added}</b> added · <b>${s.removed}</b> removed</div>
+    <div class="fn-table-wrap"><table class="fn-table"><thead><tr><th>This version</th><th>Status</th><th>Other version</th><th class="r">Similar</th><th class="r">Bytes</th></tr></thead><tbody>${rows || `<tr class="none"><td colspan="5">No functions found.</td></tr>`}</tbody></table></div>
+    ${r.rows.length > 300 ? `<p class="muted small">Showing the first 300 of ${r.rows.length} rows.</p>` : ""}`;
+}
+$("compareGo").onclick = async () => {
+  const path = $("comparePath").value.trim();
+  if (!path) { toast("Choose another copy first.", "err"); return; }
+  $("compareGo").disabled = true;
+  $("compareMsg").textContent = "comparing instructions…";
+  $("compareResult").innerHTML = "";
+  try {
+    const { job } = await api("/api/compare", { method: "POST", body: { slug: S.slug, path } });
+    const r = await followJob(job);
+    $("compareMsg").textContent = `${r.old.kind} ${r.old.arch} → ${r.new.kind} ${r.new.arch}`;
+    $("compareResult").innerHTML = compareTable(r);
+  } catch (e) {
+    $("compareMsg").textContent = e.message;
+    toast(esc(e.message), "err");
+  } finally { $("compareGo").disabled = false; }
 };
 $("folderBtn").onclick = () => openFolder();
 $("deleteBtn").onclick = () => {

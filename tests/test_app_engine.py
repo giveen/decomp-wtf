@@ -187,3 +187,15 @@ def test_stats_say_who_matched_what_and_how_fast(net):
     me = next(r for r in st["agents"] if r["agent"] == "statsy")
     assert me["compiles"] == 1 and st["compiles_last_hour"] >= 1
     assert all("matched_by" in r for r in net.function_map("demo-quest-64"))
+
+
+def test_symbol_addrs_import_renames_a_rom_function(built, tmp_path):  # noqa: F811
+    net = RomNetwork(tmp_path / "symbols.db", tmp_path)
+    slug = net.import_rom(built, confirmed=True, log=lambda *_: None)
+    path = tmp_path / "symbol_addrs.txt"
+    path.write_text("clamp_s32 = 0x800007D0; // type:func size:0x24\n")
+    result = net.import_debug_info(slug, str(path))
+    assert result["renamed"] == 1 and not result["warning"]
+    assert net._function("clamp_s32", slug)["vram"] == 0x800007D0
+    exported = net.export_debug_info(slug)
+    assert "clamp_s32 = 0x800007D0;" in Path(exported["symbol_addrs"]).read_text()

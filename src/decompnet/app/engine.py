@@ -27,7 +27,7 @@ from pathlib import Path
 from .. import rea, scoring, seeds, similarity, toolchains
 from ..elfobj import FunctionObj
 from ..network import Agent, Network, NetworkError, _ago, _hash_token
-from ..rom import buildinfo, detect, match, pe, split
+from ..rom import bincompare, buildinfo, debuginfo, detect, match, pe, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 from . import analysis
 
@@ -697,6 +697,7 @@ class RomNetwork(Network):
         as a target. Returns the slug."""
         if not confirmed:
             raise NetworkError("confirm that this is your own legally obtained copy of the game")
+        source = Path(data).expanduser().resolve() if isinstance(data, (str, Path)) else None
         project_file = self._community_layout(data, name)
         if project_file is not None:  # a dtk-template or ds-decomp project, worked on like a fork
             compiler = toolchain if toolchain and toolchain.startswith(("GC/", "Wii/", "DS/")) else None
@@ -720,7 +721,7 @@ class RomNetwork(Network):
         if picked.platform == "gba":
             return self._import_gba(picked, slug, workdir, toolchain, flags, log)
         if picked.platform in X86_PLATFORMS:
-            return self._import_windows(picked, slug, workdir, toolchain, flags, log)
+            return self._import_windows(picked, slug, workdir, toolchain, flags, log, source=source)
         if picked.overlays:
             log(f"{len(picked.overlays)} overlay{'s' if len(picked.overlays) != 1 else ''} on the disc: "
                 + ", ".join(f"{o[0]} at 0x{o[2]:08X}" for o in picked.overlays[:6]) + (", ..." if len(picked.overlays) > 6 else ""))
@@ -830,8 +831,40 @@ class RomNetwork(Network):
         log(f"ready: {len(fns)} functions to decompile")
         return slug
 
+    @staticmethod
+    def _merge_debug(image, debug) -> None:
+        """Put the names a PDB/DWARF/MAP already knows onto the split functions, without inventing new work items."""
+        by_addr = {f.vram: f for f in image.functions}
+        names = {s.name for s in image.symbols}
+        for meta in debug.functions:
+            fn = by_addr.get(meta.address)
+            if fn is None or not meta.name or not IDENT.match(meta.name):
+                continue
+            if fn.name == meta.name:
+                continue
+            if meta.name in names:
+                continue  # another function or data already owns that name
+            old = fn.name
+            fn.name = meta.name
+            fn.asm = (fn.asm.replace(f"glabel {old}", f"glabel {meta.name}")
+                      .replace(f"endlabel {old}", f"endlabel {meta.name}"))
+            for sym in image.symbols:
+                if sym.address == meta.address and sym.name == old:
+                    sym.name, sym.kind = meta.name, "func"
+                    if meta.size:
+                        sym.size = meta.size
+            names.discard(old)
+            names.add(meta.name)
+        by_name = {s.name: s for s in image.symbols}
+        for sym in debug.symbols:
+            if sym.name not in by_name:
+                image.symbols.append(sym)
+                by_name[sym.name] = sym
+            elif sym.kind == "func" and by_name[sym.name].kind != "func":
+                by_name[sym.name].kind = "func"
+
     def _import_windows(self, picked, slug: str, workdir: Path, toolchain: str | None, flags: list[str] | None,
-                        log) -> str:
+                        log, source: Path | None = None) -> str:
         """Windows and Linux programs: functions from .pdata/.eh_frame/exports/symbols/call targets, matched
         against a compiled object by the x86 matcher. The target is the program's own image, so every function's
         bytes and addresses are final."""
@@ -840,6 +873,14 @@ class RomNetwork(Network):
         linux = picked.platform == "linux"
         image = (elfexe if linux else pe).read(picked.data, picked.filename)
         info = picked.info  # the name the user picked (not the canonical game.exe the copy is stored as)
+        debug = None
+        try:
+            debug = debuginfo.discover(source or (workdir / picked.filename), picked.data, image=image)
+        except (debuginfo.DebugInfoError, OSError, ValueError) as e:
+            log(f"debug information not imported: {e}")
+        if debug is not None:
+            self._merge_debug(image, debug)
+            log(f"debug information from {debug.source}: {len(debug.symbols)} names, {len(debug.types)} types")
         suffix = "x86_64" if image.arch == "x86_64" else "x86"
         cxx = buildinfo.looks_cxx(image.symbols)
         if linux:
@@ -871,8 +912,23 @@ class RomNetwork(Network):
                       "confirmed_at": time.time()},
             "context": {"file": None},
         }
+        if debug is not None and (debug.header or debug.functions):
+            cfg["debug"] = {"source": debug.source, "symbols": len(debug.symbols), "types": len(debug.types),
+                            "header": debug.header, "imported_at": time.time()}
         names: set[str] = set()
         now = time.time()
+        header = BASE_HEADER.format(title=info["title"]) + (LINUX_NOTE if linux else WINDOWS_NOTE)
+        if debug is not None and debug.header:
+            debug_header = header + "\n/* Debug information imported from " + debug.source.replace("*/", "") + " */\n" + debug.header
+            try:
+                from ..compiler import compile_source
+                from ..project import compiler_config
+                if not compile_source(compiler_config(workdir, cfg), debug_header, "").ok:
+                    log("debug types don't compile with this project's compiler: keeping them out of the shared header")
+                else:
+                    header = debug_header
+            except Exception as e:
+                log(f"debug types not added to the shared header: {e}")
         with self.store.tx() as db:
             pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
                              (slug, info["title"], f"{image.arch} · {len(image.functions)} functions · "
@@ -892,12 +948,167 @@ class RomNetwork(Network):
                 db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,preview) "
                            "VALUES(?,?,?,?,?,?)", (pid, sym.name, sym.address, sym.size, sym.kind, sym.preview or None))
             db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
-                       "VALUES(?,?,?,?,?,?,?)", (pid, 1, BASE_HEADER.format(title=info["title"])
-                                                  + (LINUX_NOTE if linux else WINDOWS_NOTE),
-                                                  None, "basic types", now, ""))
+                       "VALUES(?,?,?,?,?,?,?)", (pid, 1, header, None, "basic types", now, ""))
             self._event(db, pid, None, "import", f"{len(image.functions)} functions from {info['title']}")
         log(f"ready: {len(image.functions)} functions to decompile")
         return slug
+
+    # ------------------------------------------------------------------ debug symbols and types
+
+    def import_debug_info(self, slug: str, path: str = "", log=print) -> dict:
+        """Merge a PDB/DWARF/MAP/symbol_addrs file into an existing project: names replace automatic ones,
+        data names are added, and types are appended to the shared header (regression-tested when it has matches)."""
+        proj = self._project(slug)
+        cfg = self.cfg(proj)
+        if cfg.get("kind") == "fork":
+            raise NetworkError("debug symbol import is for ROM and PC projects; a fork already has its project's symbols")
+        root = Path(proj["root"])
+        target = root / (cfg.get("rom", {}).get("program") or cfg.get("rom", {}).get("file") or "")
+        image = None
+        data = None
+        if cfg.get("platform") in X86_PLATFORMS and target.is_file():
+            data = target.read_bytes()
+            from ..rom import elfexe
+            image = (elfexe if cfg.get("platform") == "linux" else pe).read(data, target.name)
+        if path.strip():
+            p = Path(path.strip()).expanduser()
+            if not p.is_absolute():
+                p = root / p
+            if not p.is_file():
+                raise NetworkError(f"no debug file at {p}")
+            info = debuginfo.read(p, image=image)
+        else:
+            info = debuginfo.discover(target, data, image=image)
+            if info is None:
+                raise NetworkError(f"no PDB, DWARF, MAP or symbol_addrs.txt found for {target}")
+        if not info.symbols and not info.functions and not info.header:
+            raise NetworkError(f"{info.source} has no symbols or types this reader understands")
+
+        rows = self.store.all("SELECT * FROM functions WHERE project_id=? AND vram IS NOT NULL", proj["id"])
+        by_addr = {int(r["vram"]): r for r in rows if r["vram"]}
+        symbols = self.store.all("SELECT * FROM symbols WHERE project_id=?", proj["id"])
+        taken = {s["name"] for s in symbols} | {r["name"] for r in rows}
+        # PDB/DWARF have explicit functions; a MAP or symbol_addrs.txt only has names. A name at a split
+        # function's address is a function name there, whatever the file called it.
+        candidates: dict[tuple[int, str], object] = {}
+        for meta in info.functions:
+            if meta.name:
+                candidates.setdefault((meta.address, meta.name), meta)
+        for sym in info.symbols:
+            if sym.kind == "func" or sym.address in by_addr:
+                candidates.setdefault((sym.address, sym.name), debuginfo.DebugFunction(sym.name, sym.address, sym.size))
+        renames: list[tuple[str, str]] = []
+        for (address, name), _meta in sorted(candidates.items()):
+            row = by_addr.get(address)
+            if row is None or not name or not IDENT.match(name) or name in taken:
+                continue
+            if row["name"] == name:
+                continue
+            if not (AUTO_NAME.match(row["name"]) or row["name"].startswith("sub_")):
+                continue  # a name a person chose wins over a debug symbol
+            renames.append((row["name"], name))
+            taken.discard(row["name"])
+            taken.add(name)
+
+        added = 0
+        now = time.time()
+        with self.store.tx() as db:
+            for old, new in renames:
+                row = db.execute("SELECT id, asm, matched_source, best_source FROM functions WHERE project_id=? AND name=?",
+                                 (proj["id"], old)).fetchone()
+                if row is None:
+                    continue
+                db.execute("UPDATE functions SET name=? WHERE id=?", (new, row["id"]))
+                asm = (row["asm"] or "").replace(f"glabel {old}", f"glabel {new}").replace(f"endlabel {old}", f"endlabel {new}")
+                db.execute("UPDATE functions SET asm=? WHERE id=?", (asm, row["id"]))
+                word = re.compile(rf"\b{re.escape(old)}\b")
+                for col in ("matched_source", "best_source"):
+                    if row[col]:
+                        db.execute(f"UPDATE functions SET {col}=? WHERE id=?", (word.sub(new, row[col]), row["id"]))
+                db.execute("UPDATE symbols SET name=? WHERE project_id=? AND name=?", (new, proj["id"], old))
+            for sym in info.symbols:
+                if not sym.name or not IDENT.match(sym.name):
+                    continue
+                row = db.execute("SELECT address FROM symbols WHERE project_id=? AND name=?",
+                                 (proj["id"], sym.name)).fetchone()
+                if row is not None:
+                    if row["address"] != sym.address:
+                        continue  # don't steal an existing name for another address
+                    db.execute("UPDATE symbols SET size=?, kind=?, preview=? WHERE project_id=? AND name=?",
+                               (sym.size, sym.kind, sym.preview or None, proj["id"], sym.name))
+                else:
+                    db.execute("INSERT INTO symbols(project_id,name,address,size,kind,preview) "
+                               "VALUES(?,?,?,?,?,?)", (proj["id"], sym.name, sym.address, sym.size, sym.kind,
+                                                       sym.preview or None))
+                    added += 1
+            self._event(db, proj["id"], None, "debug", f"{info.source}: {len(renames)} renamed, {added} new symbols")
+        self._syms.pop(proj["id"], None)
+        self._xrefs.pop(proj["id"], None)
+        self._ops.pop(proj["id"], None)
+
+        types_added = False
+        warning = ""
+        if info.header:
+            ctx = self._context(proj["id"])
+            if info.header.strip() not in (ctx["header"] if ctx else ""):
+                agent, _ = self.local_agent("debuginfo")
+                try:
+                    res = self.edit_context(agent, slug, "", "\n/* Debug information imported from " +
+                                            info.source.replace("*/", "") + " */\n" + info.header,
+                                            "import debug types")
+                    types_added = res.startswith("✅")
+                    if not types_added:
+                        warning = res
+                except NetworkError as e:
+                    warning = str(e)
+        self._update_cfg(slug, lambda c: c.__setitem__("debug", {
+            "source": info.source, "symbols": len(info.symbols), "types": len(info.types),
+            "header": info.header, "imported_at": now}))
+        log(f"{info.source}: {len(renames)} functions renamed, {added} symbols added, "
+            f"{len(info.types)} types{' imported' if types_added else ''}")
+        return {"source": info.source, "renamed": len(renames), "symbols": added, "types": len(info.types),
+                "types_added": types_added, "warning": warning}
+
+    def export_debug_info(self, slug: str) -> dict:
+        """Write portable symbol and type files into the project folder."""
+        proj = self._project(slug)
+        cfg = self.cfg(proj)
+        root = Path(proj["root"])
+        rows = self.store.all("SELECT name,address,size,kind FROM symbols WHERE project_id=? ORDER BY address", proj["id"])
+        syms = [Symbol(r["name"], int(r["address"]), int(r["size"] or 0), r["kind"] or "data") for r in rows]
+        sym_path = root / "symbol_addrs.txt"
+        sym_path.write_text(debuginfo.symbol_addrs_text(syms), encoding="utf-8")
+        debug = cfg.get("debug") or {}
+        header = debug.get("header") or "/* No debug types were imported for this project. */\n"
+        type_path = root / "debug_types.h"
+        type_path.write_text(header, encoding="utf-8")
+        json_path = root / "debug_symbols.json"
+        json_path.write_text(debuginfo.symbols_json(syms), encoding="utf-8")
+        return {"symbols": len(syms), "types": debug.get("types", 0), "symbol_addrs": str(sym_path),
+                "types_header": str(type_path), "json": str(json_path)}
+
+    def compare_version(self, slug: str, path: str) -> dict:
+        """Compare the project's own target with another build (a patch, demo or port)."""
+        proj = self._project(slug)
+        cfg = self.cfg(proj)
+        if cfg.get("kind") == "fork":
+            raise NetworkError("compare versions on a ROM or PC project, not on a fork")
+        if cfg.get("platform") not in X86_PLATFORMS:
+            raise NetworkError("version comparison currently covers Windows and Linux x86 programs")
+        root = Path(proj["root"])
+        target = root / (cfg.get("rom", {}).get("program") or cfg.get("rom", {}).get("file") or "")
+        if not target.is_file():
+            raise NetworkError(f"the project's target is missing: {target}")
+        other = Path(path).expanduser()
+        if not other.is_absolute():
+            other = root / other
+        if not other.is_file():
+            raise NetworkError(f"no program at {other}")
+        if other.resolve() == target.resolve():
+            raise NetworkError("that's the project's own target; choose another version")
+        names = {int(r["vram"]): r["name"] for r in self.store.all(
+            "SELECT name, vram FROM functions WHERE project_id=? AND vram IS NOT NULL", proj["id"])}
+        return bincompare.compare_paths(target, other, old_names=names)
 
     def _community_layout(self, data: bytes | Path, name: str = "") -> Path | None:
         """The file, when the game starts as a community-layout project: a GameCube/Wii program (DOL) or disc image
@@ -1895,6 +2106,7 @@ class RomNetwork(Network):
             "folder": proj["root"],
             "export": cfg.get("export"),
             "exportable": cfg.get("platform", "n64") in ("n64", "psx", "ps2", "gba"),
+            "debug": cfg.get("debug"),
             "binary": cfg.get("rom", {}).get("program") if cfg.get("platform") in X86_PLATFORMS else None,
             "room": self._room_info(proj["slug"]),
         }

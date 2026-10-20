@@ -276,6 +276,25 @@ only read. Tools that run or drive a program, browser or device, change a device
 only after you confirm. The app enforces this, not only the page. Everything REA shows about a target is treated as
 untrusted text.
 
+## Debug information and versions
+
+A program often ships with names the compiler already knew. decomp.anything imports them instead of making agents
+guess:
+
+- **PDB** beside a Windows program (read with LLVM's `llvm-pdbutil`), **DWARF** inside a Linux program, a linker
+  **MAP** file, or `symbol_addrs.txt`. Debug names replace automatic `sub_`/`func_`/`D_` names without breaking
+  matches; data names are added; structs, unions, enums and typedefs go into the shared header.
+- **Import later** from a project's **Settings → Symbols & types**, by path or with no path (the program's sidecar
+  debug file). **Export** writes `symbol_addrs.txt`, `debug_types.h` and `debug_symbols.json` into the project
+  folder, ready for other tools.
+- **Compare versions** in **Settings → Compare versions**: point at a patch, demo or port of the same Windows or
+  Linux program. Functions are paired by normalized instructions (calls, globals and RIP-relative operands are
+  blanked, internal branch targets stay relative), so moved code still matches. The report says same, moved,
+  changed, added and removed, with a similarity score for changed functions.
+
+Agents get `import_debug_info`, `export_debug_info` and `compare_version` tools; the autopilot and the normal
+matching loop are unchanged.
+
 ## Continue a public decomp
 
 Community projects already have a build and part of the code done. decomp.anything plugs agents into them as they
@@ -394,16 +413,19 @@ Go are identified, but only C and C++ are matched byte for byte.
 **Windows programs.** Function boundaries come from the x86-64 exception directory and the executable's symbol table
 where it has one, then exports, the entry point and every direct call target. Matching compiles your C to COFF and
 compares bytes with the original's, with address fields blanked on both sides: a call or RIP-relative load has to
-point at the same function or global. `inspect_binary` can ask [REA](https://rea.tools) for pseudocode, signatures
-and callers. Matching a real binary byte for byte needs the compiler that built it; point the project's
-`[compiler] cmd` at MSVC if needed. `DECOMP_REA_DRAFTS=1` also lets claims start from REA's pseudocode (slower; off
-by default).
+point at the same function or global. A PDB or MAP beside the program is imported automatically (PDB through LLVM's
+`llvm-pdbutil`); its names and types replace the automatic ones. `inspect_binary` can ask [REA](https://rea.tools)
+for pseudocode, signatures and callers. Matching a real binary byte for byte needs the compiler that built it; point
+the project's `[compiler] cmd` at MSVC if needed. `DECOMP_REA_DRAFTS=1` also lets claims start from REA's pseudocode
+(slower; off by default).
 
 **Linux programs.** Function bounds come from the symbol table or, in a stripped program, from `.eh_frame`. Calls
 into shared libraries go through PLT stubs named after the function, with their GOT slots named `memcpy@got`. The C
-library's start-up code is left out. The compiler is picked from what `.comment` says built it; position-independent
-programs compile with `-fPIE`. An exact match needs the same compiler version and flags. System headers can't be
-included: declare library functions yourself, and in C++ write the classes whose mangled names you need.
+library's start-up code is left out. DWARF in the program is imported automatically: function names, sizes and
+signatures, plus structs, unions, enums and typedefs for the shared header. The compiler is picked from what
+`.comment` says built it; position-independent programs compile with `-fPIE`. An exact match needs the same compiler
+version and flags. System headers can't be included: declare library functions yourself, and in C++ write the
+classes whose mangled names you need.
 
 **The base for ports and mods.** *Export project* writes a normal decomp tree (matched functions as C, the rest as
 assembly, a linker script and `build.py`) and proves it rebuilds the target byte for byte. GameCube and Wii projects
@@ -444,6 +466,8 @@ projects folder (`~/Decomp`).
 | **Every binary is a project** | The normal picker accepts games and programs; unsupported formats fall back to REA automatically. Procedures become work items, tasks cover the rest, and the same dashboard, agents, notes and activity feed apply. |
 | **RE console** | REA's tools in the app: functions, pseudocode beside assembly, control-flow and call graphs, strings, memory map, a form for every tool and a terminal. |
 | **REA install** | Download and install REA from **Compilers & tools**; the console and agents pick it up automatically. |
+| **Debug symbols** | PDB, DWARF, MAP and `symbol_addrs.txt` names and types; export them again for other tools. |
+| **Version compare** | Patch/demo/port triage: same, moved, changed, added and removed functions, matched by normalized instructions. |
 | **Reference folders** | Name a folder in instructions and helpers can read and search it. |
 | **Every major disc format** | ROMs, PlayStation discs, GameCube and Wii discs (ISO, GCM, RVZ, WIA, WBFS, CISO, GCZ) and program files, streamed from disk. |
 | **Local-first** | No account, no telemetry, no server dependency. |
@@ -465,7 +489,7 @@ installers live in `install/`.
 
 | Path | What it is |
 | :-- | :-- |
-| `src/decompnet/rom/` | Input reading (`n64.py`, `psx.py`, `pe.py` for Windows executables, `elfexe.py` for Linux programs), splitting with splat (`split.py`), the symbol table and the matchers (`match.py`, `match_arm.py`, `match_x86.py`). |
+| `src/decompnet/rom/` | Input reading (`n64.py`, `psx.py`, `pe.py` for Windows executables, `elfexe.py` for Linux programs), splitting with splat (`split.py`), debug information (`debuginfo.py`), version comparison (`bincompare.py`), the symbol table and the matchers (`match.py`, `match_arm.py`, `match_x86.py`). |
 | `src/decompnet/coffobj.py`, `rea.py` | COFF objects from Windows compilers, and the REA MCP client: settings, the agents' read-only bridge and the console's calls. |
 | `src/decompnet/app/` | The app: `engine.py` (ROM projects), `forkengine.py` (forks of public decomps), `tools.py` (MCP tools and agent prompt), `agents.py` (running agents), `references.py` (reference folders), `console.py` (the RE console's REA session), `server.py` (GUI API and MCP), `collab.py` (rooms), `static/` (GUI; `console.js`/`console.css` are the RE console), `guide/` (agent know-how). |
 | `src/decompnet/forks/` | Fork mode: catalog, project detection and setup, objdiff, source editing, m2c and Ghidra drafts, linking and file splits (`project.py`, `dtksplits.py`), and data diffs (`datadiff.py`). |

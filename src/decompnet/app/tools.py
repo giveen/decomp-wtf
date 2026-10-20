@@ -269,9 +269,13 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "file_status": lambda net, agent, slug, path: net.forks.file_status(_fork(net, slug, "file_status"), path),
     "split_file": lambda net, agent, slug, path, at, new_name="", data="":
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
+    "import_debug_info": lambda net, agent, slug, path="": json.dumps(net.import_debug_info(slug, path)),
+    "export_debug_info": lambda net, agent, slug: json.dumps(net.export_debug_info(slug)),
+    "compare_version": lambda net, agent, slug, path: json.dumps(net.compare_version(slug, path)),
 }
 
-ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function"}
+ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "import_debug_info",
+            "export_debug_info", "compare_version"}
 FORK_ONLY = {"edit_file", "file_status", "split_file"}
 ANALYSIS_ONLY = {"complete_function", "rea_tool"}
 ANALYSIS_TOOLS = {"project_info", "claim_function", "get_function", "release_function", "complete_function",
@@ -490,6 +494,24 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         functions still differ, its data next to the original's (with what to fix), why the last link failed.
         A file is linked (the game built from its C) once every function and all its data match."""
         return await run(ctx, "file_status", path=path)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def import_debug_info(ctx: Context, path: str = "") -> str:
+        """Import names and types that already exist beside the target: a PDB, ELF DWARF, a MAP file or
+        symbol_addrs.txt. Empty path means the sidecar debug file (PDB next to an .exe, DWARF in an ELF).
+        Debug names replace automatic sub_/func_ names without breaking matches; types go into the shared header."""
+        return await run(ctx, "import_debug_info", path=path)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def export_debug_info(ctx: Context) -> str:
+        """Write portable symbol_addrs.txt, debug_types.h and debug_symbols.json files into the project folder."""
+        return await run(ctx, "export_debug_info")
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def compare_version(ctx: Context, path: str) -> str:
+        """Compare the project's target with another build (a patch, demo or port): same, changed, added and
+        removed functions, matched by normalized instructions so moved addresses don't hide a match."""
+        return await run(ctx, "compare_version", path=path)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def split_file(ctx: Context, path: str, at: str, new_name: str = "", data: str = "") -> str:
