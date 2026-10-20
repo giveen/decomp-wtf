@@ -191,6 +191,16 @@ def test_helpers_and_the_agent_you_talk_to_never_share_an_identity(tmp_path):
     assert net.local_agent("autopilot")[0].name == "autopilot"
 
 
+def test_a_replaced_token_counts_as_a_lost_session():
+    from decompnet.app.bridge import _session_lost
+
+    assert _session_lost("invalid api token")
+    assert _session_lost("Error executing tool progress: missing API token")
+    assert _session_lost("session terminated")
+    assert _session_lost("connection closed")
+    assert not _session_lost("a compile error")
+
+
 def test_local_agent_tokens_survive_restarts(tmp_path):
     """A helper's MCP bridge reconnects after the app restarts; its token must still authenticate."""
     from decompnet.app.engine import RomNetwork

@@ -31,6 +31,13 @@ def _log(msg: str) -> None:
     print(f"decomp mcp: {msg}", file=sys.stderr, flush=True)
 
 
+def _session_lost(text: str) -> bool:
+    """Whether a tool error means this MCP session is gone (app restarted, or the token was replaced)."""
+    text = text.lower()
+    return ("session terminated" in text or "connect" in text or "closed" in text
+            or "invalid api token" in text or "missing api token" in text)
+
+
 def _running(state: Path) -> dict | None:
     try:
         info = json.loads(state.read_text(encoding="utf-8"))
@@ -87,7 +94,7 @@ async def proxy(info: dict, token: str, name: str, helper: bool = False) -> None
 
     from .chat import CHAT_INSTRUCTIONS
 
-    conn: dict = {"info": info, "token": token, "remote": None, "gen": 0}
+    conn: dict = {"info": info, "token": token, "remote": None, "gen": 0, "auth_lost": False}
     changed = asyncio.Condition()
     want_new = asyncio.Event()
 
@@ -115,17 +122,17 @@ async def proxy(info: dict, token: str, name: str, helper: bool = False) -> None
             _log("decomp.wtf restarted: connecting again")
             try:
                 fresh = await asyncio.to_thread(ensure_app, home_dir())
-                if not helper and (fresh["port"], fresh["secret"]) != (conn["info"]["port"], conn["info"]["secret"]):
+                if not helper and (conn["auth_lost"] or
+                                   (fresh["port"], fresh["secret"]) != (conn["info"]["port"], conn["info"]["secret"])):
                     conn["token"] = await asyncio.to_thread(mint, fresh, name)  # a new app: a new identity
+                    conn["auth_lost"] = False
                 conn["info"] = fresh
             except (OSError, ValueError, KeyError, SystemExit) as e:
                 _log(f"decomp.wtf isn't answering yet ({e})")
                 await anyio.sleep(2)
 
     def lost(e: Exception) -> bool:
-        text = str(e).lower()
-        return ("session terminated" in text or "connect" in text or "closed" in text
-                or not _alive(conn["info"]["port"]))
+        return _session_lost(str(e)) or not _alive(conn["info"]["port"])
 
     async def remote_call(fn):
         for attempt in range(2):
@@ -137,6 +144,8 @@ async def proxy(info: dict, token: str, name: str, helper: bool = False) -> None
             except Exception as e:
                 if attempt or not lost(e):
                     raise
+                if "invalid api token" in str(e).lower() or "missing api token" in str(e).lower():
+                    conn["auth_lost"] = True
                 async with changed:
                     if conn["gen"] == gen:  # the first call to notice: ask for a new session
                         conn["remote"] = None
