@@ -57,7 +57,7 @@ SCRIPT_DIR=""
 CHECKOUT=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  if [ -f "$SCRIPT_DIR/../pyproject.toml" ] && grep -q '^name = "decompnet"' "$SCRIPT_DIR/../../pyproject.toml"; then
+  if [ -f "$SCRIPT_DIR/../pyproject.toml" ] && grep -q '^name = "decompnet"' "$SCRIPT_DIR/../pyproject.toml"; then
     CHECKOUT="$(cd "$SCRIPT_DIR/.." && pwd)"
   fi
 fi
