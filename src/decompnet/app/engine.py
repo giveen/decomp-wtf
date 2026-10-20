@@ -96,6 +96,7 @@ SHORT_NAMES = {"gcc-2.7.2-kmc": "KMC GCC 2.7.2", "ido-7.1": "IDO 7.1", "ido-5.3"
                "mingwxx-x86_64": "MinGW-w64 G++ (x86-64)", "mingwxx-x86": "MinGW-w64 G++ (x86)",
                "clang-cl-x86_64": "clang-cl (x86-64)", "clang-cl-x86": "clang-cl (x86)",
                "clang-clxx-x86_64": "clang-cl (x86-64, C++)", "clang-clxx-x86": "clang-cl (x86, C++)",
+               "llvm-tools": "LLVM tools",
                **{k: short for k, (short, _use) in LINUX_COMPILERS.items()}}
 # CodeWarrior versions in the `mwcc` pack (GameCube, Wii) and the `mwccarm` pack (DS), for games started from scratch.
 MW_VERSIONS = {
@@ -118,6 +119,7 @@ TOOLS = {
     "mwcc": "CodeWarrior, the compilers of GameCube and Wii games (proprietary)",
     "mwccarm": "CodeWarrior for DS, the compilers of DS games (proprietary)",
     "dsd": "ds-decomp: analyses DS ROMs and rebuilds them",
+    "llvm-tools": "PDB debug symbols for Windows programs (system LLVM; optional)",
 }
 WINDOWS_NOTE = """
 /* Windows globals: define them here WITHOUT `extern` (for example `int g_counter;`). With `extern`, MinGW

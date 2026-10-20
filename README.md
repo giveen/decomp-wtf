@@ -283,7 +283,9 @@ guess:
 
 - **PDB** beside a Windows program (read with LLVM's `llvm-pdbutil`), **DWARF** inside a Linux program, a linker
   **MAP** file, or `symbol_addrs.txt`. Debug names replace automatic `sub_`/`func_`/`D_` names without breaking
-  matches; data names are added; structs, unions, enums and typedefs go into the shared header.
+  matches; data names are added; structs, unions, enums and typedefs go into the shared header. MAP, DWARF and
+  `symbol_addrs.txt` need nothing extra; for PDB, **Compilers & tools → LLVM tools** shows whether `llvm-pdbutil`
+  is present (it comes with LLVM, not with decomp.anything).
 - **Import later** from a project's **Settings → Symbols & types**, by path or with no path (the program's sidecar
   debug file). **Export** writes `symbol_addrs.txt`, `debug_types.h` and `debug_symbols.json` into the project
   folder, ready for other tools.

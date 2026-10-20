@@ -13,6 +13,7 @@ Exports are deliberately simple and portable: `symbol_addrs.txt` (splat's format
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import struct
@@ -303,6 +304,11 @@ def _pdbutil() -> str | None:
             p = Path(exe).with_name("llvm-pdbutil" + (".exe" if name.endswith(".exe") else ""))
             if p.is_file():
                 return str(p)
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if directory:
+            for candidate in sorted(Path(directory).glob("llvm-pdbutil*")):
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    return str(candidate)
     for base in sorted(Path("/usr/lib").glob("llvm-*/bin/llvm-pdbutil")):
         if base.is_file():
             return str(base)
