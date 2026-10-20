@@ -24,7 +24,7 @@
   <a class="nav-new" href="#/" data-route="home"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7.25 2h1.5v5.25H14v1.5H8.75V14h-1.5V8.75H2v-1.5h5.25z"/></svg>New project</a>
   <div class="nav-scroll">
     <p class="nav-label">Projects</p>
-    <div class="nav-projects" id="navProjects"><p class="nav-empty">None yet: drop in a game.</p></div>
+    <div class="nav-projects" id="navProjects"><p class="nav-empty">None yet: drop in a binary.</p></div>
     <p class="nav-label">Explore</p>
     <a class="nav-item" href="#/catalog" data-route="catalog"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h5v4H2zm7 0h5v4H9zM2 9h5v4H2zm7 0h5v4H9z"/></svg>Public decomps</a>
     <button class="nav-item" id="navJoin" type="button"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 7a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Zm5.5 0a2 2 0 1 1 0-4 2 2 0 0 1 0 4ZM1 13c0-2.4 2-4 4.5-4S10 10.6 10 13v1H1v-1Zm10.5 1v-1c0-1.3-.4-2.4-1.1-3.3.2 0 .4-.1.6-.1 2.2 0 4 1.3 4 3.4v1h-3.5Z"/></svg>Join a team</button>
@@ -63,7 +63,7 @@
         <li><b>Agents do the rest</b><span>Claude Code, Codex, Antigravity, opencode or any API model</span></li>
       </ol>
     </div>
-    <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose a game file">
+    <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose a file">
       <input type="file" id="file" hidden>
       <div class="drop-idle" id="dropIdle">
         <div class="cart" aria-hidden="true"><span></span></div>
@@ -80,7 +80,7 @@
           <dl class="facts" id="romFacts"></dl>
           <p class="plat-status" id="romStatus" hidden></p>
         </div>
-        <label class="check"><input type="checkbox" id="own"><span id="ownText">This is my own copy of this game, obtained legally (for example, dumped from my own console or cartridge). The results stay with me for my own use.</span></label>
+        <label class="check"><input type="checkbox" id="own"><span id="ownText">This is my own copy of this file, or I'm authorized to analyze it. The results stay with me for my own use.</span></label>
         <div class="row" id="compilerRow">
           <label class="field grow"><span>Compiler</span><select id="compilerPick"></select></label>
         </div>
@@ -111,7 +111,7 @@
       </div>
     </div>
   </section>
-  <p class="privacy"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1 2.5 3v4.2c0 3.3 2.3 6.3 5.5 7.3 3.2-1 5.5-4 5.5-7.3V3L8 1Zm0 1.6 4 1.5v3.1c0 2.5-1.6 4.8-4 5.7-2.4-.9-4-3.2-4-5.7V4.1l4-1.5Z"/></svg>Your game never leaves this computer. Only your AI agent's provider sees the assembly and code it works on.</p>
+  <p class="privacy"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1 2.5 3v4.2c0 3.3 2.3 6.3 5.5 7.3 3.2-1 5.5-4 5.5-7.3V3L8 1Zm0 1.6 4 1.5v3.1c0 2.5-1.6 4.8-4 5.7-2.4-.9-4-3.2-4-5.7V4.1l4-1.5Z"/></svg>Your files never leave this computer. Only your AI agent's provider sees the assembly and code it works on.</p>
 
   <section class="starts">
     <a class="start-card accent" href="#/catalog">
@@ -235,10 +235,10 @@
 
     <section class="panel map-panel">
       <header class="panel-head">
-        <h2 id="mapTitle">ROM map</h2>
+        <h2 id="mapTitle">Function map</h2>
         <div class="legend"><span><i class="sw open"></i>to do</span><span><i class="sw tried"></i>tried</span><span><i class="sw work"></i>working</span><span><i class="sw match"></i>matched</span></div>
       </header>
-      <p class="muted small map-hint" id="mapHint">every square is a function, in ROM order</p>
+      <p class="muted small map-hint" id="mapHint">every square is a function</p>
       <div class="map-wrap" id="mapWrap">
         <canvas id="map" aria-label="Function map"></canvas>
         <div class="tip" id="tip" hidden></div>

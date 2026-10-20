@@ -211,7 +211,7 @@ function resetDrop() {
   $("dropBusy").hidden = true;
   $("dropError").hidden = true;
   $("own").checked = false;
-  $("ownText").textContent = "This is my own copy of this game, obtained legally (for example, dumped from my own console or cartridge). The results stay with me for my own use.";
+  $("ownText").textContent = "This is my own copy of this file, or I'm authorized to analyze it. The results stay with me for my own use.";
   $("analyse").textContent = "Start decompiling";
   $("analyse").disabled = true;
   $("file").value = "";
@@ -258,6 +258,14 @@ function parseRom(buf) {
 const PLATFORM_NAME = { n64: "Nintendo 64", psx: "PlayStation", ps2: "PlayStation 2", playstation: "PlayStation 1 or 2",
   gc: "GameCube", wii: "Wii", gcwii: "GameCube or Wii", gba: "Game Boy Advance", nds: "Nintendo DS",
   windows: "Windows", linux: "Linux" };
+// PC programs are split like games, but they are not ROMs and their words are different.
+const PC_PLATFORMS = new Set(["windows", "linux", "binary"]);
+const isNativeProject = (ov) => !!ov && !!(ov.binary || PC_PLATFORMS.has(ov.platform));
+function ownCopyText(info) {
+  if (info.platform === "binary") return "I'm authorized to analyze this file. The results stay with me for my own use.";
+  if (PC_PLATFORMS.has(info.platform)) return "This is my own copy of this program, or a binary I'm authorized to analyze. The results stay with me for my own use.";
+  return "This is my own copy of this game, obtained legally (for example, dumped from my own console or cartridge). The results stay with me for my own use.";
+}
 const CW_PACK = {
   gcwii: { id: "mwcc", text: "Install CodeWarrior, the compilers GameCube and Wii games were built with (about 80 MB). It's proprietary software, kept by the decomp community: only if you accept that." },
   nds: { id: "mwccarm", text: "Install CodeWarrior for DS, the compilers DS games were built with (about 50 MB). It's proprietary software, kept by the decomp community: only if you accept that." },
@@ -358,7 +366,7 @@ async function pickFile(file) {
   if (!S.st) await loadState().catch(() => {});  // dropped before the page finished loading: the compiler lists
   $("romFile").textContent = file.name;
   $("romTitle").textContent = info.title;
-  $("ownText").textContent = "This is my own copy of this game, obtained legally (for example, dumped from my own console or cartridge). The results stay with me for my own use.";
+  $("ownText").textContent = ownCopyText(info);
   $("analyse").textContent = "Start decompiling";
   if (binary) {
     $("romFacts").innerHTML = [["File", file.name], ["Format", "REA analysis"], ["Size", MB(file.size)], ["Agents", "work through its functions"]]
@@ -389,6 +397,8 @@ async function pickFile(file) {
   $("romStatus").className = `plat-status ${level || ""}`;
   $("romStatus").innerHTML = level === "recommended"
     ? `<b>★ Recommended platform.</b> The most tested path to a full decomp you can port and mod.`
+    : PC_PLATFORMS.has(p)
+    ? `<b>Beta.</b> ${esc(PLATFORM_NAME[p] || "This platform")} programs work and are tested on smaller ones, less so on real ones yet. Problems are worth <a href="https://github.com/giveen/decomp.anything/issues" target="_blank" rel="noopener">reporting</a>.`
     : `<b>Beta.</b> ${esc(PLATFORM_NAME[p] || "This platform")} works and is tested on homemade games, less so on real ones yet. Problems are worth <a href="https://github.com/giveen/decomp.anything/issues" target="_blank" rel="noopener">reporting</a>.`;
   setupCompilers(info);
   $("dropIdle").hidden = true;
@@ -480,7 +490,7 @@ function importFailed(name, e, logText) {
   const log = (job.log ? job.log.join("\n") : logText || "").trim();
   $("dropIdle").hidden = true; $("dropPicked").hidden = true; $("dropBusy").hidden = true;
   $("dropError").hidden = false;
-  $("errName").textContent = name || "the game";
+  $("errName").textContent = name || "the file";
   $("errMsg").textContent = e.message;
   $("errLog").textContent = [log, job.trace].filter(Boolean).join("\n\n") || "(nothing was logged)";
   $("errCopy").onclick = async () => {
@@ -517,7 +527,7 @@ $("pathPick").onclick = (e) => {
   e.stopPropagation();
   const body = dialog("Use a file on this computer", `<p class="muted">decomp.anything reads the file where it is: a disc image is never copied through the browser, and REA can open a binary of any size.</p>
     <label class="field"><span>Path to the file</span><input id="ppPath" class="mono" placeholder="/home/me/games/my-game.iso"></label>
-    <label class="check"><input type="checkbox" id="ppOwn"><span>This is my own copy of the game, obtained legally, or a binary I'm authorized to analyze. The results stay with me for my own use.</span></label>
+    <label class="check"><input type="checkbox" id="ppOwn"><span>This is my own copy of this file, or I'm authorized to analyze it. The results stay with me for my own use.</span></label>
     <div class="row"><button class="primary" id="ppGo" type="button" disabled>Open it</button><button class="ghost" data-close type="button">Cancel</button></div>`);
   body.querySelector("#ppOwn").onchange = () => { $("ppGo").disabled = !$("ppOwn").checked; };
   body.querySelector("#ppGo").onclick = () => {
@@ -546,8 +556,9 @@ async function openProject(slug, tab = "overview") {
   document.querySelectorAll("#ptabs [data-ptab]").forEach((a) => { a.href = `#/p/${slug}/${a.dataset.ptab}`; });
   const fork = S.ov.kind === "fork";
   const analysis = S.ov.kind === "analysis";
-  $("mapTitle").textContent = analysis ? "Work map" : fork ? "Function map" : "ROM map";
-  $("mapHint").textContent = analysis ? "Every square is a procedure or task. Click one to read it." : fork ? "Every square is a function, grouped by source file. Click one to see it." : "Every square is a function, in ROM order. Click one to see it.";
+  const native = isNativeProject(S.ov);
+  $("mapTitle").textContent = analysis ? "Work map" : fork ? "Function map" : native ? "Function map" : "ROM map";
+  $("mapHint").textContent = analysis ? "Every square is a procedure or task. Click one to read it." : fork ? "Every square is a function, grouped by source file. Click one to see it." : native ? "Every square is a function, in the binary's order. Click one to see it." : "Every square is a function, in ROM order. Click one to see it.";
   $("thAddr").textContent = fork ? "File" : "Address";
   $("thInsns").textContent = analysis ? "Size" : "Instructions";
   $("fnSearch").placeholder = analysis ? "Find a work item or address  ( / )" : "Find a function, address or file  ( / )";
@@ -770,11 +781,12 @@ function markPlatforms() {
 function renderHeader(ov) {
   const fork = ov.kind === "fork";
   const analysis = ov.kind === "analysis";
+  const native = isNativeProject(ov);
   const chips = [`<span class="plat">${esc(ov.platform_name || "?")}</span>`];
-  if (!analysis && platformStatus(ov.platform) === "beta") chips.push(`<span class="chip-s beta" title="This platform works and is tested on homemade games, less so on real ones yet">beta</span>`);
+  if (!analysis && !native && platformStatus(ov.platform) === "beta") chips.push(`<span class="chip-s beta" title="This platform works and is tested on homemade games, less so on real ones yet">beta</span>`);
   if (ov.rom && ov.rom.game_code) chips.push(`<span class="chip-s mono">${esc(ov.rom.game_code)}</span>`);
   if (fork) chips.push(`<span class="chip-s">${ov.origin === "scratch" ? `from scratch · ${esc(LAYOUT[ov.platform] || "decomp")}` : "public decomp"}</span>`);
-  else if (!analysis && ov.rom && ov.rom.region) chips.push(`<span class="chip-s">${esc(ov.rom.region)}</span>`);
+  else if (!analysis && !native && ov.rom && ov.rom.region) chips.push(`<span class="chip-s">${esc(ov.rom.region)}</span>`);
   const comp = fork ? (ov.compiler_name ? cwName(ov.compiler_name) : "") : ov.compiler.name;
   if (comp) chips.push(`<span class="chip-s" title="${esc(fork || analysis ? "" : ov.compiler.flags.join(" "))}">${esc(comp)}</span>`);
   $("phChips").innerHTML = chips.join("");
@@ -2006,7 +2018,7 @@ async function refreshFn(first) {
     S.fnDetail = d;
     $("fnAddr").textContent = S.ov.kind === "fork"
       ? `${d.unit} · ${d.insns} instructions${d.match_percent != null ? ` · ${d.match_percent >= 100 ? "100" : (Math.floor(d.match_percent * 10) / 10).toFixed(1)}% now` : ""}`
-      : `${hex8(d.vram)} · ROM 0x${d.rom_offset.toString(16).toUpperCase()} · ${d.insns} instructions`;
+      : `${hex8(d.vram)} · ${isNativeProject(S.ov) ? "file" : "ROM"} 0x${d.rom_offset.toString(16).toUpperCase()} · ${d.insns} instructions`;
     $("fnName").textContent = d.name;
     $("fnConsole").hidden = !S.ov.binary;  // PC programs: REA reads the program itself
     fnBadge(d);
@@ -2550,13 +2562,16 @@ async function renderProjectSettings() {
     $("setFlags").value = ov.compiler.flags.join(" ");
   }
   const t = (ov.analysis || {}).target || {};
+  const native = isNativeProject(ov);
   const facts = analysis ? [
     ["Target", t.path], ["Format", t.format || "unknown"], ["Architecture", t.architecture || "unknown"],
     ["Provider", (ov.analysis || {}).provider || "automatic"], ["Work items", `${ov.functions.toLocaleString()}`],
     ["Analyzed", `${ov.matched.toLocaleString()}`], ["Findings", `${(ov.findings || 0).toLocaleString()}`],
     ["Folder", ov.folder],
-  ] : [["Platform", ov.platform_name], ["Game", ov.rom?.title || ov.title], [fork ? "Version" : "Game code", ov.rom?.game_code || ov.version],
-    !fork && ov.rom?.region ? ["Region", ov.rom.region] : null, fork ? ["Layout", ov.origin === "scratch" ? (LAYOUT[ov.platform] || "decomp") + " (from scratch)" : ov.fork_kind] : ["Compiler", `${ov.compiler.name} ${ov.compiler.flags.join(" ")}`],
+  ] : [["Platform", ov.platform_name], [native ? "Program" : "Game", ov.rom?.title || ov.title],
+    !fork && !native ? ["Game code", ov.rom?.game_code || ov.version] : null,
+    !fork && !native && ov.rom?.region ? ["Region", ov.rom.region] : null,
+    fork ? ["Layout", ov.origin === "scratch" ? (LAYOUT[ov.platform] || "decomp") + " (from scratch)" : ov.fork_kind] : ["Compiler", `${ov.compiler.name} ${ov.compiler.flags.join(" ")}`],
     fork && ov.repo_url ? ["Repository", ov.repo_url.replace(/^https?:\/\//, "")] : null,
     ["Functions", `${ov.functions.toLocaleString()} (${bytes(ov.bytes || 0)} of code)`], ["Folder", ov.folder]].filter(Boolean);
   $("projFacts").innerHTML = facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v || "—")}</dd></div>`).join("");
@@ -2574,7 +2589,7 @@ $("setTcSave").onclick = async () => {
 $("folderBtn").onclick = () => openFolder();
 $("deleteBtn").onclick = () => {
   dialog("Remove project", `<p>Remove <b>${esc(S.ov.title)}</b> from decomp.anything? Matched functions and notes are deleted.</p>
-    <label class="check"><input type="checkbox" id="delFiles"><span>Also delete the project folder (your ROM copy and exported sources in it)</span></label>
+    <label class="check"><input type="checkbox" id="delFiles"><span>Also delete the project folder (your copy of the target and exported sources in it)</span></label>
     <div class="row"><button class="primary" id="delGo" type="button">Remove</button><button class="ghost" data-close type="button">Cancel</button></div>`);
   $("delGo").onclick = async () => {
     try {
