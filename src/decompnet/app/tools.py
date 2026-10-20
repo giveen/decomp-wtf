@@ -272,6 +272,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "import_debug_info": lambda net, agent, slug, path="": json.dumps(net.import_debug_info(slug, path)),
     "export_debug_info": lambda net, agent, slug: json.dumps(net.export_debug_info(slug)),
     "compare_version": lambda net, agent, slug, path: json.dumps(net.compare_version(slug, path)),
+    "list_data": lambda net, agent, slug, query="", limit=100: _data_text(net.data_symbols(slug, query, limit)),
 }
 
 ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "import_debug_info",
@@ -281,6 +282,13 @@ ANALYSIS_ONLY = {"complete_function", "rea_tool"}
 ANALYSIS_TOOLS = {"project_info", "claim_function", "get_function", "release_function", "complete_function",
                   "rea_tool", "inspect_binary", "search_binary", "read_data", "list_functions", "add_note",
                   "search_notes", "guide", "read_file", "search_code"}
+
+
+def _data_text(rows) -> str:
+    if not rows:
+        return "No data symbols match."
+    return "\n".join(f"- 0x{r['address']:08X}  {r['name']}  ({r['kind']}, {r['size']} bytes)"
+                      + (f"  {r['preview']}" if r.get("preview") else "") for r in rows)
 
 
 def tool_names(fork: bool = False, analysis: bool = False) -> list[str]:
@@ -506,6 +514,12 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
     async def export_debug_info(ctx: Context) -> str:
         """Write portable symbol_addrs.txt, debug_types.h and debug_symbols.json files into the project folder."""
         return await run(ctx, "export_debug_info")
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def list_data(ctx: Context, query: str = "", limit: int = 100) -> str:
+        """List named data and strings in the target: address, name, kind, size and a preview. Use read_data
+        for the bytes at one address; this is the inventory."""
+        return await run(ctx, "list_data", query=query, limit=limit)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def compare_version(ctx: Context, path: str) -> str:

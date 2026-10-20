@@ -700,6 +700,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/debug/export": (p_debug_export, ["POST"]),
         "/api/compare": (p_compare, ["POST"]),
         "/api/stats": (lambda s, r, d: net.stats(s), ["GET"]),
+        "/api/data": (lambda s, r, d: {"rows": net.data_symbols(
+            s, r.query_params.get("q", ""), int(r.query_params.get("limit", 500) or 500))}, ["GET"]),
     }
     for path, (fn, methods) in routes.items():
         mcp.custom_route(path, methods=methods)(with_project(fn))

@@ -475,6 +475,7 @@ projects folder (`~/Decomp`).
 | **Version compare** | Patch/demo/port triage: same, moved, changed, added and removed functions, matched by normalized instructions. |
 | **Suggested flags** | Security cookie, EH/RTTI, unwind tables, comments and stack probes become the compiler flags that match, one click away. |
 | **Library code out** | CRT, compiler runtime and static-library functions are marked and never handed to agents. |
+| **Data inventory** | PC and ROM data symbols, strings and their addresses are listed in a Data tab and through `list_data`. |
 | **Reference folders** | Name a folder in instructions and helpers can read and search it. |
 | **Every major disc format** | ROMs, PlayStation discs, GameCube and Wii discs (ISO, GCM, RVZ, WIA, WBFS, CISO, GCZ) and program files, streamed from disk. |
 | **Local-first** | No account, no telemetry, no server dependency. |

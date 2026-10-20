@@ -2168,6 +2168,8 @@ class RomNetwork(Network):
             "source_language": source_language(tc.id), "source_ext": source_ext(tc.id),
             "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
             "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0, "library": lib,
+            "data": self.store.one("SELECT COUNT(*) AS n FROM symbols WHERE project_id=? AND kind!='func'",
+                                    proj["id"])["n"],
             "context_version": self._context(proj["id"])["version"],
             "folder": proj["root"],
             "export": cfg.get("export"),
@@ -2216,6 +2218,26 @@ class RomNetwork(Network):
         if slug in self.rooms:
             return {"role": "host", "members": self.rooms[slug].members()}
         return None
+
+    def data_symbols(self, slug: str, query: str = "", limit: int = 500) -> list[dict]:
+        """Data and string symbols the target already names, as a readable inventory (not code work items)."""
+        proj = self._project(slug)
+        rows = self.store.all(
+            "SELECT name, address, size, kind, preview FROM symbols WHERE project_id=? AND kind!='func' "
+            "ORDER BY address, name", proj["id"])
+        q = query.strip().lower()
+        out = []
+        for i, r in enumerate(rows):
+            if q and q not in (r["name"] or "").lower() and q not in (r["preview"] or "").lower():
+                continue
+            size = int(r["size"] or 0)
+            if not size and i + 1 < len(rows):
+                size = max(0, int(rows[i + 1]["address"] or 0) - int(r["address"] or 0))
+            out.append({"name": r["name"], "address": int(r["address"] or 0), "size": size,
+                        "kind": r["kind"] or "data", "preview": r["preview"] or ""})
+            if len(out) >= max(1, min(int(limit), 5000)):
+                break
+        return out
 
     def function_map(self, slug: str) -> list[dict]:
         proj = self._project(slug)

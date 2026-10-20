@@ -81,7 +81,7 @@ const S = {
   projects: [],
 };
 const VIEWS = ["home", "catalog", "project", "agentsPage", "toolsPage", "settingsPage", "consolePage"];
-const TABS = ["overview", "functions", "agents", "activity", "team", "source", "settings"];
+const TABS = ["overview", "functions", "data", "agents", "activity", "team", "source", "settings"];
 
 /* The project folder in the computer's file manager (decomp.anything in Docker says where it is instead). */
 function openFolder() {
@@ -571,6 +571,7 @@ async function openProject(slug, tab = "overview") {
   $("boardTitle").textContent = analysis ? "Who analyzed what" : "Who matched what";
   $("sourceTab").hidden = analysis;
   $("teamTab").hidden = analysis;
+  $("dataTab").hidden = analysis || fork;
   $("addTask").hidden = !analysis;
   $("thBest").hidden = analysis;
   $("thTries").hidden = analysis;
@@ -596,6 +597,22 @@ async function openProject(slug, tab = "overview") {
   loadStats();
 }
 
+async function renderData() {
+  if (!S.ov || S.tab !== "data") return;
+  const q = $("dataSearch").value.trim();
+  $("dataShown").textContent = "loading…";
+  try {
+    const r = await api(`/api/data?slug=${S.slug}&q=${encodeURIComponent(q)}&limit=2000`);
+    $("dataRows").innerHTML = r.rows.length ? r.rows.map((d) => `<tr>
+      <td class="mono dim">${hex8(d.address)}</td><td class="mono name">${esc(d.name)}</td>
+      <td>${esc(d.kind)}</td><td class="r mono">${d.size || "—"}</td>
+      <td class="mono dim">${esc(d.preview || "")}</td></tr>`).join("")
+      : `<tr class="none"><td colspan="5">No data symbols${q ? ` matching “${esc(q)}”` : ""}.</td></tr>`;
+    $("dataShown").textContent = `${r.rows.length} data symbol${r.rows.length === 1 ? "" : "s"}`;
+  } catch (e) { $("dataShown").textContent = e.message; }
+}
+$("dataSearch").oninput = () => { clearTimeout(S.dataTimer); S.dataTimer = setTimeout(renderData, 250); };
+$("dataSearch").onkeydown = (e) => { if (e.key === "Enter") renderData(); };
 function addAnalysisTask() {
   const body = dialog("Add a task", `<p class="muted">A task is a work item without an address: an area, a question or a goal for one agent. Procedures already in the target are listed as their own items.</p>
     <label class="field"><span>Task</span><input id="taskName" placeholder="Map the update protocol"></label>
@@ -630,6 +647,7 @@ function setTab(tab) {
   document.querySelectorAll("[data-pane]").forEach((p) => { p.hidden = p.dataset.pane !== tab; });
   if (tab === "overview") { if (S.map.length) layoutMap(); renderOverview(); }
   if (tab === "functions") renderList();
+  if (tab === "data") renderData();
   if (tab === "agents") { renderLauncher($("launcher")); renderSessions(S.sessions); renderPrio(); }
   if (tab === "team") renderTeam();
   if (tab === "source" && S.ov) renderSource(S.ov);
@@ -2614,6 +2632,7 @@ async function renderProjectSettings() {
     !fork && !native && ov.rom?.region ? ["Region", ov.rom.region] : null,
     fork ? ["Layout", ov.origin === "scratch" ? (LAYOUT[ov.platform] || "decomp") + " (from scratch)" : ov.fork_kind] : ["Compiler", `${ov.compiler.name} ${ov.compiler.flags.join(" ")}`],
     fork && ov.repo_url ? ["Repository", ov.repo_url.replace(/^https?:\/\//, "")] : null,
+    !fork && !analysis ? ["Data", `${(ov.data || 0).toLocaleString()} symbols`] : null,
     ["Functions", `${ov.functions.toLocaleString()} (${bytes(ov.bytes || 0)} of code)`], ["Folder", ov.folder]].filter(Boolean);
   $("projFacts").innerHTML = facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v || "—")}</dd></div>`).join("");
 }

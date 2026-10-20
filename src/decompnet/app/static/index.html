@@ -187,6 +187,7 @@
     <nav class="ptabs" id="ptabs" role="tablist" aria-label="Project">
       <a role="tab" data-ptab="overview">Overview</a>
       <a role="tab" data-ptab="functions"><span id="fnTabLabel">Functions</span> <span class="count" id="fnTabCount"></span></a>
+      <a role="tab" data-ptab="data" id="dataTab">Data <span class="count" id="dataTabCount"></span></a>
       <a role="tab" data-ptab="agents">Agents <span class="count" id="agTabCount"></span></a>
       <a role="tab" data-ptab="activity">Activity</a>
       <a role="tab" data-ptab="team" id="teamTab">Team <span class="count" id="teamTabCount"></span></a>
@@ -275,6 +276,20 @@
       </table>
     </div>
     <div class="list-foot"><span class="muted small" id="fnShown"></span><button class="ghost small-btn" id="fnMore" type="button" hidden>Show more</button></div>
+  </section>
+
+  <!-- data -->
+  <section class="ptab panel" data-pane="data">
+    <div class="list-tools">
+      <input id="dataSearch" class="search" type="search" placeholder="Find a data symbol, string or address" aria-label="Find data" autocomplete="off" spellcheck="false">
+      <span class="muted small" id="dataShown"></span>
+    </div>
+    <div class="fn-table-wrap">
+      <table class="fn-table">
+        <thead><tr><th>Address</th><th>Name</th><th>Kind</th><th class="r">Bytes</th><th>Preview</th></tr></thead>
+        <tbody id="dataRows"></tbody>
+      </table>
+    </div>
   </section>
 
   <!-- agents -->

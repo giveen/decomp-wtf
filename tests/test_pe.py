@@ -174,3 +174,13 @@ def test_detected_flags_can_be_applied_and_still_match(built):
     net.set_compiler(slug, ov["compiler"]["toolchain"], suggested)
     agent, _ = net.local_agent("flags-tester")
     assert "MATCH" in net.compile_and_diff(agent, "add", "int add(int a, int b) { return a + b; }", slug)
+
+
+def test_data_symbols_are_listed_and_counted(built):
+    exe, _obj = built
+    net = RomNetwork(exe.parent / "data.db", exe.parent)
+    slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game.exe", log=lambda *_: None)
+    rows = net.data_symbols(slug)
+    assert any(r["name"] == "g_counter" and r["address"] for r in rows)
+    assert net.overview(slug)["data"] == len(rows)
+    assert net.data_symbols(slug, query="g_counter")
