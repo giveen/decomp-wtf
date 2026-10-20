@@ -55,6 +55,16 @@ def test_an_arm_computer_is_told_why_nothing_compiles(tc_root, monkeypatch):
     assert toolchains.unsupported_cpu() is None
 
 
+def test_system_compilers_are_not_downloaded(tc_root, monkeypatch):
+    """A MinGW/clang-cl/gcc the computer provides can't be fetched: say so instead of trying to download a build."""
+    monkeypatch.setattr(toolchains.shutil, "which", lambda _name: None)
+    downloaded = []
+    monkeypatch.setattr(toolchains, "_download", lambda *args: downloaded.append(args))
+    with pytest.raises(toolchains.ToolchainError, match=r"not a download: x86_64-w64-mingw32-g\+\+ is not on PATH"):
+        toolchains.install("mingwxx-x86_64", log=lambda *_: None)
+    assert downloaded == []
+
+
 def _fake(monkeypatch, tc_root, sha):
     src = tc_root / "src"
     src.mkdir()

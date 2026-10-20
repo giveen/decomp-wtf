@@ -253,6 +253,8 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
     if installed(tid, linux) and not force:
         log(f"{tid}: already installed at {path(tid, linux)}")
         return path(tid, linux)
+    if tc.system:
+        raise _system_missing(tc)
     parts = tc.linux_parts() if linux else tc.parts_for()
     if not parts and not tc.git and not tc.npm:
         why = unsupported_cpu()
@@ -361,13 +363,21 @@ def binary(tid: str) -> Path:
     raise ToolchainError(f"{tid} is installed but {name} wasn't found in {base}")
 
 
+def _system_missing(tc: Toolchain) -> ToolchainError:
+    """A compiler the host provides (MinGW, clang-cl, a Linux gcc) is never downloaded."""
+    command = tc.cmd[0] if tc.cmd else tc.id
+    return ToolchainError(
+        f"{tc.name} is a compiler on this computer, not a download: {command} is not on PATH. "
+        f"Install it with your system package manager (on Windows: MinGW-w64 or LLVM), reopen the app, "
+        f"or set its command in the project's [compiler] section.")
+
+
 def ensure(tid: str, log=print) -> Path:
     """Install a free tool on first use and return its folder. Proprietary ones must be installed explicitly."""
     if installed(tid) is None:
         tc = get(tid)
         if tc.system:
-            raise ToolchainError(f"{tc.name} isn't on PATH: install it with your system package manager "
-                                 f"(or set the command in the project's [compiler] section)")
+            raise _system_missing(tc)
         if tc.proprietary:
             raise ToolchainError(f"{tc.name} is proprietary: install it from Setup if you accept its license")
         install(tid, log=log)

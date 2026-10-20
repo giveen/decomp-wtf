@@ -991,6 +991,13 @@ function renderCompilerNotice(ov) {
   }
   if (ov.kind === "fork" || ov.compiler.installed) { n.hidden = true; return; }
   n.hidden = false;
+  if (ov.compiler.system) {
+    n.className = "notice bad";
+    n.innerHTML = `<span><b>${esc(ov.compiler.name)}</b> is a compiler on this computer, not something decomp.anything downloads: ` +
+      `<code>${esc(ov.compiler.command || "its command")}</code> isn't on PATH. Install it with your package manager ` +
+      `(on Windows: MinGW-w64 or LLVM), reopen the app, or pick another compiler in this project's Settings.</span>`;
+    return;
+  }
   if (!ov.compiler.supported) {
     n.className = "notice bad";
     n.innerHTML = ov.compiler.why
