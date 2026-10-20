@@ -642,7 +642,11 @@ async function openProject(slug, tab = "overview") {
   $("summaryTab").hidden = !analysis;
   S.summary = null;
   $("mapTitle").textContent = analysis ? "Work map" : fork ? "Function map" : native ? "Function map" : "ROM map";
-  $("mapHint").textContent = analysis ? "Every square is a procedure, file, or task. Click one to read it." : fork ? "Every square is a function, grouped by source file. Click one to see it." : native ? "Every square is a function, in the binary's order. Click one to see it." : "Every square is a function, in ROM order. Click one to see it.";
+  const archive = analysis && !!((S.ov.analysis || {}).artifact || {}).entries;
+  $("mapHint").textContent = analysis
+    ? archive ? "Every square is a file or task. Files with an analyzer open as child projects; other files open in Contents."
+      : "Every square is a procedure or task. Procedures open in the RE console, the deep viewer behind this project."
+    : fork ? "Every square is a function, grouped by source file. Click one to see it." : native ? "Every square is a function, in the binary's order. Click one to see it." : "Every square is a function, in ROM order. Click one to see it.";
   $("thAddr").textContent = fork ? "File" : "Address";
   $("thInsns").textContent = analysis ? "Size" : "Instructions";
   $("fnSearch").placeholder = analysis ? "Find a work item or address  ( / )" : "Find a function, address or file  ( / )";
@@ -2319,6 +2323,7 @@ async function openFn(name) {
     const t = (S.ov.analysis || {}).target || {};
     if (!t.path) return;
     const fn = f && f.vram ? `&fn=0x${f.vram.toString(16)}` : "";
+    try { sessionStorage.setItem("decomp-return", JSON.stringify({ slug: S.slug, title: S.ov.title || S.slug })); } catch { /* storage off */ }
     location.hash = `#/console?path=${encodeURIComponent(t.path)}${fn}`;
     return;
   }
@@ -2617,8 +2622,9 @@ function renderList() {
     const where = analysis ? (f.vram ? hex8(f.vram) : f.kind === "artifact-entry" ? "file" : "task")
       : fork ? esc(f.unit || "") : hex8(f.vram);
     const measure = analysis ? (f.size ? bytes(f.size) : "—") : f.insns.toLocaleString();
-    return `<tr data-fn="${esc(f.name)}" class="${S.fn === f.name ? "sel" : ""}" tabindex="0"><td class="mono dim">${where}</td>
-      <td class="mono name">${(S.ov && (S.ov.priority || []).includes(f.name)) ? `<span class="star" title="agents take it next">★</span>` : ""}${esc(f.name)}</td><td class="r mono">${measure}</td>
+    const clickTitle = f.child ? "Open child project" : analysis && f.kind === "artifact-entry" ? "Show this file in Contents" : analysis ? "Open in the RE console" : "Open function";
+    return `<tr data-fn="${esc(f.name)}" class="${S.fn === f.name ? "sel" : ""}" tabindex="0" title="${esc(clickTitle)}"><td class="mono dim">${where}</td>
+      <td class="mono name">${(S.ov && (S.ov.priority || []).includes(f.name)) ? `<span class="star" title="agents take it next">★</span>` : ""}${esc(f.name)}${f.child ? ` <span class="dim" title="child project">↗</span>` : ""}</td><td class="r mono">${measure}</td>
       ${analysis ? "" : `<td class="r mono">${best}</td><td class="r mono">${f.attempts || `<span class="dim">0</span>`}</td><td class="r mono">${f.hits || `<span class="dim">–</span>`}</td>`}<td>${status}</td></tr>`;
   }).join("") || `<tr class="none"><td colspan="${analysis ? 4 : 6}">No work item matches${q ? ` “${esc(L.q)}”` : ""}.</td></tr>`;
   $("fnShown").textContent = rows.length > L.limit ? `${L.limit.toLocaleString()} of ${rows.length.toLocaleString()} shown` : plural(rows.length, analysis ? "work item" : "function");

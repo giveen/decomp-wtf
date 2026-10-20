@@ -163,8 +163,20 @@ $("rcCmdIn").addEventListener("keydown", (e) => {
 
 /* ------------------------------------------------------------------ page */
 
+function rcReturnProject() {
+  const a = $("rcBackProject");
+  let saved = null;
+  try { saved = JSON.parse(sessionStorage.getItem("decomp-return") || "null"); } catch { saved = null; }
+  if (!saved?.slug) { a.hidden = true; return; }
+  a.href = `#/p/${saved.slug}`;
+  a.textContent = `◀ ${saved.title || saved.slug}`;
+  a.title = `Back to ${saved.title || saved.slug}`;
+  a.hidden = false;
+}
+
 async function showConsole() {
   show("consolePage");
+  rcReturnProject();
   if (!RC.ready) {
     RC.ready = true;
     try { RC.history = JSON.parse(localStorage.getItem(RC_HIST) || "[]"); } catch { RC.history = []; }
