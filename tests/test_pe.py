@@ -86,6 +86,17 @@ def test_import_and_match_through_the_engine(built):
     assert "bytes differ" in text or "different" in text
 
 
+def test_the_same_program_is_not_parsed_twice(built, monkeypatch):
+    exe, _obj = built
+    net = RomNetwork(exe.parent / "same.db", exe.parent)
+    data = exe.read_bytes()
+    slug = net.import_rom(data, confirmed=True, name="game.exe", log=lambda *_: None)
+    logs = []
+    monkeypatch.setattr(pe, "read", lambda *a, **k: (_ for _ in ()).throw(AssertionError("parsed again")))
+    again = net.import_rom(data, confirmed=True, name="game.exe", log=logs.append)
+    assert again == slug and any("already imported" in line for line in logs)
+
+
 def test_xrefs_use_relocations(built):
     exe, _obj = built
     net = RomNetwork(exe.parent / "x.db", exe.parent)

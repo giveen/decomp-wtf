@@ -15,6 +15,7 @@ That is what makes a compiled candidate comparable with bytes fixed up by the li
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import re
 import struct
@@ -271,14 +272,15 @@ def _md(arch: str) -> capstone.Cs:
     return capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
 
 
-def _decode(code: bytes, vram: int, arch: str, image_lo: int, image_hi: int, absolute: bool = False):
+def _decode(code: bytes, vram: int, arch: str, image_lo: int, image_hi: int, absolute: bool = False,
+            md: capstone.Cs | None = None):
     """(text lines, insn count, refs) for a function's bytes.
 
     A ref is (offset of the field, relocation type, the address it points at, offset where the
     instruction ends). The relocation type uses the compiler's own numbering so it can mask the
     same bytes in a candidate object. `absolute` also takes indexed absolute operands (`arr(,%rax,4)`)
     and 32-bit immediates that point into the image (`mov $str, %edi`): non-PIC ELF code is full of both."""
-    md = _md(arch)
+    md = md or _md(arch)
     md.detail = True
     md.skipdata = True
     pc_rel = 4 if arch == "x86_64" else 20  # IMAGE_REL_AMD64_REL32 / IMAGE_REL_I386_REL32
@@ -383,22 +385,26 @@ def build(data: bytes, arch: str, image_base: int, sections: list[PeSection], sy
             starts.setdefault(sym.address, sym.name)
     if entry:
         starts.setdefault(entry, "entry" if not any(s.address == entry for s in symbols) else "")
-    for sec in exec_sections:
-        body = sec.data(data)
-        for ins in md.disasm(body, image_base + sec.va):
-            if ins.id and ins.group(capstone.CS_GRP_CALL) or ins.id == capstone.x86.X86_INS_JMP:
-                if ins.operands and ins.operands[0].type == capstone.x86.X86_OP_IMM:
-                    target = ins.operands[0].imm
-                    if image_base + sec.va <= target < image_base + sec.va + len(body):
-                        starts.setdefault(target, "")
+    # .pdata is the authoritative x86-64 function table; scanning megabytes of code for direct calls is
+    # only needed when it is absent (32-bit PE, or an x86-64 image with no unwind data), or cheap enough
+    # to keep finding leaf functions in ordinary-sized executables.
+    if not pdata or sum(s.raw_size for s in exec_sections) <= 4 << 20:
+        for sec in exec_sections:
+            body = sec.data(data)
+            for ins in md.disasm(body, image_base + sec.va):
+                if ins.id and ins.group(capstone.CS_GRP_CALL) or ins.id == capstone.x86.X86_INS_JMP:
+                    if ins.operands and ins.operands[0].type == capstone.x86.X86_OP_IMM:
+                        target = ins.operands[0].imm
+                        if image_base + sec.va <= target < image_base + sec.va + len(body):
+                            starts.setdefault(target, "")
     # Entry points inside an already known function are not separate functions.
     by_name = {s.address: s for s in symbols if s.kind == "func"}
     named = {s.address: s.name for s in symbols if s.kind == "func"}
     ordered = sorted(starts)
+    exec_end = image_base + max((s.va + s.raw_size for s in exec_sections), default=0x1000)
     bounds: dict[int, tuple[int, bool]] = {}
     for i, start in enumerate(ordered):
-        end = next((x for x in ordered if x > start), image_base + max((s.va + s.raw_size for s in exec_sections),
-                                                                       default=0x1000))
+        end = ordered[i + 1] if i + 1 < len(ordered) else exec_end
         bounds[start] = (end, False)
     for begin, end in pdata:
         if begin in bounds:
@@ -406,6 +412,7 @@ def build(data: bytes, arch: str, image_base: int, sections: list[PeSection], sy
 
     functions: list[PeFunction] = []
     seen: set[int] = set()
+    covered_until = 0
     for start in ordered:
         if start in seen:
             continue
@@ -421,12 +428,13 @@ def build(data: bytes, arch: str, image_base: int, sections: list[PeSection], sy
             continue
         # A start inside a function found earlier (a call into the middle of a thunk, a jump-table case)
         # is not a function: keep the earlier, larger target.
-        if any(f.vram < start < f.vram + len(f.code) for f in functions):
+        if start < covered_until:  # starts are sorted: this is inside a function already kept
             continue
         fname = named.get(start) or starts.get(start) or f"sub_{start:08X}"
         seen.add(start)
-        lines, count, refs = _decode(code, start, arch, image_lo, image_hi, absolute)
+        lines, count, refs = _decode(code, start, arch, image_lo, image_hi, absolute, md)
         asm = "\n".join([f"glabel {fname}", *lines, f"endlabel {fname}"])
+        covered_until = max(covered_until, start + len(code))
         functions.append(PeFunction(fname, start, sec.raw + start - (image_base + sec.va), sec.name, code, asm, count,
                                     refs, exact))
     functions.sort(key=lambda f: f.vram)
@@ -444,12 +452,14 @@ def build(data: bytes, arch: str, image_base: int, sections: list[PeSection], sy
                 known.add(addr)
 
     # Data: named objects, imports, and strings worth naming for the agents.
+    function_starts = [f.vram for f in functions]  # sorted: functions were emitted in address order
     for sym in symbols:
         if sym.kind == "func":
             continue
         size = sym.size
         if not size:
-            nxt = next((f.vram for f in functions if f.vram > sym.address), None)
+            i = bisect.bisect_right(function_starts, sym.address)
+            nxt = function_starts[i] if i < len(function_starts) else None
             size = min(max(1, (nxt or sym.address + 16) - sym.address), 4096)
         sym.size = size
     strings: list[Symbol] = []

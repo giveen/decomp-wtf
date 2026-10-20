@@ -23,6 +23,7 @@ class Picked:
     info: dict
     big_endian: bool
     overlays: list = field(default_factory=list)  # (name, bytes, load address): code in other files on the disc
+    image: object | None = None  # PE/ELF already read by identify(): importing doesn't parse it twice
 
 
 def _program(data: bytes, name: str = "") -> Picked | None:
@@ -39,13 +40,13 @@ def _program(data: bytes, name: str = "") -> Picked | None:
         return Picked("ps2", elf, "game.elf", info, False)
     if pe.is_pe(data):
         image = pe.read(data, name)
-        return Picked("windows", data, "game.exe", image.info, False)
+        return Picked("windows", data, "game.exe", image.info, False, image=image)
     if elfexe.is_x86_elf(data):
         try:
             image = elfexe.read(data, name)
         except elfexe.ElfError as e:
             raise RomError(str(e)) from e
-        return Picked("linux", data, "program.elf", image.info, False)
+        return Picked("linux", data, "program.elf", image.info, False, image=image)
     return None
 
 

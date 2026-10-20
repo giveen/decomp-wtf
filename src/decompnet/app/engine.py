@@ -739,10 +739,29 @@ class RomNetwork(Network):
         if not confirmed:
             raise NetworkError("confirm that this is your own legally obtained copy of the game")
         source = Path(data).expanduser().resolve() if isinstance(data, (str, Path)) else None
+        digest = None
+        if source is not None:
+            try:
+                h = hashlib.sha1()
+                with source.open("rb") as f:
+                    for chunk in iter(lambda: f.read(1 << 20), b""):
+                        h.update(chunk)
+                digest = h.hexdigest()
+                log(f"checking {source.name} ({source.stat().st_size // 1024} KiB)")
+            except OSError:
+                digest = None
+        elif isinstance(data, (bytes, bytearray)):
+            digest = hashlib.sha1(data).hexdigest()
+        if digest is not None:
+            for p in self.store.all("SELECT slug, config FROM projects"):
+                if json.loads(p["config"]).get("rom", {}).get("sha1") == digest:
+                    log(f"already imported as {p['slug']}")
+                    return p["slug"]
         project_file = self._community_layout(data, name)
         if project_file is not None:  # a dtk-template or ds-decomp project, worked on like a fork
             compiler = toolchain if toolchain and toolchain.startswith(("GC/", "Wii/", "DS/")) else None
             return self.forks.create_scratch(project_file, compiler=compiler, log=log)
+        log(f"finding functions in {source.name if source is not None else (name or 'the file')}…")
         picked = detect.identify(data, name)
         rom, info = picked.data, picked.info
         for p in self.store.all("SELECT slug, config FROM projects"):
@@ -912,7 +931,7 @@ class RomNetwork(Network):
         from ..rom import elfexe
 
         linux = picked.platform == "linux"
-        image = (elfexe if linux else pe).read(picked.data, picked.filename)
+        image = getattr(picked, "image", None) or (elfexe if linux else pe).read(picked.data, picked.filename)
         info = picked.info  # the name the user picked (not the canonical game.exe the copy is stored as)
         debug = None
         try:
