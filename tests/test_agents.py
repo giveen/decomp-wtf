@@ -135,6 +135,18 @@ def test_gemini_cli_helpers_carry_on_as_antigravity():
     assert "gemini" not in agents.KINDS and agents.KINDS["antigravity"].command == "agy"
 
 
+def test_antigravity_permission_is_added_without_losing_other_settings(tmp_path, monkeypatch):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"model": "Gemini", "permissions": {"allow": ["command(ls)"]}}), encoding="utf-8")
+    monkeypatch.setattr(connect, "agy_settings", lambda: path)
+    assert not connect.antigravity_allows()
+    assert connect.allow_antigravity()
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    assert cfg["model"] == "Gemini" and cfg["permissions"]["allow"] == ["command(ls)", agents.AGY_ALLOW]
+    assert connect.antigravity_allows()
+    assert connect.allow_antigravity() and cfg["permissions"]["allow"].count(agents.AGY_ALLOW) == 1
+
+
 def test_connect_antigravity(tmp_path, monkeypatch):
     monkeypatch.setattr(connect, "_which", lambda cmd: f"/bin/{cmd}")
     monkeypatch.setattr(connect, "bridge_command", lambda: ["/usr/bin/python3", "-m", "decompnet.app.cli", "mcp"])

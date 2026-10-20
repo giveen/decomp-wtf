@@ -906,6 +906,12 @@ class Manager:
             if not connect.status("antigravity"):  # decomp.anything's tools only reach it through the user's settings
                 raise Fatal("Antigravity CLI only loads the MCP servers in your own settings: connect it to decomp.anything "
                             "once (Connect your agent, or `decomp connect antigravity`), then start the helpers again")
+            allowed = connect.antigravity_allows()
+            if not connect.allow_antigravity():
+                raise Fatal("Antigravity's settings couldn't be updated to allow decomp.anything's tools: add "
+                            f"\"{AGY_ALLOW}\" to \"permissions\": {{\"allow\": [...]}} in {agy_settings()}")
+            if not allowed:
+                s.push("info", "allowed decomp.anything's tools in Antigravity's settings")
         cmd, env, prompt = self._command(s, token, workdir)
         s.push("info", f"session {s.runs}: {KINDS[s.kind].name} started")
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if WIN else 0

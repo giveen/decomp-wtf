@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .agents import KINDS, _which, argv, kind_id
+from .agents import AGY_ALLOW, KINDS, agy_settings, _which, argv, kind_id
 
 NAME = "decomp"
 LABEL = {"claude": "claude-code", "codex": "codex", "antigravity": "antigravity", "opencode": "opencode"}
@@ -33,6 +33,42 @@ def _run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
 def _opencode_config() -> Path:
     base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     return base / "opencode" / "opencode.json"
+
+
+def antigravity_allows() -> bool:
+    """Whether Antigravity's own settings already let background runs call decomp's tools."""
+    try:
+        cfg = json.loads(agy_settings().read_text(encoding="utf-8"))
+        allow = (cfg.get("permissions") or {}).get("allow") or []
+        return isinstance(allow, list) and AGY_ALLOW in allow
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def allow_antigravity() -> bool:
+    """Add the one rule Antigravity needs for decomp's tools, keeping every other permission and setting.
+    A headless run cannot answer agy's permission prompt, so without this its MCP calls are denied."""
+    path = agy_settings()
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        return False
+    if not isinstance(cfg, dict):
+        return False
+    permissions = cfg.setdefault("permissions", {})
+    if not isinstance(permissions, dict):
+        return False
+    allow = permissions.setdefault("allow", [])
+    if not isinstance(allow, list):
+        return False
+    if AGY_ALLOW not in allow:
+        allow.append(AGY_ALLOW)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        except OSError:
+            return False
+    return True
 
 
 def commands(kind: str) -> list[str] | None:
@@ -106,4 +142,6 @@ def connect(kind: str) -> str:
     res = _run(cmd, 60)
     if res.returncode != 0:
         raise ValueError(f"{KINDS[kind].name} said: {(res.stderr or res.stdout).strip()[-300:]}")
+    if kind == "antigravity":
+        allow_antigravity()  # background helpers cannot answer agy's permission prompt
     return (res.stdout or res.stderr).strip()[-300:] or "connected"
