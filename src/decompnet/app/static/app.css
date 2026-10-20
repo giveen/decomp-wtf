@@ -665,3 +665,11 @@ a.ghost, a.primary { text-decoration: none; }
 .nav-proj.broken .np-meta, .err-text { color: var(--miss); }
 .credit { margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raise); color: var(--ink-2); max-width: 760px; }
 .credit a { color: inherit; }
+
+.intake { margin: 4px 0 10px; border: 1px solid var(--line-soft); border-radius: 10px; padding: 9px 11px; background: var(--bg-alt); }
+.intake summary { cursor: pointer; font-size: 13px; }
+.intake summary .muted { font-weight: 400; }
+.intake-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin-top: 10px; }
+.intake-grid .wide { grid-column: 1 / -1; }
+.intake-grid textarea { min-height: 58px; resize: vertical; }
+@media (max-width: 720px) { .intake-grid { grid-template-columns: 1fr; } }

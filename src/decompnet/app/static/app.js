@@ -204,6 +204,16 @@ async function showHome() {
   }
 }
 
+function intakeValues() {
+  return {
+    notes: $("intakeNotes").value.trim(), symbols: $("intakeSymbols").value.trim(),
+    types: $("intakeTypes").value.trim(), refs: $("intakeRefs").value.trim(),
+    trace: $("intakeTrace").value.trim(), libs: $("intakeLibs").value.trim(),
+  };
+}
+function intakeQuery(values) {
+  return Object.entries(values).filter(([, v]) => v).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join("");
+}
 function resetDrop() {
   picked = null;
   $("dropIdle").hidden = false;
@@ -215,6 +225,7 @@ function resetDrop() {
   $("analyse").textContent = "Start decompiling";
   $("analyse").disabled = true;
   $("file").value = "";
+  for (const id of ["intakeNotes", "intakeSymbols", "intakeTypes", "intakeRefs", "intakeTrace", "intakeLibs"]) $(id).value = "";
 }
 
 const drop = $("drop");
@@ -521,20 +532,33 @@ $("analyse").onclick = async () => {
     try { await ensureCodeWarrior(); } catch (e) { importFailed("CodeWarrior", e, $("jobLog").textContent); return; }
   }
   const body = picked.buf instanceof Blob ? picked.buf : new Blob([picked.buf]);
-  runImport(`confirmed=1${tc ? `&toolchain=${encodeURIComponent(tc)}` : ""}`, body, title, picked.name);
+  runImport(`confirmed=1${tc ? `&toolchain=${encodeURIComponent(tc)}` : ""}${intakeQuery(intakeValues())}`, body, title, picked.name);
 };
 $("pathPick").onclick = (e) => {
   e.stopPropagation();
   const body = dialog("Use a file on this computer", `<p class="muted">decomp.anything reads the file where it is: a disc image is never copied through the browser, and REA can open a binary of any size.</p>
     <label class="field"><span>Path to the file</span><input id="ppPath" class="mono" placeholder="/home/me/games/my-game.iso"></label>
+    <details class="intake"><summary><b>Starting context</b> <span class="muted">optional</span></summary>
+      <div class="intake-grid">
+        <label class="field wide"><span>What is this? Focus, version, engine, known behavior</span><textarea id="ppNotes" rows="2"></textarea></label>
+        <label class="field"><span>Debug/symbol file</span><input id="ppSymbols" class="mono"></label>
+        <label class="field"><span>Type/header file</span><input id="ppTypes" class="mono"></label>
+        <label class="field"><span>Reference source folder</span><input id="ppRefs" class="mono"></label>
+        <label class="field"><span>Runtime trace</span><input id="ppTrace" class="mono"></label>
+        <label class="field"><span>Known libraries</span><input id="ppLibs" class="mono" placeholder="zlib, libpng"></label>
+      </div>
+    </details>
     <label class="check"><input type="checkbox" id="ppOwn"><span>This is my own copy of this file, or I'm authorized to analyze it. The results stay with me for my own use.</span></label>
     <div class="row"><button class="primary" id="ppGo" type="button" disabled>Open it</button><button class="ghost" data-close type="button">Cancel</button></div>`);
   body.querySelector("#ppOwn").onchange = () => { $("ppGo").disabled = !$("ppOwn").checked; };
   body.querySelector("#ppGo").onclick = () => {
     const path = $("ppPath").value.trim();
     if (!path) return;
+    const intake = { notes: $("ppNotes").value.trim(), symbols: $("ppSymbols").value.trim(),
+      types: $("ppTypes").value.trim(), refs: $("ppRefs").value.trim(),
+      trace: $("ppTrace").value.trim(), libs: $("ppLibs").value.trim() };
     $("dialog").hidden = true;
-    runImport(`confirmed=1&path=${encodeURIComponent(path)}`, undefined, "Opening your binary…");
+    runImport(`confirmed=1&path=${encodeURIComponent(path)}${intakeQuery(intake)}`, undefined, "Opening your binary…");
   };
 };
 $("demoBtn").onclick = () => runImport("demo=1", undefined, "Opening Demo Quest 64…");

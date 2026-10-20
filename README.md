@@ -276,6 +276,21 @@ only read. Tools that run or drive a program, browser or device, change a device
 only after you confirm. The app enforces this, not only the page. Everything REA shows about a target is treated as
 untrusted text.
 
+## Starting context at import
+
+The picker has an optional **Starting context** section, applied immediately after import:
+
+- **What is this?** — version, engine, focus, conventions; becomes the project's instructions.
+- **Debug/symbol file** — PDB, MAP, `symbol_addrs.txt`, or an ELF with DWARF.
+- **Type/header file** — C declarations, structs, enums and prototypes; goes into `context.h`.
+- **Reference source folder** — an existing decomp or port agents may read and search.
+- **Runtime trace** — coverage addresses/counts; imported before the first claim.
+- **Known libraries** — names to mark as library code and keep out of the work queue.
+
+PDB/DWARF imports now also add **function prototypes**, not just names and types. A path import still discovers a
+sidecar PDB/MAP automatically; the extra fields are for uploads, additional files and information the binary does
+not record itself.
+
 ## Debug information and versions
 
 A program often ships with names the compiler already knew. decomp.anything imports them instead of making agents
@@ -489,6 +504,7 @@ projects folder (`~/Decomp`).
 | **Data inventory** | PC and ROM data symbols, strings and their addresses are listed in a Data tab and through `list_data`. |
 | **IDE export** | PC projects export a CMake/IDE tree with `compile_commands.json` and a `judge.py` byte-match checker. |
 | **Runtime coverage** | Import debugger/emulator traces (addresses or names, CSV/JSON/text); hit counts map onto functions, with a Coverage filter and `list_hot`. |
+| **Starting context** | Notes, symbols, type headers, reference source, trace and known libraries can be supplied before the first claim. |
 | **Reference folders** | Name a folder in instructions and helpers can read and search it. |
 | **Every major disc format** | ROMs, PlayStation discs, GameCube and Wii discs (ISO, GCM, RVZ, WIA, WBFS, CISO, GCZ) and program files, streamed from disk. |
 | **Local-first** | No account, no telemetry, no server dependency. |

@@ -978,6 +978,60 @@ class RomNetwork(Network):
 
     # ------------------------------------------------------------------ debug symbols and types
 
+    def apply_intake(self, slug: str, *, notes: str = "", symbols: str = "", types: str = "",
+                     refs: str = "", trace: str = "", libraries: str = "", log=print) -> dict:
+        """Apply the optional starting context from the import screen. A bad optional file is reported, never
+        allowed to fail the import itself."""
+        proj = self._project(slug)
+        cfg = self.cfg(proj)
+        analysis = self.is_analysis(proj)
+        warnings: list[str] = []
+        applied: dict[str, object] = {}
+
+        text = notes.strip()[:4000]
+        if refs.strip():
+            text = (text + ("\n" if text else "") + "Reference source folder: " + refs.strip())[:4000]
+        if text:
+            self.set_instructions(slug, text)
+            applied["instructions"] = True
+
+        if symbols.strip() and not analysis:
+            try:
+                applied["symbols"] = self.import_debug_info(slug, symbols.strip(), log=log)
+            except Exception as e:
+                warnings.append(f"symbols: {e}")
+        if types.strip() and not analysis:
+            try:
+                path = Path(types.strip()).expanduser()
+                if not path.is_absolute():
+                    path = Path(proj["root"]) / path
+                body = path.read_text(encoding="utf-8", errors="replace")
+                if not body.strip():
+                    raise ValueError("empty type file")
+                agent, _ = self.local_agent("intake")
+                res = self.edit_context(agent, slug, "", "\n/* Types supplied at import: " +
+                                        path.name.replace("*/", "") + " */\n" + body,
+                                        f"intake types from {path.name}")
+                if res.startswith("✅"):
+                    applied["types"] = True
+                else:
+                    warnings.append("types: " + res)
+            except Exception as e:
+                warnings.append(f"types: {e}")
+        if trace.strip() and not analysis:
+            try:
+                applied["trace"] = self.import_trace(slug, trace.strip(), log=log)
+            except Exception as e:
+                warnings.append(f"trace: {e}")
+        if libraries.strip() and not analysis:
+            names = [n.strip() for n in re.split(r"[,;\s]+", libraries) if n.strip()]
+            n = self.classify_library(slug, names=names, log=log)
+            applied["libraries"] = n
+        self._syms.pop(proj["id"], None)
+        if warnings:
+            log("starting context: " + "; ".join(warnings))
+        return {"applied": applied, "warnings": warnings}
+
     def import_debug_info(self, slug: str, path: str = "", log=print) -> dict:
         """Merge a PDB/DWARF/MAP/symbol_addrs file into an existing project: names replace automatic ones,
         data names are added, and types are appended to the shared header (regression-tested when it has matches)."""
@@ -1111,15 +1165,18 @@ class RomNetwork(Network):
         return {"symbols": len(syms), "types": debug.get("types", 0), "symbol_addrs": str(sym_path),
                 "types_header": str(type_path), "json": str(json_path)}
 
-    def classify_library(self, slug: str, log=print) -> int:
+    def classify_library(self, slug: str, log=print, names=()) -> int:
         """Mark open functions whose names are CRT/runtime/library code, including projects imported before this.
-        Matched or hand-written functions are never touched."""
+        Matched or hand-written functions are never touched. `names` are libraries the user already knows."""
         proj = self._project(slug)
         rows = self.store.all("SELECT id, name, meta FROM functions WHERE project_id=? AND status='open'",
                               proj["id"])
         found = []
+        wanted = {n.lower() for n in names if n}
         for row in rows:
             kind = library.kind(row["name"])
+            if not kind and wanted and any(w in row["name"].lower() for w in wanted):
+                kind = "known library"
             if kind:
                 meta = json.loads(row["meta"] or "{}")
                 meta["library"] = kind

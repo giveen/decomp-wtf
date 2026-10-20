@@ -86,6 +86,18 @@
         </div>
         <p class="muted small" id="compilerNote" hidden></p>
         <label class="check" id="mwConsent" hidden><input type="checkbox" id="mwAccept"><span id="mwText"></span></label>
+        <details class="intake" id="intakeBox">
+          <summary><b>Starting context</b> <span class="muted">optional: give your agents what you already know</span></summary>
+          <div class="intake-grid">
+            <label class="field wide"><span>What is this? Focus, version, engine, known behavior</span><textarea id="intakeNotes" rows="3" placeholder="Total Annihilation 3.1, 32-bit MSVC, focus on the unit AI; zlib and the serial code are known libraries."></textarea></label>
+            <label class="field"><span>Debug/symbol file (PDB, MAP, symbol_addrs, ELF with DWARF)</span><input id="intakeSymbols" class="mono" placeholder="/path/game.pdb"></label>
+            <label class="field"><span>Type or header file</span><input id="intakeTypes" class="mono" placeholder="/path/types.h"></label>
+            <label class="field"><span>Reference source folder</span><input id="intakeRefs" class="mono" placeholder="/path/existing-decomp (read-only)"></label>
+            <label class="field"><span>Runtime trace</span><input id="intakeTrace" class="mono" placeholder="/path/coverage.csv"></label>
+            <label class="field"><span>Known libraries</span><input id="intakeLibs" class="mono" placeholder="zlib, libpng, engine"></label>
+          </div>
+          <p class="muted small">Paths are on this computer. A path import also finds a PDB/MAP beside the program automatically. Everything can still be added later in Settings.</p>
+        </details>
         <div class="row">
           <button class="primary" id="analyse" type="button" disabled>Start decompiling</button>
           <button class="ghost" id="cancelPick" type="button">Cancel</button>

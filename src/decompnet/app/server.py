@@ -504,6 +504,13 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             finally:
                 if uploaded:
                     shutil.rmtree(game.parent, ignore_errors=True)
+            intake = {key: q.get(key, "") for key in ("notes", "symbols", "types", "refs", "trace", "libs")}
+            if any(v.strip() for v in intake.values()):
+                report = net.apply_intake(slug, notes=intake["notes"], symbols=intake["symbols"],
+                                          types=intake["types"], refs=intake["refs"], trace=intake["trace"],
+                                          libraries=intake["libs"], log=log)
+                if report["warnings"]:
+                    log("starting context warnings: " + "; ".join(report["warnings"]))
             settings.data["last_project"] = slug
             settings.save()
             if not net.is_analysis(net.project_row(slug)):

@@ -407,7 +407,7 @@ def _parse_pdb(text: str, image=None) -> DebugInfo:
     if not syms:  # a PDB with publics but no procedure records
         for addr, name in public.items():
             syms[(addr, name)] = DebugFunction(name, addr)
-    header = _pdb_header(types, _pdb_type_names(text))
+    header = _pdb_header(types, _pdb_type_names(text), list(syms.values()))
     symbols = [Symbol(f.name, f.address, f.size, "func") for f in syms.values()]
     for addr, name in public.items():
         if not any(f.address == addr for f in syms.values()):
@@ -520,14 +520,37 @@ def _pdb_type_name(index: int, types: dict[int, dict], names: dict[int, str], se
     return "void"
 
 
-def _pdb_header(types: dict[int, dict], names: dict[int, str] | None = None) -> str:
+_BASE_WORDS = {"void", "char", "short", "int", "long", "float", "double", "signed", "unsigned", "const",
+               "volatile", "struct", "union", "enum", "__int8", "__int16", "__int32", "__int64", "bool", "wchar_t"}
+
+
+def _prototypes(functions, known=()) -> list[str]:
+    """Only signatures whose type names are known; a missing type would make the whole header fail to compile."""
+    out = []
+    known = {str(x) for x in known}
+    for f in functions:
+        if not f.signature or not IDENT.match(f.name):
+            continue
+        line = f.signature.strip()
+        names = set(re.findall(r"[A-Za-z_]\w*", line)) - {f.name} - _BASE_WORDS
+        if any(n not in known for n in names):
+            continue
+        if not line.endswith(";"):
+            line += ";"
+        out.append(line)
+    return list(dict.fromkeys(out))
+
+
+def _pdb_header(types: dict[int, dict], names: dict[int, str] | None = None, functions=()) -> str:
     names = names if names is not None else {}
     decls: list[str] = []
     forward: list[str] = []
+    typedefs: list[str] = []
     for rec in types.values():
         if rec["kind"] in ("LF_STRUCTURE", "LF_CLASS", "LF_INTERFACE", "LF_UNION") and IDENT.match(rec["name"] or ""):
             word = "union" if rec["kind"] == "LF_UNION" else "struct"
             forward.append(f"{word} {rec['name']};")
+            typedefs.append(f"typedef {word} {rec['name']} {rec['name']};")
     seen: set[str] = set()
     for rec in types.values():
         kind, name, lines = rec["kind"], rec["name"], rec["lines"]
@@ -570,7 +593,10 @@ def _pdb_header(types: dict[int, dict], names: dict[int, str] | None = None) -> 
                     break
     if not decls:
         return ""
-    body = _trim_types("\n".join(dict.fromkeys(forward + decls)))
+    body = _trim_types("\n".join(dict.fromkeys(forward + decls + typedefs)))
+    protos = _prototypes(functions, {rec.get("name", "") for rec in types.values()} | set(names.values()))
+    if protos:
+        body += ("\n\n" if body else "") + "/* Function prototypes from the PDB. */\n" + "\n".join(protos)
     return f"/* Types from the program's PDB. */\n{body}\n" if body else ""
 
 
@@ -639,7 +665,7 @@ def _read_dwarf(data: bytes, source: str, image=None) -> DebugInfo:
                     _dwarf_typedef(die, dwarf, cu, die_cache, types)
         except Exception:
             continue
-    header = _dwarf_header(types)
+    header = _dwarf_header(types, list(functions.values()))
     return DebugInfo(source, symbols=list(symbols.values()), functions=list(functions.values()),
                      types=list(types.values()), header=header)
 
@@ -793,8 +819,14 @@ def _dwarf_typedef(die, dwarf, cu, cache: dict[int, object], types: dict[str, De
         types.setdefault(name, DebugType(name, "typedef", 0, f"typedef {target} {name};"))
 
 
-def _dwarf_header(types: dict[str, DebugType]) -> str:
+def _dwarf_header(types: dict[str, DebugType], functions=()) -> str:
     forward = [f"{t.kind} {t.name};" for t in types.values() if t.kind in ("struct", "union")]
+    typedef_names = {t.name for t in types.values() if t.kind == "typedef"}
+    typedefs = [f"typedef {t.kind} {t.name} {t.name};" for t in types.values()
+                if t.kind in ("struct", "union") and t.name not in typedef_names]
     decls = [t.declaration for t in types.values() if t.declaration]
-    body = _trim_types("\n".join(dict.fromkeys(forward + decls)))
+    body = _trim_types("\n".join(dict.fromkeys(forward + decls + typedefs)))
+    protos = _prototypes(functions, set(types))
+    if protos:
+        body += ("\n\n" if body else "") + "/* Function prototypes from the DWARF. */\n" + "\n".join(protos)
     return f"/* Types from the program's DWARF. */\n{body}\n" if body else ""

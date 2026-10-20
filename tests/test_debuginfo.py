@@ -73,6 +73,7 @@ int main(void) { Player p = {1, 2, "x"}; return player_score(&p); }
     assert add.address and add.size and "int add(int, int)" in add.signature
     assert "struct Player" in info.header
     assert "char name[16];" in info.header
+    assert "int add(int, int)" in info.header
 
 
 @pytest.mark.skipif(not (CLANG_CL and LLD_LINK and PDBUTIL), reason="needs clang-cl, lld-link and llvm-pdbutil")
@@ -96,6 +97,7 @@ int main(void) { Player p = {1, 2, "x"}; return player_score(&p); }
     assert image.image_base < funcs["add"].address < image.image_base + max(s.va + s.size for s in image.sections)
     assert funcs["add"].size == 17 and "int add(int, int)" in funcs["add"].signature
     assert "struct Player" in info.header and "char name[16];" in info.header
+    assert "int add(int, int);" in info.header
     auto = debuginfo.discover(exe)
     assert auto is not None and auto.source.startswith("PDB") and auto.functions
 

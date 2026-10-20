@@ -218,6 +218,7 @@ def test_runtime_trace_maps_addresses_and_names_to_functions(built, tmp_path):
     image = pe.read(exe.read_bytes(), exe.name)
     add = next(f.vram for f in image.functions if f.name == "add")
     bump = next(f.vram for f in image.functions if f.name == "bump")
+    data = next(s.address for s in image.symbols if s.name == "g_counter")
     trace = tmp_path / "coverage.csv"
     trace.write_text(f"address,count\n0x{add:X},3\n0x{bump + 0x2:X},5\n0xDEADBEEF,1\n")
     result = net.import_trace(slug, str(trace))
@@ -229,3 +230,32 @@ def test_runtime_trace_maps_addresses_and_names_to_functions(built, tmp_path):
     assert rows["add"]["hits"] == 3
     again = net.import_trace(slug, str(trace))
     assert again["hits"] == 8 and net.hot_functions(slug)[0]["hits"] in (6, 10)
+
+
+def test_intake_context_applies_notes_symbols_types_trace_and_libraries(built, tmp_path):
+    exe, _obj = built
+    net = RomNetwork(exe.parent / "intake.db", exe.parent)
+    slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game.exe", log=lambda *_: None)
+    image = pe.read(exe.read_bytes(), exe.name)
+    add = next(f.vram for f in image.functions if f.name == "add")
+    bump = next(f.vram for f in image.functions if f.name == "bump")
+    data = next(s.address for s in image.symbols if s.name == "g_counter")
+    refs = tmp_path / "reference"
+    refs.mkdir()
+    (refs / "README.md").write_text("known notes")
+    symbols = tmp_path / "symbol_addrs.txt"
+    symbols.write_text(f"intake_data = 0x{data:X}; // type:data\n")
+    types = tmp_path / "types.h"
+    types.write_text("typedef struct IntakeType { int a; } IntakeType;\n")
+    trace = tmp_path / "coverage.csv"
+    trace.write_text(f"0x{bump:X},7\n")
+    report = net.apply_intake(slug, notes="focus on the unit AI", symbols=str(symbols), types=str(types),
+                              refs=str(refs), trace=str(trace), libraries="bump")
+    assert not report["warnings"], report["warnings"]
+    assert "focus on the unit AI" in net.instructions(slug)
+    assert refs.resolve() in net.references(slug)
+    assert net.symbols(net._project(slug)["id"]).resolve("intake_data") == data
+    assert "IntakeType" in net.get_context(slug)
+    assert net.hot_functions(slug)[0]["name"] == "bump" and net.hot_functions(slug)[0]["hits"] == 7
+    assert net.store.one("SELECT status FROM functions WHERE project_id=(SELECT id FROM projects WHERE slug=?) AND name='bump'",
+                         slug)["status"] == "library"
