@@ -353,6 +353,13 @@ class RomNetwork(Network):
             except rea.ReaError:
                 items = []
             entries = analysis.artifact_entries(inventory) if inventory is not None else []
+            for item in entries:
+                if item.get("entry_type") == "unknown":
+                    try:
+                        head = analysis.read_archive_entry(target_path, item["path"], 0, 16)
+                        item.update(analysis.classify_entry(item["path"], head))
+                    except (OSError, ValueError):
+                        pass
             if entries:
                 items = entries
         except BaseException:
@@ -410,7 +417,7 @@ class RomNetwork(Network):
                 if item.get("kind") == "artifact-entry":
                     meta = {"kind": "artifact-entry", "address": 0, **{k: item.get(k) for k in (
                         "path", "entry_kind", "artifact_kind", "artifact_format", "sha256", "compressed_size",
-                        "executable", "encrypted")}}
+                        "executable", "encrypted", "entry_type", "entry_format", "tool", "analyzable")}}
                 else:
                     meta = {"kind": "survey" if name == "survey" and not item.get("address") else "procedure",
                             "address": item.get("address") or 0}
@@ -538,6 +545,34 @@ class RomNetwork(Network):
             for note in notes:
                 lines.append(f"- {note['text'].strip()}" + (f" — {note['agent']}" if note["agent"] else ""))
             lines.append("")
+        children = cfg.get("children") or []
+        if children:
+            lines += ["## Nested targets"]
+            for child in children:
+                if not isinstance(child, dict) or not child.get("slug"):
+                    continue
+                try:
+                    cproj = self._project(child["slug"])
+                except NetworkError:
+                    lines.append(f"- `{child.get('entry')}` → `{child['slug']}` (missing)")
+                    continue
+                cagg = self.store.one(
+                    "SELECT COUNT(*) AS total, SUM(status='matched') AS matched FROM functions WHERE project_id=?",
+                    cproj["id"])
+                cpath = Path(cproj["root"]) / "SUMMARY.md"
+                lines += [f"### `{child.get('entry')}` → `{child['slug']}`",
+                          f"- target: {cproj['name']} · {cagg['matched'] or 0}/{cagg['total'] or 0} analyzed",
+                          f"- summary: {cpath}"]
+                for crow in self.store.all(
+                        "SELECT name, meta, matched_source FROM functions WHERE project_id=? AND status='matched' "
+                        "ORDER BY name", cproj["id"]):
+                    cmeta = json.loads(crow["meta"] or "{}")
+                    label = cmeta.get("path") or crow["name"]
+                    finding = " ".join((crow["matched_source"] or "").split())
+                    lines.append(f"- `{label}`: {finding[:300]}" + ("…" if len(finding) > 300 else ""))
+                lines.append("")
+        while lines and lines[-1] == "":
+            lines.pop()
         lines += ["", "## What this means",
                   "The findings above are agent-written observations, not verified original source. Read the target "
                   "again with REA when a claim matters, and add a task for anything still unanswered."]
@@ -546,8 +581,116 @@ class RomNetwork(Network):
         path.write_text(markdown, encoding="utf-8")
         self._update_cfg(slug, lambda c: c.__setitem__("summary", {"file": "SUMMARY.md", "generated_at": now}))
         return {"slug": slug, "kind": "analysis", "title": proj["name"], "generated_at": now,
-                "summary": summary, "complete": bool(rows) and not pending,
+                "summary": summary, "complete": bool(rows) and not pending, "children": len(children),
                 "markdown": markdown, "path": str(path)}
+
+    def _artifact_entry_row(self, proj, entry: str):
+        for row in self.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"]):
+            meta = json.loads(row["meta"] or "{}")
+            if meta.get("kind") == "artifact-entry" and meta.get("path") == entry:
+                return row, meta
+        return None, None
+
+    def analysis_contents(self, slug: str) -> dict:
+        """The archive's files as a tree for the project page, including which entries already have child targets."""
+        proj, cfg = self.analysis_cfg(slug)
+        artifact = cfg.get("artifact") or {}
+        children = {str(c.get("entry")): c for c in cfg.get("children") or [] if isinstance(c, dict)}
+        root = {"name": proj["name"], "path": "", "kind": "directory", "children": {}}
+        for row in self.store.all("SELECT name, size, meta FROM functions WHERE project_id=?", proj["id"]):
+            meta = json.loads(row["meta"] or "{}")
+            if meta.get("kind") != "artifact-entry":
+                continue
+            path = str(meta.get("path") or row["name"])
+            parts = [p for p in path.split("/") if p not in ("", ".")]
+            if not parts:
+                continue
+            node = root
+            for i, part in enumerate(parts[:-1]):
+                node = node["children"].setdefault(part, {"name": part, "path": "/".join(parts[:i + 1]),
+                                                          "kind": "directory", "children": {}})
+            child = children.get(path)
+            node["children"][parts[-1]] = {
+                "name": parts[-1], "path": path, "kind": "file", "size": row["size"],
+                "entry_type": meta.get("entry_type") or "unknown", "entry_format": meta.get("entry_format") or "",
+                "tool": meta.get("tool") or "", "analyzable": bool(meta.get("analyzable")),
+                "sha256": meta.get("sha256") or "", "child": child.get("slug") if child else None,
+            }
+
+        def clean(node):
+            if node["kind"] == "file":
+                return node
+            kids = sorted(node["children"].values(), key=lambda n: (n["kind"] != "directory", n["name"].lower()))
+            return {"name": node["name"], "path": node["path"], "kind": "directory",
+                    "children": [clean(k) for k in kids]}
+
+        return {"slug": slug, "title": proj["name"], "format": artifact.get("format") or "archive",
+                "entries": artifact.get("entries") or 0, "files": artifact.get("files") or 0,
+                "nodes": [clean(n) for n in sorted(root["children"].values(),
+                                                  key=lambda n: (n["kind"] != "directory", n["name"].lower()))]}
+
+    def analyze_archive_entry(self, slug: str, entry: str, log=print) -> dict:
+        """Extract one archive entry and open it as a linked analysis project. Never extracts the whole archive."""
+        proj, cfg = self.analysis_cfg(slug)
+        artifact = cfg.get("artifact") or {}
+        if not artifact:
+            raise NetworkError("this analysis project isn't an archive")
+        row, meta = self._artifact_entry_row(proj, entry)
+        if row is None:
+            raise NetworkError(f"no file named {entry!r} in this archive project")
+        tool = str(meta.get("tool") or "")
+        if not meta.get("analyzable"):
+            data = analysis.read_archive_entry((cfg.get("target") or {}).get("path") or "", entry, 0, 16)
+            info = analysis.classify_entry(entry, data)
+            tool = str(info.get("tool") or "")
+            if tool:
+                meta = {**meta, **info}
+        if not tool:
+            raise NetworkError(f"{entry} isn't a target type this app can open yet")
+
+        children = cfg.get("children") or []
+        for child in children:
+            if isinstance(child, dict) and child.get("entry") == entry and child.get("slug"):
+                log(f"{entry} is already open as {child['slug']}")
+                return {"slug": child["slug"], "entry": entry, "existing": True}
+
+        sha = str(meta.get("sha256") or "")
+        target_path = Path((cfg.get("target") or {}).get("path") or "")
+        if not target_path.is_file():
+            raise NetworkError(f"the archive is gone: {target_path}")
+        folder = Path(proj["root"]) / "extracted" / (sha[:16] or hashlib.sha256(entry.encode()).hexdigest()[:16])
+        name = Path(entry).name or "entry.bin"
+        dest = folder / name
+        if not dest.exists():
+            total, digest = analysis.extract_archive_entry(target_path, entry, dest)
+            if sha and digest != sha:
+                dest.unlink(missing_ok=True)
+                raise NetworkError(f"{entry} changed while it was being extracted (hash mismatch)")
+            log(f"extracted {entry} ({total} bytes)")
+
+        tool = str(meta.get("tool") or tool)
+        child = self.import_analysis(dest, tool=tool, provider=cfg.get("provider") or "", confirmed=True,
+                                     copy_target=True, log=log)
+        source = {"kind": "artifact-entry", "parent": proj["slug"], "parent_title": proj["name"],
+                  "entry": entry, "entry_sha256": sha, "archive": target_path.name,
+                  "archive_sha256": (cfg.get("target") or {}).get("sha256") or "", "tool": tool}
+        self._update_cfg(child, lambda c: c.__setitem__("source", source))
+        child_row = self.project_row(child)
+
+        def remember(c):
+            kids = c.setdefault("children", [])
+            if not any(isinstance(k, dict) and k.get("slug") == child for k in kids):
+                kids.append({"slug": child, "title": child_row["name"], "entry": entry, "entry_sha256": sha,
+                             "tool": tool})
+        self._update_cfg(slug, remember)
+        with self.store.tx() as db:
+            self._event(db, proj["id"], None, "entry", f"{entry} → {child}")
+        try:
+            self.analysis_summary(slug)
+        except Exception:
+            pass
+        log(f"{entry} opened as {child}")
+        return {"slug": child, "entry": entry, "existing": False, "tool": tool}
 
     def analysis_read_data(self, slug: str, what: str, length: int = 64) -> str:
         _, cfg = self.analysis_cfg(slug)
@@ -638,6 +781,7 @@ class RomNetwork(Network):
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
         if not self.is_analysis(proj):
             raise NetworkError("complete_function is for analysis projects; compile_and_diff matches a game")
+        cfg = self.cfg(proj)
         summary = summary.strip()
         if not summary:
             raise NetworkError("write the finding first: what this item does, what it calls, what matters")
@@ -659,6 +803,12 @@ class RomNetwork(Network):
         if done:
             try:
                 self.analysis_summary(proj["slug"])
+            except Exception:
+                pass
+        parent = (cfg.get("source") or {}).get("parent")
+        if parent:
+            try:
+                self.analysis_summary(parent)
             except Exception:
                 pass
         return (f"✅ {fn['name']} is analyzed and saved. Your finding is on it and in the project's notes. "
@@ -2942,9 +3092,10 @@ class RomNetwork(Network):
                          "proprietary": False, "supported": True, "wsl": False, "why": None},
             "analysis": {"target": target, "counts": cfg.get("counts") or {}, "segments": cfg.get("segments") or [],
                          "provider": cfg.get("provider") or "", "notes": notes,
-                         "artifact": cfg.get("artifact") or {}},
+                         "artifact": cfg.get("artifact") or {}, "children": cfg.get("children") or []},
             "entries": (cfg.get("artifact") or {}).get("entries"),
             "files": (cfg.get("artifact") or {}).get("files"),
+            "source": cfg.get("source") or None,
             "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
             "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0,
             "releases": agg["releases"] or 0, "findings": notes,

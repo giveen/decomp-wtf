@@ -408,7 +408,9 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return out
 
     def state() -> dict:
-        projects = [ov | ({"broken": why} if why else {}) for _, ov, why in overviews()]
+        projects = [ov | {"parent": (ov.get("source") or {}).get("parent"),
+                          "entry": (ov.get("source") or {}).get("entry")} | ({"broken": why} if why else {})
+                    for _, ov, why in overviews()]
         tcs = [t for t in toolchains.status() if t["id"] in COMPILERS or t["id"] in TOOLS]
         for t in tcs:
             t["use"] = COMPILERS.get(t["id"]) or TOOLS[t["id"]]
@@ -442,6 +444,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             out.append({k: ov.get(k) for k in ("slug", "title", "kind", "origin", "platform", "platform_name", "ready",
                                                 "entries", "files", "functions", "matched", "bytes", "matched_bytes",
                                                 "last_activity")}
+                       | {"parent": (ov.get("source") or {}).get("parent"),
+                          "entry": (ov.get("source") or {}).get("entry")}
                        | {"working": running.get(slug, 0), "room": (ov.get("room") or {}).get("role"),
                           "autopilot": (ov.get("autopilot") or {}).get("state")} | ({"broken": why} if why else {}))
         return out
@@ -656,6 +660,12 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         net.set_compiler(slug, str(data.get("toolchain", "")), data.get("flags") or None)
         return net.overview(slug)
 
+    def p_analyze_entry(slug, request, data):
+        entry = str(data.get("entry") or "")
+        if not entry:
+            raise ValueError("name the archive entry to analyze")
+        return {"job": jobs.start("analysis-entry", lambda log: net.analyze_archive_entry(slug, entry, log=log))}
+
     def p_export(slug, request, data):
         def work(log):
             res = net.export_rom(slug, log=log)
@@ -766,6 +776,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/project": (p_overview, ["GET"]),
         "/api/intake": (lambda s, r, d: net.write_intake(s, log=lambda *_: None), ["GET"]),
         "/api/summary": (lambda s, r, d: net.analysis_summary(s), ["GET"]),
+        "/api/contents": (lambda s, r, d: net.analysis_contents(s), ["GET"]),
+        "/api/analysis/entry": (p_analyze_entry, ["POST"]),
         "/api/live": (p_live, ["GET"]),
         "/api/function": (lambda s, r, d: net.function_detail(s, r.query_params.get("name", "")), ["GET"]),
         "/api/diff": (lambda s, r, d: net.function_diff(s, r.query_params.get("name", ""),

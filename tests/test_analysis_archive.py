@@ -53,6 +53,22 @@ def test_archive_suffixes_are_recognized():
     assert not analysis.is_archive(Path("game.z64"))
 
 
+def test_entries_are_classified_from_magic_before_extension():
+    assert analysis.classify_entry("firmware/tiny")["analyzable"] is False
+    elf = analysis.classify_entry("firmware/tiny", b"\x7fELF" + b"\0" * 12)
+    assert (elf["entry_type"], elf["entry_format"], elf["tool"]) == ("binary", "ELF", "open_binary")
+    assert analysis.classify_entry("notes.txt")["entry_type"] == "text"
+    assert analysis.classify_entry("bundle.apk")["entry_type"] == "android"
+
+
+def test_one_entry_is_extracted_to_a_new_file(tmp_path):
+    out = tmp_path / "extracted" / "a.txt"
+    size, digest = analysis.extract_archive_entry(ZIP, "dir/a.txt", out)
+    assert out.read_bytes() == b"hello"
+    assert size == 5
+    assert digest == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+
+
 def test_import_analysis_maps_archive_files_to_work_items(tmp_path, monkeypatch):
     from decompnet import rea
     from decompnet.app.engine import RomNetwork
@@ -79,6 +95,9 @@ def test_import_analysis_maps_archive_files_to_work_items(tmp_path, monkeypatch)
     assert '"kind": "artifact-entry"' in rows[0]["meta"]
     overview = net.overview(slug)
     assert (overview["entries"], overview["files"], overview["functions"]) == (3, 1, 1)
+    contents = net.analysis_contents(slug)
+    assert contents["nodes"][0]["name"] == "dir"
+    assert contents["nodes"][0]["children"][0]["path"] == "dir/a.txt"
 
     agent, _ = net.local_agent("archive-tester")
     net.claim(agent, slug)

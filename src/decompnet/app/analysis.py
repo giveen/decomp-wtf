@@ -11,6 +11,7 @@ status "matched" means "analyzed" for this kind of project.
 
 from __future__ import annotations
 
+import hashlib
 import posixpath
 import re
 import tarfile
@@ -215,6 +216,7 @@ def artifact_entries(inventory: dict) -> list[dict]:
         if not path or path == ".":
             continue
         node = nodes.get(occ.get("artifact_id")) or {}
+        info = classify_entry(path)
         out.append({
             "name": path, "kind": "artifact-entry", "address": 0,
             "size": int(occ.get("declared_size") or node.get("size") or 0),
@@ -225,6 +227,7 @@ def artifact_entries(inventory: dict) -> list[dict]:
             "artifact_format": str(occ.get("artifact_format") or ""),
             "compressed_size": occ.get("compressed_size"),
             "executable": bool(occ.get("executable")), "encrypted": bool(occ.get("encrypted")),
+            **info,
         })
     out.sort(key=lambda item: item["path"])
     return out
@@ -255,6 +258,104 @@ def read_archive_entry(path: str | Path, name: str, offset: int = 0, length: int
     except (OSError, KeyError, tarfile.TarError, zipfile.BadZipFile):
         return None
     return None
+
+
+
+
+# What an archive entry is, for the Contents tree and for choosing how to open it as a child target.
+_ENTRY_TYPES = {
+    ".exe": ("binary", "PE", "open_binary"), ".dll": ("binary", "PE", "open_binary"),
+    ".sys": ("binary", "PE", "open_binary"), ".efi": ("binary", "PE", "open_binary"),
+    ".elf": ("binary", "ELF", "open_binary"), ".so": ("binary", "ELF", "open_binary"),
+    ".o": ("binary", "ELF", "open_binary"), ".ko": ("binary", "ELF", "open_binary"),
+    ".bin": ("binary", "binary", "open_binary"), ".rom": ("binary", "binary", "open_binary"),
+    ".img": ("binary", "binary", "open_binary"), ".fw": ("binary", "binary", "open_binary"),
+    ".apk": ("android", "APK", "inspect_android_package"),
+    ".dex": ("android", "DEX", "open_binary"),
+    ".js": ("javascript", "JavaScript", "analyze_javascript_application"),
+    ".mjs": ("javascript", "JavaScript", "analyze_javascript_application"),
+    ".cjs": ("javascript", "JavaScript", "analyze_javascript_application"),
+    ".wasm": ("wasm", "WASM", "open_binary"),
+    ".zip": ("archive", "ZIP", "open_binary"), ".jar": ("archive", "JAR", "open_binary"),
+    ".whl": ("archive", "wheel", "open_binary"), ".ipa": ("archive", "IPA", "open_binary"),
+    ".tar": ("archive", "TAR", "open_binary"), ".tgz": ("archive", "TAR.GZ", "open_binary"),
+    ".json": ("text", "JSON", ""), ".txt": ("text", "text", ""), ".md": ("text", "Markdown", ""),
+    ".xml": ("text", "XML", ""), ".csv": ("text", "CSV", ""), ".yaml": ("text", "YAML", ""),
+    ".yml": ("text", "YAML", ""), ".ini": ("text", "INI", ""), ".cfg": ("text", "text", ""),
+    ".conf": ("text", "text", ""), ".log": ("text", "log", ""), ".html": ("text", "HTML", ""),
+    ".css": ("text", "CSS", ""), ".png": ("image", "PNG", ""), ".jpg": ("image", "JPEG", ""),
+    ".jpeg": ("image", "JPEG", ""), ".gif": ("image", "GIF", ""), ".svg": ("image", "SVG", ""),
+}
+_MAGIC_TYPES = (
+    (b"\x7fELF", ("binary", "ELF", "open_binary")),
+    (b"MZ", ("binary", "PE", "open_binary")),
+    (b"PK\x03\x04", ("archive", "ZIP", "open_binary")),
+    (b"\x1f\x8b", ("archive", "gzip", "open_binary")),
+    (b"\x00asm", ("wasm", "WASM", "open_binary")),
+    (b"dex\n", ("android", "DEX", "open_binary")),
+)
+
+
+def classify_entry(path: str, data: bytes | None = None) -> dict:
+    """Guess what an archive entry is from its magic first, then its extension. Never executes it."""
+    for magic, (kind, fmt, tool) in _MAGIC_TYPES:
+        if data and data.startswith(magic):
+            return {"entry_type": kind, "entry_format": fmt, "tool": tool, "analyzable": bool(tool)}
+    ext = posixpath.splitext(str(path).lower())[1]
+    kind, fmt, tool = _ENTRY_TYPES.get(ext, ("unknown", ext.lstrip(".") or "file", ""))
+    return {"entry_type": kind, "entry_format": fmt, "tool": tool, "analyzable": bool(tool)}
+
+
+def extract_archive_entry(path: str | Path, name: str, dest: str | Path,
+                          max_bytes: int = 256 * 1024 * 1024) -> tuple[int, str]:
+    """Extract exactly one regular entry into a new file, streaming and hashing it. No links, no execution."""
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".part")
+    total = 0
+    digest = hashlib.sha256()
+
+    def copy(stream) -> None:
+        nonlocal total
+        with open(tmp, "wb") as out:
+            while True:
+                chunk = stream.read(1 << 20)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError(f"that archive entry is larger than {max_bytes // (1024 * 1024)} MiB")
+                digest.update(chunk)
+                out.write(chunk)
+
+    try:
+        if zipfile.is_zipfile(path):
+            with zipfile.ZipFile(path) as archive:
+                info = archive.getinfo(name)
+                if info.is_dir() or info.flag_bits & 0x1:
+                    raise ValueError("that entry is a directory or encrypted")
+                if info.file_size > max_bytes:
+                    raise ValueError(f"that archive entry is larger than {max_bytes // (1024 * 1024)} MiB")
+                with archive.open(info) as stream:
+                    copy(stream)
+        elif tarfile.is_tarfile(path):
+            with tarfile.open(path) as archive:
+                member = archive.getmember(name)
+                if not member.isfile():
+                    raise ValueError("that entry is not a regular file")
+                if member.size > max_bytes:
+                    raise ValueError(f"that archive entry is larger than {max_bytes // (1024 * 1024)} MiB")
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise ValueError("that entry couldn't be read")
+                copy(stream)
+        else:
+            raise ValueError("not a readable archive")
+        tmp.replace(dest)
+        return total, digest.hexdigest()
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def preview_bytes(data: bytes | None, limit: int = 4096) -> str:

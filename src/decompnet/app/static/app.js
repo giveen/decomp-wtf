@@ -81,6 +81,7 @@ const S = {
   projects: [],
 };
 const VIEWS = ["home", "catalog", "project", "agentsPage", "toolsPage", "settingsPage", "consolePage"];
+const CT = { slug: null, data: null, collapsed: new Set(), selected: null, busy: false };
 const TABS = ["overview", "functions", "summary", "data", "agents", "activity", "team", "source", "settings"];
 
 /* The project folder in the computer's file manager (decomp.anything in Docker says where it is instead). */
@@ -143,22 +144,33 @@ async function loadNav() {
   }
   renderNav();
 }
+function navProject(p, child = false) {
+  const pct = p.kind === "analysis" ? (p.functions ? (100 * p.matched) / p.functions : 0) : p.bytes ? (100 * p.matched_bytes) / p.bytes : 0;
+  const short = child ? `↳ ${p.entry || ""}` : PLAT_SHORT[p.platform] || (p.platform_name || "").replace("Nintendo ", "") || "?";
+  const state = p.working ? `<span class="dot on" title="${p.working} agent${p.working === 1 ? "" : "s"} working"></span>`
+    : p.autopilot === "running" ? `<span class="dot work" title="autopilot running"></span>` : "";
+  if (p.broken) return `<a class="nav-proj broken${child ? " child" : ""}" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.broken)}">
+    <span class="np-top"><span class="np-name">${esc(p.title)}</span></span>
+    <span class="np-meta"><span>can't be opened: hover for why</span></span></a>`;
+  return `<a class="nav-proj${child ? " child" : ""}" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.title)}">
+    <span class="np-top"><span class="np-name">${esc(p.title)}</span>${state}${p.room ? `<span class="np-room" title="${p.room === "host" ? "you share this project" : "in a team room"}">●●</span>` : ""}</span>
+    <span class="np-meta"><span>${esc(short)}</span><span class="grow"></span><span>${p.kind === "fork" && !p.ready ? "set up" : pctNum(pct) + "%"}</span></span>
+    <span class="np-bar"><i data-w="${pct.toFixed(2)}"></i></span></a>`;
+}
+
 function renderNav() {
   const box = $("navProjects");
   if (!S.projects.length) { box.innerHTML = `<p class="nav-empty">None yet: drop in a binary.</p>`; return; }
-  box.innerHTML = S.projects.map((p) => {
-    const pct = p.kind === "analysis" ? (p.functions ? (100 * p.matched) / p.functions : 0) : p.bytes ? (100 * p.matched_bytes) / p.bytes : 0;
-    const short = PLAT_SHORT[p.platform] || (p.platform_name || "").replace("Nintendo ", "") || "?";
-    const state = p.working ? `<span class="dot on" title="${p.working} agent${p.working === 1 ? "" : "s"} working"></span>`
-      : p.autopilot === "running" ? `<span class="dot work" title="autopilot running"></span>` : "";
-    if (p.broken) return `<a class="nav-proj broken" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.broken)}">
-      <span class="np-top"><span class="np-name">${esc(p.title)}</span></span>
-      <span class="np-meta"><span>can't be opened: hover for why</span></span></a>`;
-    return `<a class="nav-proj" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.title)}">
-      <span class="np-top"><span class="np-name">${esc(p.title)}</span>${state}${p.room ? `<span class="np-room" title="${p.room === "host" ? "you share this project" : "in a team room"}">●●</span>` : ""}</span>
-      <span class="np-meta"><span>${esc(short)}</span><span class="grow"></span><span>${p.kind === "fork" && !p.ready ? "set up" : pctNum(pct) + "%"}</span></span>
-      <span class="np-bar"><i data-w="${pct.toFixed(2)}"></i></span></a>`;
-  }).join("");
+  const parents = S.projects.filter((p) => !p.parent);
+  const known = new Set(parents.map((p) => p.slug));
+  const kids = new Map();
+  for (const p of S.projects) {
+    if (!p.parent) continue;
+    if (!kids.has(p.parent)) kids.set(p.parent, []);
+    kids.get(p.parent).push(p);
+  }
+  const orphans = S.projects.filter((p) => p.parent && !known.has(p.parent));
+  box.innerHTML = [...parents, ...orphans].map((p) => navProject(p) + (kids.get(p.slug) || []).map((k) => navProject(k, true)).join("")).join("");
   setWidths(box);
   markNav();
 }
@@ -179,8 +191,9 @@ async function showHome() {
   const st = await loadState();
   const box = $("projects");
   box.innerHTML = "";
-  $("recent").hidden = !st.projects.length;
-  for (const p of st.projects) {
+  const shownProjects = st.projects.filter((p) => !p.parent || !st.projects.some((x) => x.slug === p.parent));
+  $("recent").hidden = !shownProjects.length;
+  for (const p of shownProjects) {
     const pct = p.kind === "analysis" ? (p.functions ? (100 * p.matched) / p.functions : 0) : p.bytes ? (100 * p.matched_bytes) / p.bytes : 0;
     const a = document.createElement("a");
     a.className = "card";
@@ -663,12 +676,149 @@ async function openProject(slug, tab = "overview") {
   setTab(tab);
   renderStats(S.ov);
   renderIntake(slug);
+  renderContents();
   await refreshMap();
   await poll(true);
   S.timer = setInterval(() => poll(false), 1000);
   S.statsTimer = setInterval(loadStats, 8000);
   loadStats();
 }
+
+/* ------------------------------------------------------------------ archive contents */
+
+function contentsDirs(nodes, out = []) {
+  for (const n of nodes || []) {
+    if (n.kind === "directory") { out.push(n.path); contentsDirs(n.children, out); }
+  }
+  return out;
+}
+
+function contentsFind(nodes, path) {
+  for (const n of nodes || []) {
+    if (n.path === path) return n;
+    if (n.kind === "directory") {
+      const found = contentsFind(n.children, path);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function contentsRow(n, depth) {
+  const dir = n.kind === "directory";
+  const open = dir && !CT.collapsed.has(n.path);
+  const selected = n.path === CT.selected ? " sel" : "";
+  const caret = dir ? `<button class="contents-caret" type="button" data-ctoggle="${esc(n.path)}" aria-expanded="${open}">${open ? "▾" : "▸"}</button>` : `<span class="contents-caret"></span>`;
+  const type = dir ? "DIR" : (n.entry_format || n.entry_type || "FILE");
+  const size = dir ? "" : bytes(n.size || 0);
+  const child = n.child ? `<span class="contents-child">child</span>` : "";
+  return `<div class="contents-row${selected}${dir ? " dir" : ""}" data-cpath="${esc(n.path)}" style="--depth:${depth}" role="treeitem">
+    ${caret}<span class="contents-type">${esc(type)}</span><span class="contents-name" title="${esc(n.path)}">${esc(n.name)}</span>
+    <span class="contents-size">${esc(size)}</span><span class="contents-marks">${child}</span></div>`;
+}
+
+function contentsRows(nodes, depth = 0) {
+  const out = [];
+  for (const n of nodes || []) {
+    out.push(contentsRow(n, depth));
+    if (n.kind === "directory" && !CT.collapsed.has(n.path)) out.push(...contentsRows(n.children, depth + 1));
+  }
+  return out;
+}
+
+function contentsDetail(n) {
+  if (!n) return "";
+  const facts = [["Path", n.path], ["Type", n.entry_type || "unknown"], ["Format", n.entry_format || "—"],
+    ["Size", n.size == null ? "—" : bytes(n.size)], ["SHA-256", n.sha256 || "—"], ["Tool", n.tool || "—"]];
+  let action = "";
+  if (n.child) action = `<a class="primary small-btn as-btn" href="#/p/${esc(n.child)}">Open child project</a>`;
+  else if (n.analyzable) action = `<button class="primary small-btn" type="button" data-canalyze="${esc(n.path)}">Analyze this file</button>`;
+  else action = `<span class="muted small">No child analyzer for this type yet.</span>`;
+  return `<div class="contents-detail-head"><b>${esc(n.path)}</b><span class="grow"></span>${action}</div>
+    <dl class="contents-facts">${facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>`;
+}
+
+function renderContentsDetail() {
+  const box = $("contentsDetail");
+  const n = CT.selected ? contentsFind(CT.data?.nodes, CT.selected) : null;
+  box.hidden = !n;
+  box.innerHTML = contentsDetail(n);
+}
+
+function renderContentsTree() {
+  const box = $("contentsTree");
+  if (!CT.data) { box.innerHTML = `<p class="muted small">Reading the archive…</p>`; return; }
+  const rows = contentsRows(CT.data.nodes);
+  box.innerHTML = rows.length ? rows.join("") : `<p class="muted small">No files in this archive.</p>`;
+  $("contentsCount").textContent = `${(CT.data.entries || 0).toLocaleString()} entries · ${(CT.data.files || 0).toLocaleString()} files`;
+  renderContentsDetail();
+}
+
+async function renderContents() {
+  if (!S.ov || S.ov.kind !== "analysis" || !S.ov.analysis?.artifact?.entries) {
+    $("contentsPanel").hidden = true;
+    return;
+  }
+  $("contentsPanel").hidden = false;
+  if (CT.slug !== S.slug) {
+    CT.slug = S.slug; CT.data = null; CT.selected = null; CT.busy = false;
+    CT.collapsed = new Set();
+  }
+  try {
+    const data = await api(`/api/contents?slug=${encodeURIComponent(S.slug)}`);
+    if (CT.slug !== S.slug) return;
+    const fresh = CT.data === null;
+    CT.data = data;
+    if (fresh) CT.collapsed = new Set(contentsDirs(data.nodes));
+    renderContentsTree();
+  } catch (e) {
+    $("contentsTree").innerHTML = `<p class="bad small">${esc(e.message)}</p>`;
+  }
+}
+
+$("contentsTree").addEventListener("click", (e) => {
+  const toggle = e.target.closest("[data-ctoggle]");
+  if (toggle) {
+    e.preventDefault(); e.stopPropagation();
+    const path = toggle.dataset.ctoggle;
+    if (CT.collapsed.has(path)) CT.collapsed.delete(path); else CT.collapsed.add(path);
+    renderContentsTree();
+    return;
+  }
+  const row = e.target.closest("[data-cpath]");
+  if (!row) return;
+  const path = row.dataset.cpath;
+  const node = contentsFind(CT.data?.nodes, path);
+  if (!node) return;
+  if (node.kind === "directory") {
+    if (CT.collapsed.has(path)) CT.collapsed.delete(path); else CT.collapsed.add(path);
+    renderContentsTree();
+    return;
+  }
+  CT.selected = path;
+  renderContentsTree();
+});
+
+$("contentsDetail").addEventListener("click", async (e) => {
+  const button = e.target.closest("[data-canalyze]");
+  if (!button || CT.busy) return;
+  const entry = button.dataset.canalyze;
+  CT.busy = true;
+  button.disabled = true;
+  button.textContent = "Opening…";
+  try {
+    const start = await api("/api/analysis/entry", { method: "POST", body: { slug: S.slug, entry } });
+    const result = await followJob(start.job);
+    loadNav();
+    location.hash = `#/p/${result.slug}`;
+  } catch (err) {
+    toast(esc(err.message), "err");
+    button.disabled = false;
+    button.textContent = "Analyze this file";
+  } finally {
+    CT.busy = false;
+  }
+});
 
 let summaryReq = 0;
 async function renderSummary() {
@@ -753,7 +903,7 @@ function setTab(tab) {
   document.querySelectorAll("#ptabs [data-ptab]").forEach((a) => { a.classList.toggle("on", a.dataset.ptab === tab); a.setAttribute("aria-selected", a.dataset.ptab === tab); });
   if (S.ov && S.ov.kind === "fork" && !S.ov.ready) return;
   document.querySelectorAll("[data-pane]").forEach((p) => { p.hidden = p.dataset.pane !== tab; });
-  if (tab === "overview") { if (S.map.length) layoutMap(); renderOverview(); }
+  if (tab === "overview") { if (S.map.length) layoutMap(); renderOverview(); renderContents(); }
   if (tab === "functions") renderList();
   if (tab === "summary") renderSummary();
   if (tab === "data") renderData();
