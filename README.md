@@ -3,7 +3,8 @@
 **Point an AI agent at something you own and take it apart.** decomp.anything is a matching-decompilation and
 reverse-engineering workbench for games, Windows and Linux programs, apps, web pages, firmware and plain files.
 Agents write C against the real binary, the original compiler builds it, and the result is checked byte for byte —
-or you skip matching entirely and use the RE console to inspect anything.
+or, when there is no original build to match, the same project opens the binary with REA and agents analyze its
+functions instead.
 
 <p align="center">
   <a href="https://github.com/i12bp8/decomp.wtf">
@@ -44,8 +45,8 @@ upstream project is discontinued, but its code is MIT licensed, so this fork con
 repository is the active continuation.
 
 Where decomp.wtf focused on matching retro games, decomp.anything extends the same engine to arbitrary software:
-Windows and Linux binaries can be matched byte for byte, and the RE console can inspect apps, web pages, firmware and
-files that have no build project at all.
+Windows and Linux binaries can be matched byte for byte, and anything else opens as an **REA project** — the same
+project dashboard, agents and notes, with its procedures as work items. There is no separate REA mode to learn.
 
 What stays from decomp.wtf:
 
@@ -58,9 +59,10 @@ What stays from decomp.wtf:
 
 What this fork adds:
 
-- **[RE console](#inspect-anything):** a graphical front end for [REA](https://rea.tools)'s tool catalog. Open native
-  binaries, Android apps, .NET assemblies, JavaScript and Electron apps, web pages, firmware and plain files;
-  browse functions, pseudocode, strings, flow graphs and call graphs, and run any REA tool from a generated form.
+- **[RE console](#inspect-anything):** a graphical front end for [REA](https://rea.tools)'s tool catalog, opened from
+  a project work item (or a PC function). Browse native binaries, Android apps, .NET assemblies, JavaScript and
+  Electron apps, web pages, firmware and plain files; functions, pseudocode, strings, flow graphs and call graphs,
+  plus a generated form for every REA tool.
 - **Linux targets:** x86 and x86-64 ELF executables and shared libraries import and match like Windows programs.
 - **Windows targets:** 32-bit and 64-bit PE executables and DLLs, with a relocation-aware x86 matcher.
 - **REA for agents:** `inspect_binary` can ask REA for pseudocode, signatures and callers; REA itself can be installed
@@ -68,8 +70,8 @@ What this fork adds:
 - **Reference folders:** point an agent at a matched decomp, notes or symbol lists; it can read and search them.
 - **opencode 2** support for helper agents and `decomp connect`.
 
-Matching is still the byte-exact path. Inspection is the broad path: the RE console does not need a project and does
-not need anything to match.
+Matching is still the byte-exact path. Every binary opens as a normal project: matchable targets get the compile-and-
+compare loop, and everything else gets REA work items, the same agents, the same dashboard and findings instead.
 
 ## What you can do
 
@@ -78,7 +80,7 @@ not need anything to match.
 | **Decompile a game** | Drop in a ROM, disc image or program file. Agents claim functions, write C, and the original compiler proves each match byte for byte. |
 | **Match a PC program** | Import a Windows `.exe`/`.dll` or a Linux ELF program or `.so`, write C, and compare the compiler's bytes with the original's. |
 | **Continue a public decomp** | Fork one of the community projects the app knows about and let agents carry on in the project's real source tree. |
-| **Inspect anything else** | Open an app, page, firmware image or file in the RE console and use REA's tools. Nothing has to be a game and nothing has to match. |
+| **Inspect anything else** | Drop it like a game. If this app can't split or match it, REA opens it in a normal project: its procedures become work items, agents read them in parallel, and their findings land on the same dashboard. Add tasks for areas with no procedure of their own. |
 | **Work together** | Host a room, invite people, and share matches, names, structs and notes without sharing the original file. |
 | **Use your own agent** | Claude Code, Codex, Antigravity CLI, opencode, an OpenAI-compatible endpoint, or any MCP client. |
 
@@ -143,7 +145,7 @@ Then ask in your own terminal:
 
 or, for something that isn't a game:
 
-> open this APK in the RE console and list its exported components
+> work on the binary at ~/bin/app.apk: map its classes and exported components
 
 The agent imports or opens the target, shows the live view, and uses the same tools you do. Behind it is
 `decomp mcp`, an MCP server that starts the app when needed. You can register it yourself:
@@ -220,9 +222,16 @@ s32 clamp_s32(s32 v, s32 lo, s32 hi) {
 
 ## Inspect anything
 
-**RE console** in the sidebar is a graphical front end for [REA](https://rea.tools) (Reverse Engineer Anything). It
-covers REA's whole catalog: native programs, Android apps, .NET assemblies, JavaScript and Electron apps, web pages,
-firmware and plain files. Nothing has to be a game, and nothing has to match.
+A binary that isn't a game or a matchable program still opens as a **project**, not a separate mode: the normal
+picker falls back to REA, its procedures become work items, and agents claim them exactly like functions in a game.
+The project dashboard shows analyzed items, findings, agent output and the live map; **Add task** covers areas that
+have no procedure of their own.
+
+**RE console** is the deep viewer behind a project, not a separate mode: click a work item in an analysis project,
+or a function's **RE console** button in a PC project. It is also a manual front end for
+[REA](https://rea.tools) (Reverse Engineer Anything), covering REA's whole catalog: native programs, Android apps,
+.NET assemblies, JavaScript and Electron apps, web pages, firmware and plain files. Nothing has to be a game, and
+nothing has to match.
 
 - **Open a target** by path. Native code is analysed by Ghidra, Hopper, IDA or Rizin (pick the engine next to the
   path). The sidebar lists functions, strings and memory segments; the overview shows counts, a memory map and the
@@ -244,7 +253,7 @@ firmware and plain files. Nothing has to be a game, and nothing has to match.
 3. `rea` on PATH
 4. REA installed from **Compilers & tools** in the app
 5. an `rea` server registered with Claude Code (`~/.claude.json`), with its environment
-6. `npx -y rea-agents@6.4.0 mcp`
+6. `npx -y rea-agents@6.7.0 mcp`
 
 **REA settings** in the console set the command, the native engine and environment variables such as
 `GHIDRA_INSTALL_DIR`, `JAVA_HOME` or `HOPPER_LAUNCHER_PATH`. They're saved in `.decomp/rea.json`, and the agents'
@@ -357,7 +366,7 @@ identical to the host's.
 | **Nintendo DS** | Beta | ✓ | ROM (.nds); CodeWarrior 1.2–DSi 1.6; ds-decomp projects. |
 | **Windows (PC)** | Beta | ✓ | `.exe` / `.dll`, x86 and x86-64; MinGW-w64, clang-cl or your own MSVC. No rebuildable PE export yet. |
 | **Linux (PC)** | Beta | ✓ | ELF executables and `.so`, x86 and x86-64; the GCC, G++, Clang and Clang++ on your machine. No rebuildable export yet. |
-| **Android · .NET · JavaScript/Electron · web · firmware · files** | Analysis | — | Open in the RE console and use REA's tools. No matching project. |
+| **Android · .NET · JavaScript/Electron · web · firmware · files** | Analysis | — | Drop it like a game: REA opens it as a normal project, procedures become work items and findings land on the dashboard. Add tasks for the rest. |
 | **3DS · PSP · Switch · Xbox · Xbox 360** | Coming | Public decomps | The catalog can fork community projects for these. |
 
 **From scratch.** splat and spimdisasm split MIPS games; decomp-toolkit analyses GameCube and Wii programs inside a
@@ -418,6 +427,7 @@ projects folder (`~/Decomp`).
 | **Look-alikes** | `find_similar` spots copy-pasted and inlined code and starts agents from what already matches. |
 | **Drafts** | m2c for MIPS, PowerPC and ARM; optional Ghidra for x86, AArch64 and everything else. |
 | **Agent toolkit** | Data inspector, call graph, function splitting, and guides for MIPS, PowerPC, ARM, x86, AArch64, IDO, GCC, Metrowerks, agbcc, PSY-Q, C++ and objdiff. |
+| **Every binary is a project** | The normal picker accepts games and programs; unsupported formats fall back to REA automatically. Procedures become work items, tasks cover the rest, and the same dashboard, agents, notes and activity feed apply. |
 | **RE console** | REA's tools in the app: functions, pseudocode beside assembly, control-flow and call graphs, strings, memory map, a form for every tool and a terminal. |
 | **REA install** | Download and install REA from **Compilers & tools**; the console and agents pick it up automatically. |
 | **Reference folders** | Name a folder in instructions and helpers can read and search it. |
@@ -431,6 +441,9 @@ uv sync
 uv run decomp              # opens the app; projects live in ~/Decomp (or $DECOMP_HOME)
 uv run pytest
 ```
+
+Python dependencies are locked in `uv.lock`. The site’s only managed dependency is pinned in
+`site/package-lock.json` (`npm ci` in `site/`).
 
 <details>
 <summary><b>Repository layout</b></summary>
@@ -456,6 +469,40 @@ Rebuild the demo ROM with `uv run python projects/demo-rom/build.py` (needs `gcc
 
 </details>
 
+## Pinned tools
+
+Every download is pinned by version and SHA-256 in `src/decompnet/toolchains.toml`. Install one from
+**Compilers & tools**, or with `decompnet toolchain install <id>`.
+
+| Tool | Pinned version |
+| :-- | :-- |
+| **KMC GCC 2.7.2** | decompals `mips-gcc-2.7.2 v0.1` + `mips-binutils-2.6 v0.3` |
+| **PlayStation GCC** | decompals `old-gcc 0.17` (GCC 2.7.2 and 2.8.1), with binutils 2.6 |
+| **EE-GCC** | Sony-era GCC 2.96 from `decompme/compilers` |
+| **IDO** | `ido-static-recomp v1.2` (5.3 and 7.1) |
+| **agbcc** | pret `agbcc release` |
+| **ARM GNU** | 14.3.Rel1 (for agbcc’s assembler path) |
+| **CodeWarrior** | `compilers_20251118.zip` (GameCube, Wii, ProDG, Xbox 360 MSVC); DS archive from `decompme/compilers` |
+| **objdiff-cli** | **v3.8.3** |
+| **decomp-toolkit** | v1.8.4 |
+| **wibo** | 1.2.0 |
+| **coddog** | 0.6.3 |
+| **Ghidra** | 12.1.4 |
+| **REA** | **rea-agents 6.7.0** |
+| **cloudflared** | **2026.10.2** |
+| **ds-decomp** | v0.12.1 |
+| **binutils-mips** | decompals v0.10 |
+| **gc-wii-binutils** | 2.42-2 |
+| **sjiswrap** | v1.2.2 |
+| **m2c** | `708d2d2c` |
+| **maspsx** | `e85ecb3` |
+| **dtk-template** | `95a941f` |
+| **luvdis** | `ec3a4e3` |
+
+The period compilers are deliberately held at the versions that reproduce the games’ original output. `maspsx` is
+also held at `e85ecb3`: newer upstream commits change assembly expansion and need a PlayStation matching corpus run
+before they can be adopted. The host’s GCC, Clang, MinGW and `clang-cl` are used as system toolchains, not pinned.
+
 ## Built on
 
 decomp.anything would not exist without [decomp.wtf](https://github.com/i12bp8/decomp.wtf) by Sam Wolfs, which
@@ -464,8 +511,9 @@ provides the matching engine, project workflow, app and installers this fork ext
 [splat](https://github.com/ethteck/splat) and [spimdisasm](https://github.com/Decompollaborate/spimdisasm) split
 ROMs, [objdiff](https://github.com/encounter/objdiff) judges forks, [m2c](https://github.com/matt-kempster/m2c) and
 [Ghidra](https://github.com/NationalSecurityAgency/ghidra) write first drafts (and [REA](https://rea.tools) supplies
-pseudocode, callers and strings over MCP), the [decompals](https://github.com/decompals) recompiled period compilers
-do the building, and [decomp.dev](https://decomp.dev) lists the public projects. The look-alike finder follows the
+pseudocode, callers and strings over MCP, and drives the analysis projects for targets with no original build), the
+[decompals](https://github.com/decompals) recompiled period compilers do the building, and
+[decomp.dev](https://decomp.dev) lists the public projects. The look-alike finder follows the
 idea of [coddog](https://github.com/ethteck/coddog); [decomp-toolkit](https://github.com/encounter/decomp-toolkit),
 [maspsx](https://github.com/mkst/maspsx) and [wibo](https://github.com/decompals/wibo) are in the pinned toolbelt.
 

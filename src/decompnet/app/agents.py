@@ -79,9 +79,9 @@ API_PRESETS = {
 # by older versions as "gemini" carry on as Antigravity.
 ALIASES = {"gemini": "antigravity", "agy": "antigravity"}
 
-# decomp.wtf's tools are loaded up front in Antigravity (tools.ALWAYS_LOAD) and need no permission. Should a helper
+# decomp.anything's tools are loaded up front in Antigravity (tools.ALWAYS_LOAD) and need no permission. Should a helper
 # reach one through agy's generic MCP dispatcher instead, a headless run can't ask, and agy quietly refuses it:
-# this rule in the user's agy settings allows decomp.wtf's tools (and nothing else).
+# this rule in the user's agy settings allows decomp.anything's tools (and nothing else).
 AGY_ALLOW = "mcp(decomp/*)"
 
 # Functions per helper session: a fresh session starts with a small, clean context (each function's assembly,
@@ -293,7 +293,7 @@ def argv(cmd: list[str]) -> list[str]:
 
 
 def signin(k: Kind) -> str:
-    """How to sign in to an agent, said for where decomp.wtf runs (WSL/Docker: in decomp.wtf's own terminal)."""
+    """How to sign in to an agent, said for where decomp.anything runs (WSL/Docker: in decomp.anything's own terminal)."""
     from .. import hostenv
 
     if not k.signin or hostenv.runtime() == "native":
@@ -403,9 +403,9 @@ def _parse_agy(obj: dict, state: dict) -> list[tuple[str, str]]:
             out.append(("usage", json.dumps({"tokens": usage["total_tokens"]})))
         denied = [d for d in res.get("denied_actions") or [] if isinstance(d, dict)]
         if any(d.get("action") == "mcp" for d in denied):
-            out.append(("error", f"Antigravity refused decomp.wtf's tools: a background run can't ask you for permission. "
+            out.append(("error", f"Antigravity refused decomp.anything's tools: a background run can't ask you for permission. "
                                  f"Allow them once: add \"{AGY_ALLOW}\" to \"permissions\": {{\"allow\": [...]}} in "
-                                 f"{agy_settings()} (only decomp.wtf's tools; shell, files and the web keep asking)."))
+                                 f"{agy_settings()} (only decomp.anything's tools; shell, files and the web keep asking)."))
         if res.get("status") not in (None, "SUCCESS"):
             out.append(("error", str(res.get("error") or f"session ended: {res.get('status')}")[:400]))
         else:
@@ -788,6 +788,9 @@ class Manager:
 
     def _prompt(self, s: Session) -> str:
         ov = self.net.overview(s.slug)
+        if ov.get("kind") == "analysis":
+            return tools.ANALYSIS_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION),
+                                                guides='guide("analysis")')
         if ov.get("kind") == "fork":
             guides = ["fork", "objdiff", *tools.PLATFORM_GUIDES.get(ov.get("platform") or "", [])]
             return tools.FORK_PROMPT.format(title=ov["title"], platform=ov.get("platform_name") or "its platform",
@@ -807,7 +810,7 @@ class Manager:
         if WIN:
             env["PATH"] = search_path()  # the agent finds node (and what it needs) even when installed after the app
         # An agent that only loads the MCP servers in the user's own settings (Antigravity CLI since 1.1.3 ignores a
-        # workspace's .agents/mcp_config.json) reaches decomp.wtf through the `decomp mcp` the user connected it
+        # workspace's .agents/mcp_config.json) reaches decomp.anything through the `decomp mcp` the user connected it
         # with: that bridge works as this session's agent when it finds this, not as a new agent of the user's
         env["DECOMP_SESSION_TOKEN"] = token
         prompt = self.prompt(s)
@@ -882,8 +885,8 @@ class Manager:
         if s.kind == "antigravity" and s.runs == 1:
             from . import connect  # (connect imports this module)
 
-            if not connect.status("antigravity"):  # decomp.wtf's tools only reach it through the user's settings
-                raise Fatal("Antigravity CLI only loads the MCP servers in your own settings: connect it to decomp.wtf "
+            if not connect.status("antigravity"):  # decomp.anything's tools only reach it through the user's settings
+                raise Fatal("Antigravity CLI only loads the MCP servers in your own settings: connect it to decomp.anything "
                             "once (Connect your agent, or `decomp connect antigravity`), then start the helpers again")
         cmd, env, prompt = self._command(s, token, workdir)
         s.push("info", f"session {s.runs}: {KINDS[s.kind].name} started")
@@ -963,7 +966,11 @@ class Manager:
         headers = {"Content-Type": "application/json"}
         if s.options.get("api_key"):
             headers["Authorization"] = f"Bearer {s.options['api_key']}"
-        schema = api_tool_schemas(fork=bool(self.net.fork_slug(s.slug)))
+        try:
+            analysis = self.net.is_analysis(self.net.project_row(s.slug))
+        except NetworkError:
+            analysis = False
+        schema = api_tool_schemas(fork=bool(self.net.fork_slug(s.slug)), analysis=analysis)
         messages = [{"role": "system", "content": tools.INSTRUCTIONS},
                     {"role": "user", "content": self.prompt(s)}]
         used_tool = False
@@ -1069,7 +1076,7 @@ def context_window(client, base: str, options: dict) -> int:
     return 128000
 
 
-def api_tool_schemas(fork: bool = False) -> list[dict]:
+def api_tool_schemas(fork: bool = False, analysis: bool = False) -> list[dict]:
     """OpenAI-style tool definitions for the built-in agent, from the same tools CLI agents get."""
     s = lambda **props: {"type": "object", "properties": props, "required": [k for k, v in props.items() if v.pop("req", False)]}
     st = lambda desc, req=False: {"type": "string", "description": desc, "req": req}
@@ -1084,6 +1091,12 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
         "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "
                              "Score 0 = matched. Several functions: names comma-separated, all definitions in source.",
                              s(function=st("function name, or several: a, b, c", True), source=st("C source", True))),
+        "complete_function": ("Analysis projects: mark this work item analyzed and save the finding.",
+                              s(function=st("work item", True),
+                                summary=st("what it does, calls, data, surprises", True))),
+        "rea_tool": ("Analysis projects: run one read-only REA tool on the target.",
+                     s(tool=st("tool name, e.g. search_strings", True),
+                       arguments=st("JSON object of arguments (optional)"))),
         "release_function": ("Give up a function with notes for the next agent.",
                              s(function=st("function", True), notes=st("what you tried, what is left", True))),
         "get_context": ("The shared header included in every compile.", s()),
@@ -1122,7 +1135,7 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
         defs["compile_and_diff"] = ("Write one complete function definition into its source file, build it and diff "
                                     "with objdiff. 100% / score 0 = matched.",
                                     s(function=st("function name", True), source=st("the function definition", True)))
-    names = set(tools.tool_names(fork))
+    names = set(tools.tool_names(fork, analysis))
     return [{"type": "function", "function": {"name": n, "description": d, "parameters": p}}
             for n, (d, p) in defs.items() if n in names]
 

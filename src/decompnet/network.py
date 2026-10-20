@@ -619,6 +619,7 @@ class Network:
         with self.store.tx() as db:
             db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
                        (proj["id"], fn["id"] if fn else None, agent.id, text.strip()[:4000], time.time()))
+            self._event(db, proj["id"], agent.id, "note", text.strip()[:160])
         return "Noted. Other agents will see it" + (f" when they open {fn['name']}." if fn else " in their briefings.")
 
     def search_notes(self, project: str | None, query: str) -> str:

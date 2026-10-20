@@ -3,6 +3,7 @@ built-in API agent. Every tool works on the project the agent was started on."""
 
 from __future__ import annotations
 
+import json
 import re
 from importlib import resources
 from typing import Callable
@@ -38,6 +39,7 @@ GUIDES = {
     "x86": "x86 and x86-64 (PC, Xbox, Linux): calling conventions, SEH, matching MSVC, GCC and Clang output",
     "aarch64": "AArch64 and Clang (Switch): registers, matching Clang output",
     "similarity": "finding similar functions and reusing matched code",
+    "analysis": "REA analysis projects: reading a target, recording findings, tasks",
 }
 
 # Guides worth reading first on each platform.
@@ -49,16 +51,33 @@ PLATFORM_GUIDES = {
 }
 
 INSTRUCTIONS = """\
-decomp.wtf: you are decompiling a game the user owns (a ROM, a disc program, a Windows or Linux program) into C
-that compiles to exactly the same machine code. Your C is compiled with the game's original compiler, linked at
-the function's real address and compared with the original: score 0 means byte-identical, and the function is
-saved as matched.
-Start with project_info, then claim_function -> compile_and_diff (repeat). guide(topic) has know-how.
-Everything runs on the user's computer. The game's code is the user's: never publish it anywhere.
+decomp.anything: you are reverse-engineering a target the user owns. Matching projects turn functions into C that
+compiles to exactly the same machine code; analysis projects read any binary through REA and record what matters.
+Start with project_info, then claim_function. guide(topic) has know-how. Everything runs on the user's computer.
+The target is the user's: never publish it or its code anywhere.
+"""
+
+ANALYSIS_PROMPT = """\
+You are a reverse-engineering agent in decomp.anything, working on {title}. This is an analysis project: the target
+is read through REA, and your job is to understand it and leave precise findings for the next agent. There is no
+compiler and no match score.
+
+Repeat for up to {count} work items, then stop:
+1. claim_function() gives you the next procedure or task, with REA's dossier: pseudocode, assembly, callers and
+   referenced strings/names. If it is the survey item, you get the target overview and memory map.
+2. Go deeper with rea_tool(tool, arguments): search_strings, search_procedures, analyze_function, xrefs,
+   procedure_callers/callees, list_segments, read_bytes, inspect_native_api. Search first when you need context.
+3. Write findings with add_note(text, function) while you work, and finish the item with
+   complete_function(function, summary): what it does, inputs/outputs, calls, data and anything surprising.
+4. release_function(function, notes) if it needs someone else; notes are required.
+
+If the user added a task (one with no address), do exactly that task. Never write files, execute the target, or try
+to compile: rea_tool only exposes read-only analysis. Be brief in your messages: work, don't narrate.
+Guides: {guides}.
 """
 
 WORK_PROMPT = """\
-You are a decompilation agent in decomp.wtf, working on {title}. Other agents may be working on other
+You are a decompilation agent in decomp.anything, working on {title}. Other agents may be working on other
 functions of the same game at the same time; the tools keep you from colliding.
 
 Your job: turn functions of this game into C that compiles to *exactly* the original machine code.
@@ -83,7 +102,7 @@ Write plausible original code, pure C (no inline asm). Be brief in your messages
 """
 
 FORK_PROMPT = """\
-You are a decompilation agent in decomp.wtf, continuing {title}: a public matching-decompilation project
+You are a decompilation agent in decomp.anything, continuing {title}: a public matching-decompilation project
 for {platform}. Other agents may be working on other functions of the same project at the same time; the
 tools keep you from colliding.
 
@@ -107,7 +126,7 @@ machine code, judged by objdiff. Use only the decomp tools. Repeat for up to {co
    starts with those notes.
 5. The goal is linked files: the game built from the C, byte for byte. When a match finishes a file's
    functions, you're shown its data next to the original's: fix what differs (order, const, statics,
-   values) with edit_file until file_status says it matches; decomp.wtf then links the file.
+   values) with edit_file until file_status says it matches; decomp.anything then links the file.
 6. compile_and_diff says when to move on (no better after 4 compiles in a row; up to 10 for big functions):
    then release_function with precise notes (what you tried, what is left) and claim the next. Very large
    functions: get the structure right first; a near miss is worth the extra compiles.
@@ -162,6 +181,12 @@ def _project_info(net: RomNetwork, slug: str) -> str:
     if net.fork_slug(slug):
         return net.forks.info(slug)
     ov = net.overview(slug)
+    if ov.get("kind") == "analysis":
+        target = (ov.get("analysis") or {}).get("target") or {}
+        return (f"{ov['title']} — {target.get('format') or 'file'} {target.get('architecture') or ''}\n"
+                f"target: {target.get('path')}\n"
+                f"progress: {ov['matched']}/{ov['functions']} work items analyzed, {ov.get('findings', 0)} findings\n"
+                f"Next: claim_function(). Guides: guide(\"analysis\").")
     pct = 100 * ov["matched_bytes"] / (ov["bytes"] or 1)
     return (f"{ov['title']} ({ov['rom']['game_code']}, {ov['rom']['region']})\n"
             f"compiler: {ov['compiler']['name']} {' '.join(ov['compiler']['flags'])}\n"
@@ -188,10 +213,24 @@ def _claim(net: RomNetwork, agent: Agent, slug: str, function: str, strategy: st
 
 def _compile(net: RomNetwork, agent: Agent, slug: str, function: str, source: str) -> str:
     """compile_and_diff; several names ("a, b, c") judge several definitions sent together."""
+    if net.is_analysis(net._project(slug)):
+        return ("This is an analysis project: there is no compiler or original build. Read the work item with "
+                "get_function, go deeper with rea_tool, then complete_function(function, summary).")
     names = [n.strip() for n in function.split(",") if n.strip()]
     if len(names) <= 1:
         return net.compile_and_diff(agent, names[0] if names else function, source, slug)
     return net.attempt_many(agent, [net.resolve_function(agent, slug, n) for n in names], source, slug)
+
+
+def _rea_tool(net: RomNetwork, agent: Agent, slug: str, tool: str, arguments=None) -> str:
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments or "{}")
+        except ValueError:
+            return "error: arguments must be a JSON object"
+    if not isinstance(arguments, dict):
+        return "error: arguments must be a JSON object"
+    return net.analysis_tool(slug, tool, arguments)
 
 
 HANDLERS: dict[str, Callable[..., str]] = {
@@ -200,6 +239,10 @@ HANDLERS: dict[str, Callable[..., str]] = {
         _claim(net, agent, slug, function, strategy, count),
     "get_function": lambda net, agent, slug, function: net.get_function(function, slug, agent),
     "compile_and_diff": lambda net, agent, slug, function, source: _compile(net, agent, slug, function, source),
+    "complete_function": lambda net, agent, slug, function, summary:
+        net.complete_analysis(agent, slug, function, summary),
+    "rea_tool": lambda net, agent, slug, tool, arguments=None:
+        _rea_tool(net, agent, slug, tool, arguments),
     "release_function": lambda net, agent, slug, function, notes: net.release(agent, function, notes, slug),
     "get_context": lambda net, agent, slug, function="": net.get_context(slug, function or None),
     "edit_context": lambda net, agent, slug, old, new, message, function="":
@@ -227,11 +270,17 @@ HANDLERS: dict[str, Callable[..., str]] = {
 
 ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function"}
 FORK_ONLY = {"edit_file", "file_status", "split_file"}
+ANALYSIS_ONLY = {"complete_function", "rea_tool"}
+ANALYSIS_TOOLS = {"project_info", "claim_function", "get_function", "release_function", "complete_function",
+                  "rea_tool", "inspect_binary", "search_binary", "read_data", "list_functions", "add_note",
+                  "search_notes", "guide", "read_file", "search_code"}
 
 
-def tool_names(fork: bool) -> list[str]:
-    """The tools that make sense for a project: forks and ROM projects share the core loop."""
-    skip = ROM_ONLY if fork else FORK_ONLY
+def tool_names(fork: bool = False, analysis: bool = False) -> list[str]:
+    """The tools that make sense for a project: forks, analysis targets and matching projects share the core loop."""
+    if analysis:
+        return [n for n in HANDLERS if n in ANALYSIS_TOOLS]
+    skip = (ROM_ONLY if fork else FORK_ONLY) | ANALYSIS_ONLY
     return [n for n in HANDLERS if n not in skip]
 
 
@@ -256,13 +305,13 @@ def call(net: RomNetwork, agent: Agent, slug: str, name: str, args: dict) -> str
 
 
 # Antigravity CLI otherwise finds MCP tools on demand (an extra step each, through its generic dispatcher):
-# decomp.wtf's tools are all there is to the job, so they are loaded up front.
+# decomp.anything's tools are all there is to the job, so they are loaded up front.
 ALWAYS_LOAD = {"antigravity/alwaysLoad": True}
 
 
 def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]]) -> MCPServer:
     """MCP server for CLI agents. `agent_of` maps a request to (agent, project slug)."""
-    mcp = MCPServer(name="decomp", title="decomp.wtf", instructions=INSTRUCTIONS, version=__version__)
+    mcp = MCPServer(name="decomp", title="decomp.anything", instructions=INSTRUCTIONS, version=__version__)
 
     async def run(ctx: Context, name: str, **args) -> str:
         try:
@@ -314,6 +363,25 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "compile_and_diff", function=function, source=source)
 
     @mcp.tool(meta=ALWAYS_LOAD)
+    async def complete_function(ctx: Context, function: str, summary: str) -> str:
+        """Analysis projects: mark a work item analyzed and save the finding (what it does, calls, data, surprises).
+        The summary is kept on the item and in the project's notes for every other agent."""
+        return await run(ctx, "complete_function", function=function, summary=summary)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def rea_tool(ctx: Context, tool: str, arguments: str = "{}") -> str:
+        """Analysis projects: run one read-only REA tool on the target (search_strings, search_procedures,
+        analyze_function, xrefs, procedure_callers, procedure_callees, list_segments, read_bytes, inspect_native_api).
+        `arguments` is a JSON object; the answer comes back as text."""
+        try:
+            args = json.loads(arguments or "{}")
+        except ValueError:
+            raise ToolError("arguments must be a JSON object, for example {\"pattern\": \"socket\"}") from None
+        if not isinstance(args, dict):
+            raise ToolError("arguments must be a JSON object")
+        return await run(ctx, "rea_tool", tool=tool, arguments=args)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def release_function(ctx: Context, function: str, notes: str) -> str:
         """Give up a function you're stuck on. Notes are required: what you tried, what is left. Your best
         attempt is kept for the next agent."""
@@ -344,20 +412,19 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def inspect_binary(ctx: Context, function: str, what: str = "") -> str:
-        """Windows and Linux projects: ask REA (Ghidra/IDA/Hopper) for this function's pseudocode, signature and
-        callers, plus decomp.wtf's own assembly and cross references. Needs REA installed and configured;
-        without it you get the assembly and references decomp.wtf already has.
+        """Ask REA for a work item's dossier: pseudocode, signature, callers, references. Matching projects also
+        get decomp.anything's own assembly and cross references. Needs REA installed and configured.
 
         Args:
             function: name or address (0x140001000)
-            what: all (default), info, pseudocode, assembly, callers, callees, references
+            what: all (default), info, pseudocode, assembly, callers, callees, references (analysis: always all)
         """
         return await run(ctx, "inspect_binary", function=function, what=what)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def search_binary(ctx: Context, query: str) -> str:
-        """Windows and Linux projects: find strings and procedure names in the game (REA's inventories when it is set
-        up, decomp.wtf's symbol table otherwise). Useful before naming a function or a global."""
+        """Find strings and procedure names in the target (REA's inventories when it is set up; in analysis
+        projects always REA). Useful before naming a function or a global."""
         return await run(ctx, "search_binary", query=query)
 
     @mcp.tool(meta=ALWAYS_LOAD)
@@ -433,6 +500,6 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.prompt(title="Decompile", description="Work loop: claim functions and match them byte for byte.")
     def work(count: str = "5") -> str:
-        return "Call project_info first, then follow the decomp.wtf work loop for up to " + count + " functions."
+        return "Call project_info first, then follow the decomp.anything work loop for up to " + count + " functions."
 
     return mcp

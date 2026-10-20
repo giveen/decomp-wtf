@@ -7,7 +7,7 @@
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
-    "wrangler": "4.151.2"
+    "wrangler": "^4.151.3"
   },
   "allowScripts": {
     "esbuild@0.28.1": true,

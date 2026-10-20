@@ -181,29 +181,29 @@ commit = "708d2d2cb2698f091a92492b328f73b24209f72d"
 name = "cloudflared"
 kind = "tool"
 license = "Apache-2.0"
-source = "cloudflare/cloudflared 2026.10.0"
-description = "Cloudflare's tunnel client. decomp.wtf uses a free quick tunnel (no account) when you invite friends to a project."
+source = "cloudflare/cloudflared 2026.10.2"
+description = "Cloudflare's tunnel client. decomp.anything uses a free quick tunnel (no account) when you invite friends to a project."
 [[cloudflared.parts]]
-url = "https://github.com/cloudflare/cloudflared/releases/download/2026.10.0/cloudflared-linux-amd64"
-sha256 = "d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db"
+url = "https://github.com/cloudflare/cloudflared/releases/download/2026.10.2/cloudflared-linux-amd64"
+sha256 = "35fbdd2beb378436c7da377d7358cea8e33f9c94a6705d1d8036bf9b0d6d8005"
 binary = "cloudflared"
 platforms = ["linux-x86_64"]
 [[cloudflared.parts]]
-url = "https://github.com/cloudflare/cloudflared/releases/download/2026.10.0/cloudflared-linux-arm64"
-sha256 = "e6422b9d4f72d3194bc5a38676f13667c06666523217b842a877d72a80b5ac08"
+url = "https://github.com/cloudflare/cloudflared/releases/download/2026.10.2/cloudflared-linux-arm64"
+sha256 = "b7e55b4d9702c2ab5f8348f780bb1db044527fc555367714c78e0595750a4665"
 binary = "cloudflared"
 platforms = ["linux-aarch64"]
 [[cloudflared.parts]]
-url = "https://github.com/cloudflare/cloudflared/releases/download/2026.10.0/cloudflared-darwin-amd64.tgz"
-sha256 = "903845b81828c8cb3c5d13d816a2de71c06a3da5785469df8eb0e1b736d92f9f"
+url = "https://github.com/cloudflare/cloudflared/releases/download/2026.10.2/cloudflared-darwin-amd64.tgz"
+sha256 = "b64efd5a2772fc124b855f60eb3d33ba1a4f2ba67b19ddc58d32b705d42b82c9"
 platforms = ["macos-x86_64"]
 [[cloudflared.parts]]
-url = "https://github.com/cloudflare/cloudflared/releases/download/2026.10.0/cloudflared-darwin-arm64.tgz"
-sha256 = "a2f79ff7b9420aa537d74af239f376da170bbabeb529aec416002adac6a72e70"
+url = "https://github.com/cloudflare/cloudflared/releases/download/2026.10.2/cloudflared-darwin-arm64.tgz"
+sha256 = "529a07089ac2d46762578389230fa148e5cb6ce2689200fc006956864042d17a"
 platforms = ["macos-arm64"]
 [[cloudflared.parts]]
-url = "https://github.com/cloudflare/cloudflared/releases/download/2026.10.0/cloudflared-windows-amd64.exe"
-sha256 = "86aee4017b26625cee8484c113558f48effa4cd47f7aa05fcf425604e5d2b23c"
+url = "https://github.com/cloudflare/cloudflared/releases/download/2026.10.2/cloudflared-windows-amd64.exe"
+sha256 = "12c7c887f8aaab779aef1dfa9b60673530a5adb88ecc55dd6df8f56e0b70f199"
 binary = "cloudflared.exe"
 platforms = ["windows-x86_64"]
 
@@ -215,32 +215,32 @@ platforms = ["windows-x86_64"]
 name = "objdiff-cli"
 kind = "tool"
 license = "MIT OR Apache-2.0"
-source = "encounter/objdiff v3.8.2"
+source = "encounter/objdiff v3.8.3"
 description = "The diff tool almost every modern decomp uses: per-function match percentages and instruction diffs for MIPS, PowerPC, ARM, ARM64, SuperH and x86."
 binary_name = "objdiff-cli"
 [[objdiff-cli.parts]]
-url = "https://github.com/encounter/objdiff/releases/download/v3.8.2/objdiff-cli-linux-x86_64"
-sha256 = "e5445089a6f707e30cb5e02992451b604619cedfd2660ee2373a86bfefd9e718"
+url = "https://github.com/encounter/objdiff/releases/download/v3.8.3/objdiff-cli-linux-x86_64"
+sha256 = "e823ae932a56c68dcd86b68d12f2268c953e0c027402162c8a6dfa6a00d65008"
 binary = "objdiff-cli"
 platforms = ["linux-x86_64"]
 [[objdiff-cli.parts]]
-url = "https://github.com/encounter/objdiff/releases/download/v3.8.2/objdiff-cli-linux-aarch64"
-sha256 = "087516e73e1b3223b39974f00bc2810fea5c3dc2c93a8e1f06442ec68acaacb4"
+url = "https://github.com/encounter/objdiff/releases/download/v3.8.3/objdiff-cli-linux-aarch64"
+sha256 = "0e630457e2f33a43da3723e195ecd0b39b683a6a83122955fdc68c5b17183cbc"
 binary = "objdiff-cli"
 platforms = ["linux-aarch64"]
 [[objdiff-cli.parts]]
-url = "https://github.com/encounter/objdiff/releases/download/v3.8.2/objdiff-cli-macos-arm64"
-sha256 = "767c67e13b7b5e6ca545e7d2235e47c7bceac07d47a52776f74a52914cb4085a"
+url = "https://github.com/encounter/objdiff/releases/download/v3.8.3/objdiff-cli-macos-arm64"
+sha256 = "27dbd79196394c246dde77ef0a6ac855ff6c568069171dd7db0093f39c03ee8d"
 binary = "objdiff-cli"
 platforms = ["macos-arm64"]
 [[objdiff-cli.parts]]
-url = "https://github.com/encounter/objdiff/releases/download/v3.8.2/objdiff-cli-macos-x86_64"
-sha256 = "2cfe0f46fc84cef7d96813f100a0f01fbf99ac7e423b7fda1d314aada4d5ff72"
+url = "https://github.com/encounter/objdiff/releases/download/v3.8.3/objdiff-cli-macos-x86_64"
+sha256 = "4a0f5079600cb9ddf2369414e712f96838bc0ae05cd1a98c92f6131078ec4b0e"
 binary = "objdiff-cli"
 platforms = ["macos-x86_64"]
 [[objdiff-cli.parts]]
-url = "https://github.com/encounter/objdiff/releases/download/v3.8.2/objdiff-cli-windows-x86_64.exe"
-sha256 = "36d229ac6ce74a26b47f42cf86ea8e808d8cd834a54aa62d7ed3f47b765d971b"
+url = "https://github.com/encounter/objdiff/releases/download/v3.8.3/objdiff-cli-windows-x86_64.exe"
+sha256 = "dd12dfb5e9e94a7f6c949a37e1815963cf2cffe4c87b4999b7ebc8c15b398a1f"
 binary = "objdiff-cli.exe"
 platforms = ["windows-x86_64"]
 
@@ -387,9 +387,9 @@ subdir = "ghidra_12.1.4_PUBLIC"
 name = "REA"
 kind = "tool"
 license = "MIT"
-source = "morluto/rea 6.4.0"
+source = "morluto/rea 6.7.0"
 description = "Reverse Engineer Anything: the analysis server behind the RE console and the agents' inspect_binary. Needs Node.js; native code also needs Ghidra, Hopper or IDA."
-npm = "rea-agents@6.4.0"
+npm = "rea-agents@6.7.0"
 
 [binutils-mips]
 name = "GNU binutils for MIPS (decompals)"
