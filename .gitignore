@@ -9,16 +9,11 @@ wheels/
 # Virtual environments
 .venv
 
-# DecompNet
+# decomp.anything
 decompnet.db*
 projects/*/target/*.o
 export/
 .pytest_cache/
-
-# Website tooling and release artifacts (wheels are published to decomp.wtf/dl/, not kept in git)
-site/node_modules/
-.wrangler/
-site/public/dl/*.whl
 
 # Downloaded by projects/zlib-n64/prepare.py
 projects/zlib-n64/original/

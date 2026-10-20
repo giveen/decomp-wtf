@@ -108,21 +108,33 @@ them elsewhere.
 release:
 
 ```bash
-bash site/public/install.sh
+bash install/install.sh
 ```
 
 On Windows, in PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File site\public\install.ps1
+powershell -ExecutionPolicy Bypass -File install\install.ps1
 ```
 
 The Windows installer turns on WSL 2 if needed, creates the `decomp-wtf` distribution, installs this checkout inside
 it, and adds a `decomp` command plus app-menu and desktop shortcuts. Checkout installs record this repository as their
 update source, so updates follow decomp.anything rather than upstream.
 
-> The published `https://decomp.wtf/install.sh` and `install.ps1` one-liners install **upstream decomp.wtf**, which is
-> discontinued. Use the checkout commands above for decomp.anything.
+**From GitHub, without a website:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/giveen/decomp.anything/main/install/install.sh | bash
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/giveen/decomp.anything/main/install/install.ps1 | iex
+```
+
+Those follow `main` by default. Add `DECOMP_SOURCE` or `DECOMP_BRANCH` to install a branch, or run the checkout
+installer to install a local tree.
 
 Open **Compilers & tools** to install what a target needs. The period compilers are pinned and checksum-verified;
 proprietary ones (IDO, CodeWarrior) are only installed after you accept their license. REA and Ghidra are optional.
@@ -442,8 +454,8 @@ uv run decomp              # opens the app; projects live in ~/Decomp (or $DECOM
 uv run pytest
 ```
 
-Python dependencies are locked in `uv.lock`. The site’s only managed dependency is pinned in
-`site/package-lock.json` (`npm ci` in `site/`).
+Python dependencies are locked in `uv.lock`. There is no website in this repository; the Linux and Windows
+installers live in `install/`.
 
 <details>
 <summary><b>Repository layout</b></summary>
@@ -459,11 +471,10 @@ Python dependencies are locked in `uv.lock`. The site’s only managed dependenc
 | `src/decompnet/toolchains.py` | The pinned compilers and tools: verified downloads and installs, including npm-installed REA. |
 | `src/decompnet/hostenv.py`, `app/updates.py` | Where the app runs (Linux, its WSL 2 distribution on Windows, Docker) and what crosses to the computer around it; updates. |
 | `src/decompnet/app/twins.py`, `app/permute.py` | Free matches: identical code from a matched twin, and the background permuter for near misses. |
-| `site/public/install.sh`, `install.ps1`, `linux-base.sh`, `Dockerfile` | The installers: the app's own Linux (WSL on Windows, Docker on a server) is made by `linux-base.sh` on Debian. |
+| `install/install.sh`, `install/install.ps1`, `install/linux-base.sh`, `install/Dockerfile` | The installers: the app's own Linux (WSL on Windows, Docker on a server) is made by `linux-base.sh` on Debian. |
 | `projects/demo-rom/` | Builds Demo Quest 64. `tests/test_rom.py` proves the matcher on it. |
 | `projects/demo-psx/` | The same game as a PlayStation executable, for `tests/test_psx.py`. |
 | `projects/demo-fork/` | A small decomp project in the community's shape (objdiff.json, ninja), for `tests/test_forks.py`. |
-| `site/` | The website assets, simulation data (`site/tools/build_sim.py`) and legal pages. |
 
 Rebuild the demo ROM with `uv run python projects/demo-rom/build.py` (needs `gcc-2.7.2-kmc` and `ld.lld`).
 

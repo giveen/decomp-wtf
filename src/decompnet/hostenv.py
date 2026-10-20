@@ -2,7 +2,7 @@
 
 decomp.wtf is a Linux program everywhere: on Linux it runs on the computer itself ("native"); on Windows inside
 its own WSL 2 distribution ("wsl", made by install.ps1); on servers, if wanted, in a Docker container ("docker",
-site/public/Dockerfile). Everything inside is the same Linux; only a few things cross to the computer the
+install/Dockerfile). Everything inside is the same Linux; only a few things cross to the computer the
 user sits at: opening the browser or a folder, and file paths the user types (C:\\Users\\..., ~/Downloads/...).
 """
 

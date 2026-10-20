@@ -1,19 +1,20 @@
-# decomp.wtf installer for Windows (PowerShell).
+# decomp.anything installer for Windows (PowerShell).
 #
-#   irm https://decomp.wtf/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/giveen/decomp.anything/main/install/install.ps1 | iex
+#   (or from a checkout: powershell -ExecutionPolicy Bypass -File install\install.ps1)
 #
-# decomp.wtf is a Linux program (the old compilers it runs are), so on Windows it gets its own small Linux: a WSL 2
+# decomp.anything is a Linux program (the old compilers it runs are), so on Windows it gets its own small Linux: a WSL 2
 # distribution called decomp-wtf, the same Linux as its Docker image for servers. What this does, and nothing else:
 #   1. makes sure WSL 2 is there (the first time Windows asks for permission, and may want a restart)
 #   2. makes the decomp-wtf distribution from Debian's official WSL image (checksum-verified) and prepares it
-#   3. installs decomp.wtf in it (open source, MIT) with uv, with the free compilers and tools
-#   4. puts a `decomp` command on Windows, adds decomp.wtf to the Start menu and your desktop, and opens it
+#   3. installs decomp.anything in it (open source, MIT) with uv, with the free compilers and tools
+#   4. puts a `decomp` command on Windows, adds decomp.anything to the Start menu and your desktop, and opens it
 #
-# Your projects live in it: \\wsl.localhost\decomp-wtf\home\decomp\Decomp. Nothing is sent to decomp.wtf.
+# Your projects live in it: \\wsl.localhost\decomp-wtf\home\decomp\Decomp. Nothing is sent to decomp.anything.
 # Uninstall: decomp uninstall
 #
-# Testing a branch:  $env:DECOMP_BRANCH = "<name>"; irm https://raw.githubusercontent.com/giveen/decomp.anything/<name>/site/public/install.ps1 | iex
-# From a checkout:   powershell -ExecutionPolicy Bypass -File site\public\install.ps1   (installs that checkout)
+# Testing a branch:  $env:DECOMP_BRANCH = "<name>"; irm https://raw.githubusercontent.com/giveen/decomp.anything/<name>/install/install.ps1 | iex
+# From a checkout:   powershell -ExecutionPolicy Bypass -File install\install.ps1   (installs that checkout)
 
 # Everything runs in its own block: `irm | iex` runs a script in your PowerShell session, and its settings shouldn't
 # stay behind there.
@@ -27,8 +28,8 @@ $Distro = "decomp-wtf"
 $Wsl = Join-Path $env:SystemRoot "System32\wsl.exe"
 # Say who's downloading. salsa.debian.org (Debian's WSL image) answers browser-like agents, as Windows PowerShell's
 # default one is, with an anti-bot challenge page instead of the file.
-$UA = "decomp.wtf-installer/$Version (PowerShell)"
-$Base = Join-Path $env:LOCALAPPDATA "decomp.wtf"
+$UA = "decomp.anything-installer/$Version (PowerShell)"
+$Base = Join-Path $env:LOCALAPPDATA "decomp.anything"
 $Bin = Join-Path $Base "bin"
 $oldUtf8 = $env:WSL_UTF8
 $env:WSL_UTF8 = "1"  # wsl.exe answers in UTF-16 otherwise
@@ -52,7 +53,7 @@ function Save-Lf([string]$Text, [string]$Path) {
 function To-Wsl([string]$Path) {
     $full = (Resolve-Path $Path).Path
     if ($full -match '^([A-Za-z]):\\?(.*)$') { return "/mnt/" + $Matches[1].ToLower() + "/" + ($Matches[2] -replace '\\', '/') }
-    throw "decomp.wtf's Linux can't reach $full (use a folder on a drive, like C:\...)"
+    throw "decomp.anything's Linux can't reach $full (use a folder on a drive, like C:\...)"
 }
 
 function Distros {
@@ -61,24 +62,24 @@ function Distros {
 }
 
 try {
-Write-Host "decomp.wtf setup" -ForegroundColor White
+Write-Host "decomp.anything setup" -ForegroundColor White
 
 if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64" -and $env:PROCESSOR_ARCHITEW6432 -ne "AMD64") {
-    throw "decomp.wtf needs a 64-bit Intel or AMD Windows for now (the old compilers are x86 programs)"
+    throw "decomp.anything needs a 64-bit Intel or AMD Windows for now (the old compilers are x86 programs)"
 }
 
-# ---------------------------------------------------------------------------- where decomp.wtf comes from
-# Run from a checkout (site\public\install.ps1 in the repository): that checkout. Else $env:DECOMP_SOURCE,
-# $env:DECOMP_BRANCH (a branch on GitHub), or the release on decomp.wtf.
+# ---------------------------------------------------------------------------- where decomp.anything comes from
+# Run from a checkout (install\install.ps1 in the repository): that checkout. Else $env:DECOMP_SOURCE,
+# $env:DECOMP_BRANCH (a branch on GitHub), or a branch on GitHub by default.
 $checkout = $null
 if ($PSScriptRoot) {
-    $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+    $root = Split-Path $PSScriptRoot -Parent
     $py = Join-Path $root "pyproject.toml"
     if ((Test-Path $py) -and (Select-String -Path $py -Pattern '^name = "decompnet"' -Quiet)) { $checkout = $root }
 }
-$source = if ($env:DECOMP_SOURCE) { $env:DECOMP_SOURCE } elseif ($env:DECOMP_BRANCH) { "branch:$($env:DECOMP_BRANCH)" } elseif ($checkout) { $checkout } else { "release" }
+$source = if ($env:DECOMP_SOURCE) { $env:DECOMP_SOURCE } elseif ($env:DECOMP_BRANCH) { "branch:$($env:DECOMP_BRANCH)" } elseif ($checkout) { $checkout } else { "branch:main" }
 $linuxSource = if ($source -eq "release" -or $source.StartsWith("branch:")) { $source } else { To-Wsl $source }
-$web = if ($source.StartsWith("branch:")) { "https://raw.githubusercontent.com/$Repo/$($source.Substring(7))/site/public" } else { "https://decomp.wtf" }
+$web = if ($source.StartsWith("branch:")) { "https://raw.githubusercontent.com/$Repo/$($source.Substring(7))/install" } else { "https://raw.githubusercontent.com/$Repo/main/install" }
 
 # the Linux side's scripts, next to this one in a checkout or from the same place as this one
 $tmp = Join-Path $env:TEMP ("decomp-wtf-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
@@ -89,13 +90,7 @@ foreach ($f in @("linux-base.sh", "install.sh", "decomp.ico")) {
     if ($local -and (Test-Path $local)) { Copy-Item $local $dest }
     else {
         try { Invoke-WebRequest -UseBasicParsing -UserAgent $UA -Uri "$web/$f" -OutFile $dest }
-        catch {
-            if ($web -ne "https://decomp.wtf") { throw }
-            # decomp.wtf can't be reached from here (a filter, an outage): the same files from GitHub
-            $web = "https://raw.githubusercontent.com/$Repo/main/site/public"
-            Step "decomp.wtf can't be reached from here: using GitHub instead"
-            Invoke-WebRequest -UseBasicParsing -UserAgent $UA -Uri "$web/$f" -OutFile $dest
-        }
+        catch { throw "couldn't download $f from $web" }
     }
     if ($f.EndsWith(".sh")) { Save-Lf ([IO.File]::ReadAllText($dest)) $dest }
 }
@@ -117,9 +112,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 Step ("WSL " + (((Run { & $Wsl --version }) | Select-Object -First 1) -replace "`0", "" -replace '^\D*', ''))
 
-# ---------------------------------------------------------------------------- decomp.wtf's Linux
+# ---------------------------------------------------------------------------- decomp.anything's Linux
 if ((Distros) -notcontains $Distro) {
-    Step "making decomp.wtf's Linux (Debian, from Microsoft's list of WSL distributions)"
+    Step "making decomp.anything's Linux (Debian, from Microsoft's list of WSL distributions)"
     New-Item -ItemType Directory -Force -Path $Base | Out-Null
     $made = $false
     try {
@@ -145,22 +140,22 @@ if ((Distros) -notcontains $Distro) {
         $made = (Distros) -contains $Distro
     }
     if (-not $made) {
-        throw "WSL couldn't make decomp.wtf's Linux. WSL 2 needs virtualization: check that it's on in your PC's BIOS/UEFI and that Windows' 'Virtual Machine Platform' feature is on, then run this again."
+        throw "WSL couldn't make decomp.anything's Linux. WSL 2 needs virtualization: check that it's on in your PC's BIOS/UEFI and that Windows' 'Virtual Machine Platform' feature is on, then run this again."
     }
 }
-Step "preparing decomp.wtf's Linux (system packages, a few minutes the first time)"
-Run { & $Wsl -d $Distro -u root --cd $tmp --exec sh ./linux-base.sh wsl } "preparing decomp.wtf's Linux failed"
+Step "preparing decomp.anything's Linux (system packages, a few minutes the first time)"
+Run { & $Wsl -d $Distro -u root --cd $tmp --exec sh ./linux-base.sh wsl } "preparing decomp.anything's Linux failed"
 Run { & $Wsl --terminate $Distro } -Quiet  # its settings (user, PATH) apply from the next start
 
-# a decomp.wtf that's still running in it: stopped, so the new version takes over
+# a decomp.anything that's still running in it: stopped, so the new version takes over
 Run { & $Wsl -d $Distro -u decomp --cd "~" --exec /usr/local/bin/decomp stop } -Quiet
 
-$what = if ($source -eq "release") { "decomp.wtf $Version" } elseif ($source.StartsWith("branch:")) { "the $($source.Substring(7)) branch" } else { $source }
+$what = if ($source -eq "release") { "decomp.anything $Version" } elseif ($source.StartsWith("branch:")) { "the $($source.Substring(7)) branch" } else { $source }
 Step "installing $what in it"
-Run { & $Wsl -d $Distro -u decomp --cd $tmp --exec sh ./run-install.sh } "installing decomp.wtf failed"
+Run { & $Wsl -d $Distro -u decomp --cd $tmp --exec sh ./run-install.sh } "installing decomp.anything failed"
 
-# ---------------------------------------------------------------------------- the old Windows-native decomp.wtf
-# decomp.wtf before 0.10 ran on Windows itself (uv tool decompnet): stop it and take its place. Its projects stay
+# ---------------------------------------------------------------------------- the old Windows-native decomp.anything
+# decomp.anything before 0.10 ran on Windows itself (uv tool decompnet): stop it and take its place. Its projects stay
 # where they are (%USERPROFILE%\Decomp).
 $uvBin = Join-Path $env:USERPROFILE ".local\bin"
 $uv = if (Test-Path (Join-Path $uvBin "uv.exe")) { Join-Path $uvBin "uv.exe" } else { (Get-Command uv -ErrorAction SilentlyContinue).Source }
@@ -180,7 +175,7 @@ if ($uv -and (Test-Path (Join-Path $uvBin "decomp.exe"))) {
     Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith("$toolEnv\", [StringComparison]::OrdinalIgnoreCase) } |
         Stop-Process -Force -ErrorAction SilentlyContinue
     Run { & $uv tool uninstall decompnet } -Quiet
-    Step "removed the previous decomp.wtf that ran on Windows itself (its projects stay in $env:USERPROFILE\Decomp)"
+    Step "removed the previous decomp.anything that ran on Windows itself (its projects stay in $env:USERPROFILE\Decomp)"
 }
 
 # ---------------------------------------------------------------------------- `decomp` on Windows
@@ -188,9 +183,9 @@ New-Item -ItemType Directory -Force -Path $Bin | Out-Null
 Copy-Item (Join-Path $tmp "decomp.ico") (Join-Path $Bin "decomp.ico") -Force
 $cmd = @'
 @echo off
-rem decomp.wtf runs in WSL 2 (the decomp-wtf distribution); this is its decomp command on Windows.
-rem   decomp            decomp.wtf in this window (opens your browser)   decomp shell      a terminal inside
-rem   decomp connect    give your AI agents decomp.wtf's tools           decomp update     the newest decomp.wtf
+rem decomp.anything runs in WSL 2 (the decomp-wtf distribution); this is its decomp command on Windows.
+rem   decomp            decomp.anything in this window (opens your browser)   decomp shell      a terminal inside
+rem   decomp connect    give your AI agents decomp.anything's tools           decomp update     the newest decomp.anything
 rem   decomp uninstall  remove it
 if /i "%~1"=="shell" goto shell
 if /i "%~1"=="connect" goto connect
@@ -209,10 +204,10 @@ exit /b %ERRORLEVEL%
 '@
 [IO.File]::WriteAllText((Join-Path $Bin "decomp.cmd"), $cmd.Replace("`r`n", "`n").Replace("`n", "`r`n"), (New-Object Text.ASCIIEncoding))
 
-# Agents on Windows reach decomp.wtf through wsl.exe; WSL doesn't pass Windows' environment through, so the name
+# Agents on Windows reach decomp.anything through wsl.exe; WSL doesn't pass Windows' environment through, so the name
 # they show up with in the app goes in as --name.
 $connect = @'
-# decomp connect: give the AI agents on this computer decomp.wtf's tools (decomp.wtf runs in WSL 2: decomp-wtf)
+# decomp connect: give the AI agents on this computer decomp.anything's tools (decomp.anything runs in WSL 2: decomp-wtf)
 $ErrorActionPreference = "Continue"
 $wsl = Join-Path $env:SystemRoot "System32\wsl.exe"
 function Bridge($name) { return @($wsl, "-d", "decomp-wtf", "--cd", "~", "--exec", "/usr/local/bin/decomp", "mcp", "--name", $name) }
@@ -255,21 +250,21 @@ if ($n -eq 0) { "No agent CLI found here (Claude Code, Codex, Antigravity CLI, o
 Save-Lf $connect (Join-Path $Bin "decomp-connect.ps1")
 
 $uninstall = @'
-# decomp uninstall: remove decomp.wtf (its WSL distribution decomp-wtf, the decomp command, the shortcuts)
+# decomp uninstall: remove decomp.anything (its WSL distribution decomp-wtf, the decomp command, the shortcuts)
 $ErrorActionPreference = "Continue"
-$answer = Read-Host "Remove decomp.wtf and its Linux, with every project in it (\\wsl.localhost\decomp-wtf\home\decomp\Decomp)? Type yes"
+$answer = Read-Host "Remove decomp.anything and its Linux, with every project in it (\\wsl.localhost\decomp-wtf\home\decomp\Decomp)? Type yes"
 if ($answer -ne "yes") { "Nothing removed."; exit 1 }
 & (Join-Path $env:SystemRoot "System32\wsl.exe") --unregister decomp-wtf
 foreach ($d in @([Environment]::GetFolderPath("Programs"), [Environment]::GetFolderPath("Desktop"))) {
-    if ($d) { Remove-Item (Join-Path $d "decomp.wtf.lnk") -ErrorAction SilentlyContinue }
+    if ($d) { Remove-Item (Join-Path $d "decomp.anything.lnk") -ErrorAction SilentlyContinue }
 }
-$bin = Join-Path $env:LOCALAPPDATA "decomp.wtf\bin"
+$bin = Join-Path $env:LOCALAPPDATA "decomp.anything\bin"
 $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
 $raw = [string]$key.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
 $key.SetValue("Path", (($raw -split ";") | Where-Object { $_ -and $_ -ne $bin }) -join ";", [Microsoft.Win32.RegistryValueKind]::ExpandString)
 $key.Close()
 Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "timeout /t 2 >nul & rmdir /s /q `"$(Split-Path $bin -Parent)`"" -WindowStyle Hidden
-"decomp.wtf removed."
+"decomp.anything removed."
 '@
 Save-Lf $uninstall (Join-Path $Bin "decomp-uninstall.ps1")
 
@@ -289,32 +284,32 @@ Step "decomp is a command on Windows now ($Bin)"
 $shell = New-Object -ComObject WScript.Shell
 foreach ($d in @([Environment]::GetFolderPath("Programs"), [Environment]::GetFolderPath("Desktop"))) {
     if ($d -and (Test-Path $d)) {
-        $lnk = $shell.CreateShortcut((Join-Path $d "decomp.wtf.lnk"))
+        $lnk = $shell.CreateShortcut((Join-Path $d "decomp.anything.lnk"))
         $lnk.TargetPath = $Wsl
         $lnk.Arguments = "-d $Distro --cd ~ --exec /usr/local/bin/decomp"
         $lnk.WindowStyle = 7
         $lnk.IconLocation = (Join-Path $Bin "decomp.ico")
-        $lnk.Description = "decomp.wtf"
+        $lnk.Description = "decomp.anything"
         $lnk.Save()
     }
 }
-Step "added decomp.wtf to the Start menu and your desktop"
+Step "added decomp.anything to the Start menu and your desktop"
 
-# Your AI agents with decomp.wtf's tools: only when someone is there to say yes (it changes their configs)
+# Your AI agents with decomp.anything's tools: only when someone is there to say yes (it changes their configs)
 $agents = @("claude", "codex", "agy", "opencode") | Where-Object { Get-Command $_ -ErrorAction SilentlyContinue }
 if ($agents -and [Environment]::UserInteractive) {
-    try { $yes = Read-Host "Give your AI agents ($($agents -join ', ')) decomp.wtf's tools, so you can just ask them to decompile a game? [Y/n]" } catch { $yes = "n" }
+    try { $yes = Read-Host "Give your AI agents ($($agents -join ', ')) decomp.anything's tools, so you can just ask them to decompile a game? [Y/n]" } catch { $yes = "n" }
     if ($yes -eq "" -or $yes -match '^[Yy]') {
         Run { & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Bin "decomp-connect.ps1") } | ForEach-Object { "  $_" }
     }
 }
 
-Step "starting decomp.wtf"
+Step "starting decomp.anything"
 Start-Process -FilePath $Wsl -ArgumentList "-d", $Distro, "--cd", "~", "--exec", "/usr/local/bin/decomp" -WindowStyle Minimized
 
 Write-Host ""
-Write-Host "Done. decomp.wtf is opening in your browser." -ForegroundColor White
-Write-Host "  Open it again any time: decomp.wtf in the Start menu or on your desktop (or type decomp)."
+Write-Host "Done. decomp.anything is opening in your browser." -ForegroundColor White
+Write-Host "  Open it again any time: decomp.anything in the Start menu or on your desktop (or type decomp)."
 Write-Host "  It runs in a small minimized window; closing that window stops it."
 Write-Host "  From your AI agent: run 'decomp connect' once, then ask it to decompile your game."
 Write-Host "  Your projects: \\wsl.localhost\$Distro\home\decomp\Decomp"

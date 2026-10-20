@@ -1,26 +1,28 @@
 #!/usr/bin/env bash
-# decomp.wtf installer for Linux (Windows: install.ps1, in PowerShell). macOS isn't supported.
+# decomp.anything installer for Linux (Windows: install.ps1, in PowerShell). macOS isn't supported.
 #
-#   curl -fsSL https://decomp.wtf/install.sh | bash
-#   (can't reach decomp.wtf? the same from GitHub:
-#    curl -fsSL https://raw.githubusercontent.com/giveen/decomp.anything/main/site/public/install.sh | bash)
+# From a checkout:
+#   bash install/install.sh
+# Or from GitHub:
+#   curl -fsSL https://raw.githubusercontent.com/giveen/decomp.anything/main/install/install.sh | bash
 #
-# decomp.wtf installs on this computer, with uv:
+# decomp.anything installs on this computer, with uv:
 #   1. installs uv, Astral's Python tool manager, if you don't have it (asks first)
-#   2. installs decomp.wtf (open source, MIT) with uv, in its own environment
+#   2. installs decomp.anything (open source, MIT) with uv, in its own environment
 #   3. downloads the free compilers and the m2c draft decompiler (pinned and checksum-verified)
-#   4. adds decomp.wtf to your apps menu and opens it
+#   4. adds decomp.anything to your apps menu and opens it
 #
-# Your projects go to ~/Decomp. Nothing is sent to decomp.wtf.
+# Your projects go to ~/Decomp. Nothing is sent to decomp.anything.
 # Uninstall: uv tool uninstall decompnet
 #
 # Options:
 #   --no-start          install only
-#   --source <what>     where decomp.wtf comes from: "release" (default), "branch:<name>" (a branch on GitHub, for
-#                       testing; its updates follow that branch) or a folder with decomp.wtf's source. Run from a
-#                       git checkout, the checkout is used (and updates follow its branch).
+#   --source <what>     where decomp.anything comes from: "branch:<name>" (a branch on GitHub; the default is
+#                       branch:main when this script isn't run from a checkout), "release" (needs DECOMP_WHEEL) or a
+#                       folder with decomp.anything's source. Run from a git checkout, the checkout is used (and
+#                       updates follow its branch).
 # The same through the environment: DECOMP_SOURCE=..., DECOMP_BRANCH=<name>.
-# On a server, decomp.wtf also runs in Docker: docker-compose.yml in the repository.
+# On a server, decomp.anything also runs in Docker: docker-compose.yml in the repository.
 set -euo pipefail
 
 VERSION="0.10.6"
@@ -50,31 +52,31 @@ ask() {
   [[ -z "$reply" || "$reply" =~ ^[Yy] ]]
 }
 
-# Run from a checkout (site/public/install.sh in the repository): install that checkout
+# Run from a checkout (install/install.sh in the repository): install that checkout
 SCRIPT_DIR=""
 CHECKOUT=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  if [ -f "$SCRIPT_DIR/../../pyproject.toml" ] && grep -q '^name = "decompnet"' "$SCRIPT_DIR/../../pyproject.toml"; then
-    CHECKOUT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+  if [ -f "$SCRIPT_DIR/../pyproject.toml" ] && grep -q '^name = "decompnet"' "$SCRIPT_DIR/../../pyproject.toml"; then
+    CHECKOUT="$(cd "$SCRIPT_DIR/.." && pwd)"
   fi
 fi
-[ -n "$SOURCE" ] || SOURCE="${CHECKOUT:-release}"
+[ -n "$SOURCE" ] || SOURCE="${CHECKOUT:-branch:main}"
 
-# decomp.wtf's own Linux (WSL on Windows, Docker): made by linux-base.sh; then this installs for its user only
+# decomp.anything's own Linux (WSL on Windows, Docker): made by linux-base.sh; then this installs for its user only
 IN_BOX=""
 [ -f /etc/decomp-wtf-runtime ] && IN_BOX="$(cat /etc/decomp-wtf-runtime)"
 
-bold "decomp.wtf setup"
+bold "decomp.anything setup"
 OS="$(uname -s)"
 case "$OS" in
   Linux) ;;
-  Darwin) fail "macOS isn't supported: decomp.wtf runs on Linux and on Windows (in WSL 2), on x86-64 PCs (the games' compilers are x86 programs). On an Intel Mac, an x86-64 Linux virtual machine works too." ;;
-  *) fail "this installer is for Linux; on Windows run in PowerShell: irm https://decomp.wtf/install.ps1 | iex" ;;
+  Darwin) fail "macOS isn't supported: decomp.anything runs on Linux and on Windows (in WSL 2), on x86-64 PCs (the games' compilers are x86 programs). On an Intel Mac, an x86-64 Linux virtual machine works too." ;;
+  *) fail "this installer is for Linux; on Windows run in PowerShell: irm https://raw.githubusercontent.com/giveen/decomp.anything/main/install/install.ps1 | iex" ;;
 esac
 case "$(uname -m)" in
   x86_64|amd64) ;;
-  *) fail "decomp.wtf needs a 64-bit Intel or AMD PC for now: the games' compilers are x86 programs, and this computer's processor is $(uname -m)" ;;
+  *) fail "decomp.anything needs a 64-bit Intel or AMD PC for now: the games' compilers are x86 programs, and this computer's processor is $(uname -m)" ;;
 esac
 command -v curl >/dev/null || fail "curl is required"
 
@@ -83,13 +85,14 @@ command -v curl >/dev/null || fail "curl is required"
 CHANNEL=release BRANCH="" COMMIT="" SPEC="" SRC_DIR=""
 case "$SOURCE" in
   release)
-    SPEC="decompnet @ ${DECOMP_WHEEL:-https://decomp.wtf/dl/decompnet-${VERSION}-py3-none-any.whl}" ;;
+    [ -n "${DECOMP_WHEEL:-}" ] || fail "release installs need DECOMP_WHEEL (a wheel URL or path); use a checkout or branch:main instead"
+    SPEC="decompnet @ ${DECOMP_WHEEL}" ;;
   branch:*)
     CHANNEL=branch BRANCH="${SOURCE#branch:}"
     [ -n "$BRANCH" ] || fail "--source branch:<name> needs a branch name" ;;
   *)
     SRC_DIR="$(cd "$SOURCE" 2>/dev/null && pwd)" || fail "no folder $SOURCE (--source is release, branch:<name> or a folder)"
-    [ -f "$SRC_DIR/pyproject.toml" ] && [ -d "$SRC_DIR/src/decompnet" ] || fail "$SRC_DIR isn't decomp.wtf's source"
+    [ -f "$SRC_DIR/pyproject.toml" ] && [ -d "$SRC_DIR/src/decompnet" ] || fail "$SRC_DIR isn't decomp.anything's source"
     if command -v git >/dev/null; then  # a checkout: updates follow its branch on GitHub
       BRANCH="$(git -c safe.directory='*' -C "$SRC_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
       COMMIT="$(git -c safe.directory='*' -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || true)"
@@ -113,7 +116,7 @@ resolve_branch() {  # the branch's newest commit, installed from GitHub's archiv
 for d in "$HOME/.local/bin" "$HOME/.cargo/bin"; do [ -x "$d/uv" ] && export PATH="$d:$PATH"; done
 if ! command -v uv >/dev/null; then
   if [ -z "$IN_BOX" ]; then
-    ask "decomp.wtf is installed with uv (Astral's Python tool manager). Install uv now?" || fail "uv is needed: https://docs.astral.sh/uv/"
+    ask "decomp.anything is installed with uv (Astral's Python tool manager). Install uv now?" || fail "uv is needed: https://docs.astral.sh/uv/"
   fi
   if [ -n "$IN_BOX" ]; then
     curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh >/dev/null
@@ -131,18 +134,13 @@ if [ -n "$SRC_DIR" ]; then
   cp -R "$SRC_DIR/pyproject.toml" "$SRC_DIR/README.md" "$SRC_DIR/LICENSE" "$SRC_DIR/src" "$TMP_SRC/"
   find "$TMP_SRC" -name __pycache__ -type d -prune -exec rm -rf {} +
   SPEC="$TMP_SRC"
-  step "installing decomp.wtf from $SRC_DIR${BRANCH:+ ($BRANCH @ ${COMMIT:0:7})}"
+  step "installing decomp.anything from $SRC_DIR${BRANCH:+ ($BRANCH @ ${COMMIT:0:7})}"
 elif [ "$CHANNEL" = branch ]; then
   resolve_branch
-  step "installing decomp.wtf from the $BRANCH branch${COMMIT:+ @ ${COMMIT:0:7}}"
+  step "installing decomp.anything from the $BRANCH branch${COMMIT:+ @ ${COMMIT:0:7}}"
 else
-  WHEEL="${DECOMP_WHEEL:-https://decomp.wtf/dl/decompnet-${VERSION}-py3-none-any.whl}"
-  if [ -z "${DECOMP_WHEEL:-}" ] && ! curl -fsSLI --max-time 15 -o /dev/null "$WHEEL" 2>/dev/null; then
-    # decomp.wtf blocked or down (a network filter, an outage): the same release, from GitHub
-    step "decomp.wtf's download can't be reached from here: installing ${VERSION} from GitHub instead"
-    SPEC="decompnet @ https://github.com/$REPO/archive/refs/tags/v${VERSION}.tar.gz"
-  fi
-  step "installing decomp.wtf ${VERSION}"
+  WHEEL="${DECOMP_WHEEL:?release installs need DECOMP_WHEEL}"
+  step "installing decomp.anything from $WHEEL"
 fi
 uv tool install --force --quiet --python 3.12 "$SPEC"
 [ -n "${TMP_SRC:-}" ] && rm -rf "$TMP_SRC"
@@ -153,19 +151,19 @@ BIN="$(uv tool dir --bin)"
 step "downloading the compilers and tools"
 "$BIN/decomp" setup
 
-# an older decomp.wtf still running from before this upgrade: stop it, so the new version takes over
+# an older decomp.anything still running from before this upgrade: stop it, so the new version takes over
 "$BIN/decomp" stop >/dev/null 2>&1 || true
 
-if [ -n "$IN_BOX" ]; then  # decomp.wtf's own Linux: the installer on Windows (or the Docker image) does the rest
-  step "decomp.wtf is installed"
+if [ -n "$IN_BOX" ]; then  # decomp.anything's own Linux: the installer on Windows (or the Docker image) does the rest
+  step "decomp.anything is installed"
   exit 0
 fi
 
-"$BIN/decomp" shortcut >/dev/null 2>&1 && step "added decomp.wtf to your apps" || true
+"$BIN/decomp" shortcut >/dev/null 2>&1 && step "added decomp.anything to your apps" || true
 
-# Your AI agents with decomp.wtf's tools: only when someone is there to say yes (it changes their configs)
+# Your AI agents with decomp.anything's tools: only when someone is there to say yes (it changes their configs)
 if has_tty && "$BIN/decomp" connect --list 2>/dev/null | grep -q "not connected"; then
-  if ask "Give your AI agents (Claude Code, Codex, Antigravity CLI, opencode) decomp.wtf's tools, so you can just ask them to decompile a game?"; then
+  if ask "Give your AI agents (Claude Code, Codex, Antigravity CLI, opencode) decomp.anything's tools, so you can just ask them to decompile a game?"; then
     "$BIN/decomp" connect | sed 's/^/  /'
   fi
 fi
@@ -176,7 +174,7 @@ echo "  From your AI agent: run 'decomp connect' once, then ask it to decompile 
 if [ "$START" = 1 ]; then
   if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
     nohup "$BIN/decomp" >/dev/null 2>&1 &
-    echo "  Opening decomp.wtf in your browser…"
+    echo "  Opening decomp.anything in your browser…"
   else
     echo "  No desktop session found (SSH?). Run 'decomp' on the machine itself."
   fi

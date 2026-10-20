@@ -1,12 +1,12 @@
 #!/bin/sh
-# decomp.wtf's own Linux: prepares a fresh Debian system for it, as root. Used for both
+# decomp.anything's own Linux: prepares a fresh Debian system for it, as root. Used for both
 #   - Windows: the "decomp-wtf" WSL 2 distribution install.ps1 makes   (sh linux-base.sh wsl)
 #   - servers: the Docker image                                        (sh linux-base.sh docker, see Dockerfile)
-# so decomp.wtf runs on the same Linux everywhere. Running it again updates the system and changes nothing else.
+# so decomp.anything runs on the same Linux everywhere. Running it again updates the system and changes nothing else.
 #
-# What it does: installs the few system programs decomp.wtf and the agent CLIs use (git, Node.js for npm-installed
+# What it does: installs the few system programs decomp.anything and the agent CLIs use (git, Node.js for npm-installed
 # agents, the 32-bit C library for old compilers), makes the user "decomp" (uid 1000), and puts a `decomp` command
-# in /usr/local/bin that starts decomp.wtf from that user's install (install.sh puts it in ~/.local).
+# in /usr/local/bin that starts decomp.anything from that user's install (install.sh puts it in ~/.local).
 set -eu
 
 MODE="${1:-docker}"
@@ -42,13 +42,13 @@ grep -q 'decomp-wtf.sh' "$HOME_DIR/.bashrc" 2>/dev/null || echo '. /etc/profile.
 
 echo "$MODE" > /etc/decomp-wtf-runtime
 
-# `decomp` for everything that starts decomp.wtf from outside a login shell: wsl.exe --exec, docker exec
+# `decomp` for everything that starts decomp.anything from outside a login shell: wsl.exe --exec, docker exec
 cat > /usr/local/bin/decomp <<'EOF'
 #!/bin/sh
-# decomp.wtf, installed for this user by install.sh (uv tool install, in ~/.local)
+# decomp.anything, installed for this user by install.sh (uv tool install, in ~/.local)
 . /etc/profile.d/decomp-wtf.sh
 if [ ! -x "$HOME/.local/bin/decomp" ]; then
-  echo "decomp.wtf isn't installed for $(id -un) yet: run the installer again" >&2
+  echo "decomp.anything isn't installed for $(id -un) yet: run the installer again" >&2
   exit 1
 fi
 exec "$HOME/.local/bin/decomp" "$@"
@@ -58,7 +58,7 @@ chmod 755 /usr/local/bin/decomp
 if [ "$MODE" = wsl ]; then
   # decomp is the default user; Windows' PATH stays out (its npm shims would shadow the Linux agents, and every
   # command lookup would crawl through /mnt/c); Windows programs can still be started (opening the browser).
-  # systemd as Debian's WSL image has it (decomp.wtf then caps heavy tools' memory with systemd-run).
+  # systemd as Debian's WSL image has it (decomp.anything then caps heavy tools' memory with systemd-run).
   cat > /etc/wsl.conf <<'EOF'
 [user]
 default = decomp
@@ -73,10 +73,10 @@ EOF
 fi
 
 if [ "$MODE" = docker ]; then
-  # The container's first start installs decomp.wtf into the decomp user's home (a volume, so updates the app
+  # The container's first start installs decomp.anything into the decomp user's home (a volume, so updates the app
   # installs itself survive new containers); later starts just run it. DECOMP_INSTALL_ID changes when the
   # installer on the computer runs again: then this installs again (that's how a reinstall reaches the volume).
-  mkdir -p /usr/local/share/decomp-wtf
+  mkdir -p /usr/local/share/decomp-anything
   cat > /usr/local/bin/decomp-entrypoint <<'EOF'
 #!/bin/sh
 set -eu
@@ -88,8 +88,8 @@ export TMPDIR="$HOME/.tmp"
 rm -rf "$TMPDIR" && mkdir -p "$TMPDIR"
 marker="$HOME/.local/share/decompnet/container-install-id"
 if [ ! -x "$HOME/.local/bin/decomp" ] || [ "$(cat "$marker" 2>/dev/null)" != "${DECOMP_INSTALL_ID:-}" ]; then
-  echo "decomp.wtf: installing (the first start takes a few minutes)"
-  bash /usr/local/share/decomp-wtf/install.sh --no-start
+  echo "decomp.anything: installing (the first start takes a few minutes)"
+  bash /usr/local/share/decomp-anything/install.sh --no-start
   mkdir -p "$(dirname "$marker")"
   printf '%s' "${DECOMP_INSTALL_ID:-}" > "$marker"
 fi
@@ -98,4 +98,4 @@ EOF
   chmod 755 /usr/local/bin/decomp-entrypoint
 fi
 
-echo "> decomp.wtf's Linux is ready ($MODE)"
+echo "> decomp.anything's Linux is ready ($MODE)"

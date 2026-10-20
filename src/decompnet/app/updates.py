@@ -1,10 +1,9 @@
-"""Updates: decomp.wtf finds out when there's a newer version of itself and, once the user says yes, installs it
-and restarts in place (same port, same browser session; helper agents carry on afterwards).
+"""Updates: decomp.anything finds out when there's a newer version of itself and, once the user says yes, installs
+it and restarts in place (same port, same browser session; helper agents carry on afterwards).
 
-Where updates come from depends on how decomp.wtf was installed (install.json, written by the installer):
-- "release": the version on decomp.wtf (its install.sh says which one), installed from the wheel there
-- "branch":  the newest commit of a branch on GitHub (for testing a branch before it's released), installed from
-             GitHub's archive of that commit
+Where updates come from depends on how decomp.anything was installed (install.json, written by the installer):
+- "release": the version in this repository's install/install.sh, installed from that version's GitHub tag archive
+- "branch":  the newest commit of a branch on GitHub, installed from GitHub's archive of that commit
 Installing is `uv tool install --force` of the new version, then its `decomp setup` (new pinned tools), then the
 running app becomes the new version with exec (the process, its console window and its port stay the same).
 """
@@ -27,7 +26,6 @@ from pathlib import Path
 from .. import __version__, hostenv, toolchains
 
 REPO = "giveen/decomp.anything"
-SITE = "https://decomp.wtf"
 RECHECK = {"release": 3 * 3600, "branch": 15 * 60}  # GitHub allows 60 unauthenticated API calls an hour
 
 
@@ -63,7 +61,7 @@ def version_key(v: str) -> tuple[int, ...]:
 
 
 def _get(url: str, timeout: float = 15) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": f"decomp.wtf/{__version__} (update check)",
+    req = urllib.request.Request(url, headers={"User-Agent": f"decomp.anything/{__version__} (update check)",
                                                "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
@@ -78,20 +76,16 @@ def _first_line(message: str) -> str:
 
 
 def _check_release(cur: dict) -> dict:
-    try:
-        text, site = _get(f"{SITE}/install.sh").decode("utf-8", "replace"), True
-    except OSError:  # decomp.wtf can't be reached from here (a filter, an outage): the release on GitHub
-        text, site = _get(f"https://raw.githubusercontent.com/{cur['repo']}/main/site/public/install.sh").decode(
-            "utf-8", "replace"), False
+    repo = cur.get("repo") or REPO
+    text = _get(f"https://raw.githubusercontent.com/{repo}/main/install/install.sh").decode("utf-8", "replace")
     m = re.search(r'^VERSION="([^"]+)"', text, re.M)
     if not m:
-        raise ValueError("decomp.wtf didn't say which version is current")
+        raise ValueError("the installer didn't say which version is current")
     latest = m.group(1)
     newer = version_key(latest) > version_key(cur["version"])
-    spec = (f"decompnet @ {SITE}/dl/decompnet-{latest}-py3-none-any.whl" if site else
-            f"decompnet @ https://github.com/{cur['repo']}/archive/refs/tags/v{latest}.tar.gz")
+    spec = f"decompnet @ https://github.com/{repo}/archive/refs/tags/v{latest}.tar.gz"
     return {"available": newer, "latest": {"version": latest, "commit": "", "date": None},
-            "notes": [], "link": f"https://github.com/{cur['repo']}/commits/main", "spec": spec}
+            "notes": [], "link": f"https://github.com/{repo}/commits/main", "spec": spec}
 
 
 def _branch_version(repo: str, sha: str) -> str:
