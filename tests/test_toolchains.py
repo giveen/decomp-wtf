@@ -23,6 +23,7 @@ def test_registry_is_pinned_and_labelled():
         if not tc.proprietary:  # everything we install by default is verified against a pinned hash
             assert all(p["sha256"] for p in tc.parts) or tc.commit or tc.npm, tc.id
     assert reg["ido-7.1"].proprietary and not reg["gcc-2.7.2-kmc"].proprietary
+    assert reg["mingwxx-x86_64"].download.startswith("https://") and reg["clang-clxx-x86_64"].download.startswith("https://")
     assert reg["ee-gcc-2.96"].requires == ["runtime-i386"]
     assert reg["rea"].npm == "rea-agents@6.7.0" and reg["rea"].supported
 

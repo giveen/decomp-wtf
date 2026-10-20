@@ -58,6 +58,7 @@ class Toolchain:
     pip_extra: list[str] = field(default_factory=list)  # extra requirements for a git tool's environment
     requires_java: int = 0  # minimum Java version (Ghidra)
     system: bool = False  # a compiler already on the host (MinGW, MSVC under wine), not a downloaded package
+    download: str = ""  # where to get a system compiler's own download (Windows MinGW/LLVM), if there is one
 
     @property
     def proprietary(self) -> bool:

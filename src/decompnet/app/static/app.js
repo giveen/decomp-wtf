@@ -993,9 +993,12 @@ function renderCompilerNotice(ov) {
   n.hidden = false;
   if (ov.compiler.system) {
     n.className = "notice bad";
+    const dl = ov.compiler.download
+      ? ` <a href="${esc(ov.compiler.download)}" target="_blank" rel="noopener">Download ${esc(ov.compiler.toolchain.startsWith("clang-cl") ? "LLVM" : "MinGW-w64")}</a>.`
+      : "";
     n.innerHTML = `<span><b>${esc(ov.compiler.name)}</b> is a compiler on this computer, not something decomp.anything downloads: ` +
-      `<code>${esc(ov.compiler.command || "its command")}</code> isn't on PATH. Install it with your package manager ` +
-      `(on Windows: MinGW-w64 or LLVM), reopen the app, or pick another compiler in this project's Settings.</span>`;
+      `<code>${esc(ov.compiler.command || "its command")}</code> isn't on PATH. Install it with your package manager.${dl} ` +
+      `Reopen the app, or pick another compiler in this project's Settings.</span>`;
     return;
   }
   if (!ov.compiler.supported) {

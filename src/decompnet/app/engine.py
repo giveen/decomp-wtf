@@ -2767,6 +2767,7 @@ class RomNetwork(Network):
                          "installed": toolchains.installed(tc.id) is not None, "proprietary": tc.proprietary,
                          "supported": tc.supported, "system": tc.system, "wsl": tc.via_wsl,
                          "command": tc.cmd[0] if tc.cmd else "",
+                         "download": tc.download if toolchains.current_platform().startswith("windows") else "",
                          "why": None if tc.supported else toolchains.unsupported_cpu()},
             "source_language": source_language(tc.id), "source_ext": source_ext(tc.id),
             "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
