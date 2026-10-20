@@ -11,7 +11,7 @@ $had = $env:DECOMP_BRANCH
 $env:DECOMP_BRANCH = $branch
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    $script = Invoke-RestMethod -UseBasicParsing -UserAgent "decomp.wtf-installer (PowerShell)" "https://raw.githubusercontent.com/i12bp8/decomp.wtf/$branch/site/public/install.ps1"
+    $script = Invoke-RestMethod -UseBasicParsing -UserAgent "decomp.wtf-installer (PowerShell)" "https://raw.githubusercontent.com/giveen/decomp.anything/$branch/site/public/install.ps1"
     Invoke-Expression $script
 } finally {
     $env:DECOMP_BRANCH = $had

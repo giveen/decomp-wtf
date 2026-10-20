@@ -85,6 +85,7 @@ TOOLS = {
     "m2c": "machine-made first drafts (MIPS, PowerPC, ARM)",
     "objdiff-cli": "judges forks of public decomps, function by function",
     "ghidra": "drafts for PC, Switch and other platforms m2c can't read (540 MB, needs Java 21+)",
+    "rea": "the RE console and the agents' inspect_binary (needs Node.js; native code needs Ghidra, Hopper or IDA)",
     "mwcc": "CodeWarrior, the compilers of GameCube and Wii games (proprietary)",
     "mwccarm": "CodeWarrior for DS, the compilers of DS games (proprietary)",
     "dsd": "ds-decomp: analyses DS ROMs and rebuilds them",

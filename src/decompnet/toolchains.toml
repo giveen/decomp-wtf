@@ -383,6 +383,14 @@ url = "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra
 sha256 = "ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db"
 subdir = "ghidra_12.1.4_PUBLIC"
 
+[rea]
+name = "REA"
+kind = "tool"
+license = "MIT"
+source = "morluto/rea 6.4.0"
+description = "Reverse Engineer Anything: the analysis server behind the RE console and the agents' inspect_binary. Needs Node.js; native code also needs Ghidra, Hopper or IDA."
+npm = "rea-agents@6.4.0"
+
 [binutils-mips]
 name = "GNU binutils for MIPS (decompals)"
 kind = "tool"

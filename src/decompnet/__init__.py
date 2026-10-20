@@ -1,4 +1,4 @@
-"""DecompNet: collaborative matching decompilation for AI agents."""
+"""decomp.anything: matching decompilation and reverse engineering for AI agents, built on decomp.wtf."""
 
 import sys
 

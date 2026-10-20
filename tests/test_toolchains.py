@@ -17,13 +17,25 @@ def tc_root(tmp_path, monkeypatch):
 
 def test_registry_is_pinned_and_labelled():
     reg = toolchains.registry()
-    assert {"gcc-2.7.2-kmc", "ee-gcc-2.96", "ido-7.1", "m2c", "runtime-i386"} <= set(reg)
+    assert {"gcc-2.7.2-kmc", "ee-gcc-2.96", "ido-7.1", "m2c", "runtime-i386", "rea"} <= set(reg)
     for tc in reg.values():
         assert tc.license and tc.source, tc.id
         if not tc.proprietary:  # everything we install by default is verified against a pinned hash
-            assert all(p["sha256"] for p in tc.parts) or tc.commit, tc.id
+            assert all(p["sha256"] for p in tc.parts) or tc.commit or tc.npm, tc.id
     assert reg["ido-7.1"].proprietary and not reg["gcc-2.7.2-kmc"].proprietary
     assert reg["ee-gcc-2.96"].requires == ["runtime-i386"]
+    assert reg["rea"].npm == "rea-agents@6.4.0" and reg["rea"].supported
+
+
+def test_an_npm_toolchains_launcher_is_found(tc_root):
+    """REA is installed with npm: its `rea` launcher lives in node_modules/.bin, not at the toolchain's root."""
+    dest = toolchains.path("rea")
+    (dest / "node_modules" / ".bin").mkdir(parents=True)
+    (dest / toolchains.MANIFEST).write_text(json.dumps({"id": "rea"}))
+    launcher = dest / "node_modules" / ".bin" / ("rea.cmd" if os.name == "nt" else "rea")
+    launcher.write_text("#!/bin/sh\n")
+    assert toolchains.binary("rea") == launcher
+    assert toolchains.require("rea") == dest
 
 
 def test_proprietary_toolchains_need_explicit_acceptance(tc_root):

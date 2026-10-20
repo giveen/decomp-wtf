@@ -9,7 +9,8 @@ judged byte for byte.
 
 Setup (optional): the console's REA settings (saved in rea.json next to the database), or
 ``DECOMP_REA`` set to the command (``DECOMP_REA="npx -y rea-agents@6.4.0 mcp"``), or ``rea`` on PATH,
-or an ``rea`` server registered with Claude Code (~/.claude.json). ``DECOMP_REA=off`` disables it.
+or REA installed from Compilers & tools, or an ``rea`` server registered with Claude Code
+(~/.claude.json), or npx. ``DECOMP_REA=off`` disables it.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+
+from . import toolchains
 
 PACKAGE = "rea-agents@6.4.0"  # the version tested with decomp.wtf
 PROVIDERS = ("ghidra", "hopper", "ida", "rizin")
@@ -59,9 +62,19 @@ def _claude_code() -> dict | None:
     return None
 
 
+def _installed_toolchain() -> dict | None:
+    """REA installed from Compilers & tools (toolchains.install("rea"))."""
+    try:
+        if toolchains.installed("rea") is not None:
+            return {"command": [str(toolchains.binary("rea")), "mcp"], "env": {}}
+    except (toolchains.ToolchainError, OSError, ValueError):
+        return None
+    return None
+
+
 def settings() -> dict:
     """How REA starts: {command, env, provider, source}. Saved console settings first, then DECOMP_REA,
-    `rea` on PATH, Claude Code's registration, and npx with the tested version."""
+    `rea` on PATH, REA from Compilers & tools, Claude Code's registration, and npx with the tested version."""
     saved: dict = {}
     if CONFIG is not None and CONFIG.exists():
         try:
@@ -79,6 +92,9 @@ def settings() -> dict:
     found = shutil.which("rea") or shutil.which("rea-agents")
     if found:
         return out | {"command": [found, "mcp"], "source": "PATH"}
+    installed = _installed_toolchain()
+    if installed:
+        return out | installed | {"source": "installed"}
     claude = _claude_code()
     if claude:
         return out | claude | {"source": "Claude Code"}

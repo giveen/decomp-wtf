@@ -8,4 +8,4 @@
 # Back to releases: curl -fsSL https://decomp.wtf/install.sh | bash
 set -euo pipefail
 BRANCH="${DECOMP_BRANCH:-dev}"
-curl -fsSL "https://raw.githubusercontent.com/i12bp8/decomp.wtf/$BRANCH/site/public/install.sh" | DECOMP_BRANCH="$BRANCH" bash -s -- "$@"
+curl -fsSL "https://raw.githubusercontent.com/giveen/decomp.anything/$BRANCH/site/public/install.sh" | DECOMP_BRANCH="$BRANCH" bash -s -- "$@"

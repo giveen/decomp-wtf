@@ -111,6 +111,20 @@ def test_settings_come_from_the_console_then_the_environment(monkeypatch, fake, 
     assert rea.command() is None
 
 
+def test_settings_use_rea_installed_from_the_tools_page(monkeypatch, fake, tmp_path):
+    monkeypatch.delenv("DECOMP_REA", raising=False)
+    monkeypatch.setattr(rea.shutil, "which", lambda *a, **k: None)  # no REA or npx on PATH
+    monkeypatch.setattr(rea.toolchains, "installed", lambda tid, linux=None: {"id": tid} if tid == "rea" else None)
+    launcher = tmp_path / "rea"
+    monkeypatch.setattr(rea.toolchains, "binary", lambda tid: launcher)
+    assert rea.command() == [str(launcher), "mcp"]
+    assert rea.settings()["source"] == "installed"
+
+
+def test_the_tools_page_installs_the_tested_release():
+    assert rea.toolchains.get("rea").npm == rea.PACKAGE
+
+
 def test_draft_uses_the_configured_bridge(monkeypatch, fake, tmp_path):
     monkeypatch.setenv("DECOMP_REA", " ".join(fake))
     monkeypatch.setenv("DECOMP_REA_DRAFTS", "1")

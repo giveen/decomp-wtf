@@ -26,7 +26,7 @@ from pathlib import Path
 
 from .. import __version__, hostenv, toolchains
 
-REPO = "i12bp8/decomp.wtf"
+REPO = "giveen/decomp.anything"
 SITE = "https://decomp.wtf"
 RECHECK = {"release": 3 * 3600, "branch": 15 * 60}  # GitHub allows 60 unauthenticated API calls an hour
 

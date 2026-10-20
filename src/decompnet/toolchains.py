@@ -54,6 +54,7 @@ class Toolchain:
     git: str = ""
     commit: str = ""
     binary_name: str = ""  # main executable of a tool, without .exe
+    npm: str = ""  # a package@version installed with npm (rea-agents)
     pip_extra: list[str] = field(default_factory=list)  # extra requirements for a git tool's environment
     requires_java: int = 0  # minimum Java version (Ghidra)
     system: bool = False  # a compiler already on the host (MinGW, MSVC under wine), not a downloaded package
@@ -77,7 +78,7 @@ class Toolchain:
     @property
     def supported(self) -> bool:
         """Whether this toolchain can be installed on this computer (on Windows, Linux ones through WSL 2)."""
-        return self.system or bool(self.git) or bool(self.parts_for()) or self.via_wsl
+        return self.system or bool(self.git) or bool(self.npm) or bool(self.parts_for()) or self.via_wsl
 
 
 def current_platform() -> str:
@@ -253,7 +254,7 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
         log(f"{tid}: already installed at {path(tid, linux)}")
         return path(tid, linux)
     parts = tc.linux_parts() if linux else tc.parts_for()
-    if not parts and not tc.git:
+    if not parts and not tc.git and not tc.npm:
         why = unsupported_cpu()
         raise ToolchainError(f"{tid} ({tc.name}) has no build for this computer ({current_platform()})"
                              + (f": {why}" if why else ""))
@@ -273,6 +274,8 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
     try:
         if tc.git:
             _install_git_tool(tc, dest, log)
+        if tc.npm:
+            _install_npm_tool(tc, dest, log)
         downloads = root() / ".downloads"
         downloads.mkdir(parents=True, exist_ok=True)
         for part in parts:
@@ -330,12 +333,29 @@ def _install_git_tool(tc: Toolchain, dest: Path, log) -> None:
                    check=True)
 
 
+def _install_npm_tool(tc: Toolchain, dest: Path, log) -> None:
+    npm = shutil.which("npm")
+    if not npm or not (shutil.which("node") or shutil.which("node.exe")):
+        raise ToolchainError(f"{tc.id} needs Node.js and npm (https://nodejs.org)")
+    log(f"  installing {tc.npm} with npm")
+    proc = subprocess.run([npm, "install", "--prefix", str(dest), "--no-save", "--no-package-lock",
+                           "--no-audit", "--no-fund", "--loglevel=error", tc.npm],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+    for line in (proc.stdout + proc.stderr).splitlines():
+        if line.strip():
+            log(f"  {line.strip()}")
+    if proc.returncode:
+        raise ToolchainError(f"npm couldn't install {tc.npm} (exit {proc.returncode})")
+
+
 def binary(tid: str) -> Path:
     """The main executable of an installed tool (objdiff-cli, dtk, coddog, ...), on any OS."""
     tc = get(tid)
     base = require(tid)
     name = tc.binary_name or tid
-    for candidate in (base / f"{name}.exe", base / name, base / "bin" / name):
+    npm_bin = base / "node_modules" / ".bin"
+    for candidate in (base / f"{name}.exe", base / name, base / "bin" / name,
+                      npm_bin / f"{name}.cmd", npm_bin / f"{name}.exe", npm_bin / name):
         if candidate.exists():
             return candidate
     raise ToolchainError(f"{tid} is installed but {name} wasn't found in {base}")
@@ -377,5 +397,5 @@ def status() -> list[dict]:
         rows.append({"id": tc.id, "name": tc.name, "kind": tc.kind, "platform": tc.platform, "license": tc.license,
                      "installed": m is not None, "supported": tc.supported, "description": tc.description,
                      "wsl": tc.via_wsl,
-                     "pinned": all(p.get("sha256") for p in tc.parts) or bool(tc.commit)})
+                     "pinned": all(p.get("sha256") for p in tc.parts) or bool(tc.commit) or bool(tc.npm)})
     return rows

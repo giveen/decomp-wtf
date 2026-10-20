@@ -455,7 +455,7 @@ def main(argv: list[str] | None = None) -> int:
     ii.add_argument("--channel", choices=["release", "branch"], default="release")
     ii.add_argument("--branch", default="")
     ii.add_argument("--commit", default="")
-    ii.add_argument("--repo", default="i12bp8/decomp.wtf")
+    ii.add_argument("--repo", default="giveen/decomp.anything")
     c = sub.add_parser("connect", help="give your AI agents (Claude Code, Codex, Antigravity CLI, opencode) decomp.wtf's tools")
     c.add_argument("agents", nargs="*", metavar="agent", help="claude, codex, antigravity (agy) or opencode (default: every one installed)")
     c.add_argument("--list", action="store_true", help="only show which are connected")

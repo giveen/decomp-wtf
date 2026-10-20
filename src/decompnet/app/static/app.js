@@ -364,7 +364,7 @@ async function pickFile(file) {
   $("romStatus").className = `plat-status ${level || ""}`;
   $("romStatus").innerHTML = level === "recommended"
     ? `<b>★ Recommended platform.</b> The most tested path to a full decomp you can port and mod.`
-    : `<b>Beta.</b> ${esc(PLATFORM_NAME[p] || "This platform")} works and is tested on homemade games, less so on real ones yet. Problems are worth <a href="https://github.com/i12bp8/decomp.wtf/issues" target="_blank" rel="noopener">reporting</a>.`;
+    : `<b>Beta.</b> ${esc(PLATFORM_NAME[p] || "This platform")} works and is tested on homemade games, less so on real ones yet. Problems are worth <a href="https://github.com/giveen/decomp.anything/issues" target="_blank" rel="noopener">reporting</a>.`;
   setupCompilers(info);
   $("dropIdle").hidden = true;
   $("dropPicked").hidden = false;
@@ -2568,7 +2568,7 @@ async function showSettingsPage() {
     <div class="field"><span>Updates come from ${from}</span><div class="row"><span class="muted small grow" id="upText">Checking…</span><button class="ghost small-btn" id="upCheck" type="button">Check now</button></div></div>
     <label class="check"><input type="checkbox" id="checkUpdateSet" ${st.settings.check_updates ? "checked" : ""}><span><b>Look for updates</b> now and then (it only asks ${inst.channel === "branch" ? "GitHub for the branch's newest commit" : "decomp.wtf which version is current"}; nothing about you or your projects is sent).</span></label>
     <label class="check"><input type="checkbox" id="autoUpdateSet" ${st.settings.auto_update ? "checked" : ""}><span><b>Install updates by itself</b> when no helper agent is working (it restarts in a few seconds; agents carry on).</span></label>
-    <div class="row"><a class="link small" href="https://decomp.wtf" target="_blank" rel="noopener">decomp.wtf</a><a class="link small" href="https://github.com/i12bp8/decomp.wtf" target="_blank" rel="noopener">Source code</a></div>`;
+    <div class="row"><a class="link small" href="https://decomp.wtf" target="_blank" rel="noopener">decomp.wtf</a><a class="link small" href="https://github.com/giveen/decomp.anything" target="_blank" rel="noopener">Source code</a></div>`;
   const showUpdate = (u) => {
     if (!$("upText") || !u) return;
     $("upText").textContent = u.error ? u.error : u.available ? `New: ${updateName(u)}` : u.disabled ? "Not looking for updates." : "Up to date.";

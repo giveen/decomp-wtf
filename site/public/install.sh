@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://decomp.wtf/install.sh | bash
 #   (can't reach decomp.wtf? the same from GitHub:
-#    curl -fsSL https://raw.githubusercontent.com/i12bp8/decomp.wtf/main/site/public/install.sh | bash)
+#    curl -fsSL https://raw.githubusercontent.com/giveen/decomp.anything/main/site/public/install.sh | bash)
 #
 # decomp.wtf installs on this computer, with uv:
 #   1. installs uv, Astral's Python tool manager, if you don't have it (asks first)
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 VERSION="0.10.6"
-REPO="i12bp8/decomp.wtf"
+REPO="giveen/decomp.anything"
 START=1
 SOURCE="${DECOMP_SOURCE:-}"
 [ -z "$SOURCE" ] && [ -n "${DECOMP_BRANCH:-}" ] && SOURCE="branch:${DECOMP_BRANCH}"
