@@ -287,9 +287,13 @@ The picker has an optional **Starting context** section, applied immediately aft
 - **Runtime trace** — coverage addresses/counts; imported before the first claim.
 - **Known libraries** — names to mark as library code and keep out of the work queue.
 
-PDB/DWARF imports now also add **function prototypes**, not just names and types. A path import still discovers a
-sidecar PDB/MAP automatically; the extra fields are for uploads, additional files and information the binary does
-not record itself.
+PDB/DWARF imports now also add **function prototypes**, not just names and types. Drop the binary and its companion
+files together and they are applied automatically: **PDB/MAP**, `symbol_addrs.txt`, `coverage.csv`/`trace.csv`/
+`*.trace`, and `types.h`/`context.h`. A path import finds the same companions beside the file. The optional fields
+are only for files that are not beside the binary.
+
+The picker accepts several files at once; the largest non-companion file is the binary, the rest travel with it.
+Nothing extra is uploaded when you import by path.
 
 ## What the import found
 

@@ -233,8 +233,8 @@ drop.addEventListener("click", (e) => { if (!$("dropIdle").hidden && !e.target.c
 drop.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && !$("dropIdle").hidden && e.target === drop) { e.preventDefault(); $("file").click(); } });
 drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
 drop.addEventListener("dragleave", () => drop.classList.remove("over"));
-drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); if (e.dataTransfer.files[0]) pickFile(e.dataTransfer.files[0]); });
-$("file").addEventListener("change", () => { if ($("file").files[0]) pickFile($("file").files[0]); });
+drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); pickFiles(e.dataTransfer.files); });
+$("file").addEventListener("change", () => pickFiles($("file").files));
 $("own").addEventListener("change", updateAnalyse);
 $("cancelPick").onclick = resetDrop;
 
@@ -359,7 +359,24 @@ function notSupported(head, file) {
 }
 const NOT_A_GAME = "That isn't a game file decomp.anything can start from scratch (yet). For other platforms, continue a public decomp.";
 
-async function pickFile(file) {
+const COMPANION_NAMES = /^(?:symbol_addrs|symbols)\.txt$|^(?:coverage|trace)\.csv$|^(?:types|context)\.h$/i;
+const COMPANION_EXT = /\.(?:pdb|map|sym|dbg|trace|cov)$/i;
+function isCompanion(file) {
+  return COMPANION_NAMES.test(file.name) || COMPANION_EXT.test(file.name);
+}
+
+async function pickFiles(files) {
+  const list = [...files].filter(Boolean);
+  if (!list.length) return;
+  if (list.length === 1) return pickFile(list[0]);
+  const companions = list.filter(isCompanion);
+  const mains = list.filter((f) => !isCompanion(f));
+  if (!mains.length) return toast("Drop the binary as well: the other files are companions.", "err");
+  mains.sort((a, b) => b.size - a.size);
+  await pickFile(mains[0], companions);
+}
+
+async function pickFile(file, companions = []) {
   const head = new Uint8Array(await file.slice(0, 0x9400).arrayBuffer());
   let info = identifyHead(head, file), buf = file, binary = false;
   if (!info) {
@@ -373,14 +390,15 @@ async function pickFile(file) {
       buf = file;
     }
   }
-  picked = { buf, info, name: file.name };
+  picked = { buf, info, name: file.name, companions };
   if (!S.st) await loadState().catch(() => {});  // dropped before the page finished loading: the compiler lists
   $("romFile").textContent = file.name;
   $("romTitle").textContent = info.title;
   $("ownText").textContent = ownCopyText(info);
   $("analyse").textContent = "Start decompiling";
   if (binary) {
-    $("romFacts").innerHTML = [["File", file.name], ["Format", "REA analysis"], ["Size", MB(file.size)], ["Agents", "work through its functions"]]
+    $("romFacts").innerHTML = [["File", file.name], ["Format", "REA analysis"], ["Size", MB(file.size)], ["Agents", "work through its functions"],
+      ...(companions.length ? [["With", companions.map((f) => f.name).join(", ")]] : [])]
       .map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("");
     $("romStatus").hidden = false;
     $("romStatus").className = "plat-status";
@@ -402,7 +420,8 @@ async function pickFile(file) {
     : [["Platform", PLATFORM_NAME[p]], ["Format", info.order], ["Size", MB(info.size)],
        info.code ? ["Game ID", info.code] : ["Entry", info.entry != null ? hex8(info.entry) : "from the disc"],
        ["Project", ["gc", "wii", "gcwii"].includes(p) ? "dtk-template" : p === "nds" ? "ds-decomp" : p === "gba" ? "luvdis" : p === "windows" ? "PE (functions from .pdata, symbols, calls)" : p === "linux" ? "ELF (functions from .eh_frame, symbols, calls)" : "splat"]];
-  $("romFacts").innerHTML = facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("");
+  $("romFacts").innerHTML = [...facts, ...(companions.length ? [["With", companions.map((f) => f.name).join(", ")]] : [])]
+    .map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("");
   const level = platformStatus(p);
   $("romStatus").hidden = !level;
   $("romStatus").className = `plat-status ${level || ""}`;
@@ -532,13 +551,26 @@ $("analyse").onclick = async () => {
     try { await ensureCodeWarrior(); } catch (e) { importFailed("CodeWarrior", e, $("jobLog").textContent); return; }
   }
   const body = picked.buf instanceof Blob ? picked.buf : new Blob([picked.buf]);
-  runImport(`confirmed=1${tc ? `&toolchain=${encodeURIComponent(tc)}` : ""}${intakeQuery(intakeValues())}`, body, title, picked.name);
+  let extra = "";
+  if (picked.companions && picked.companions.length) {
+    const token = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+    $("dropPicked").hidden = true; $("dropBusy").hidden = false; $("busyTitle").textContent = "Copying companion files…";
+    try {
+      for (const f of picked.companions) {
+        await uploadFile(`/api/companion?token=${token}&name=${encodeURIComponent(f.name)}`, f, (p) => {
+          $("busyStep").textContent = `${f.name}: ${(p * 100).toFixed(0)}%`;
+        });
+      }
+      extra = `&companions=${token}`;
+    } catch (e) { importFailed(picked.name, e, ""); return; }
+  }
+  runImport(`confirmed=1${tc ? `&toolchain=${encodeURIComponent(tc)}` : ""}${intakeQuery(intakeValues())}${extra}`, body, title, picked.name);
 };
 $("pathPick").onclick = (e) => {
   e.stopPropagation();
   const body = dialog("Use a file on this computer", `<p class="muted">decomp.anything reads the file where it is: a disc image is never copied through the browser, and REA can open a binary of any size.</p>
     <label class="field"><span>Path to the file</span><input id="ppPath" class="mono" placeholder="/home/me/games/my-game.iso"></label>
-    <details class="intake"><summary><b>Starting context</b> <span class="muted">optional</span></summary>
+    <details class="intake"><summary><b>Starting context</b> <span class="muted">optional: companions beside the file are added automatically</span></summary>
       <div class="intake-grid">
         <label class="field wide"><span>What is this? Focus, version, engine, known behavior</span><textarea id="ppNotes" rows="2"></textarea></label>
         <label class="field"><span>Debug/symbol file</span><input id="ppSymbols" class="mono"></label>

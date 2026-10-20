@@ -453,6 +453,35 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     async def api_state(request: Request) -> Response:
         return guard(request) or JSONResponse(await call(state))
 
+    @mcp.custom_route("/api/companion", methods=["POST"])
+    async def api_companion(request: Request) -> Response:
+        """A PDB/MAP/symbol/trace/header that belongs with the binary being uploaded next."""
+        if (bad := guard(request, write=True)):
+            return bad
+        q = request.query_params
+        token = q.get("token", "")
+        if not re.fullmatch(r"[a-f0-9]{8,32}", token):
+            return fail(ValueError("bad companion token"))
+        name = Path(q.get("name") or "").name
+        if not name or name in (".", ".."):
+            return fail(ValueError("name the companion file"))
+        folder = home / "uploads" / token
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / name
+        size = 0
+        with open(target, "wb") as f:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > MAX_DISC:
+                    f.close()
+                    target.unlink(missing_ok=True)
+                    return fail(ValueError("that companion file is too large"))
+                f.write(chunk)
+        if size == 0:
+            target.unlink(missing_ok=True)
+            return fail(ValueError("the companion file was empty"))
+        return JSONResponse({"ok": True, "name": name, "size": size})
+
     @mcp.custom_route("/api/import", methods=["POST"])
     async def api_import(request: Request) -> Response:
         """A game the user owns: the demo, an upload streamed to disk (discs are gigabytes), or a local path."""
@@ -475,7 +504,15 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 name = game.name
             else:
                 name = Path(q.get("name") or "game.bin").name
-                upload_dir = home / "uploads" / uuid.uuid4().hex[:8]  # keeps the file's own name
+                companions = q.get("companions", "")
+                if companions:
+                    if not re.fullmatch(r"[a-f0-9]{8,32}", companions):
+                        return fail(ValueError("bad companion token"))
+                    upload_dir = home / "uploads" / companions
+                    if not upload_dir.is_dir():
+                        return fail(ValueError("the companion files are gone: drop the binary and its files together"))
+                else:
+                    upload_dir = home / "uploads" / uuid.uuid4().hex[:8]  # keeps the file's own name
                 upload_dir.mkdir(parents=True, exist_ok=True)
                 game = upload_dir / name
                 size = 0
@@ -501,25 +538,36 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                         raise
                     log(f"{e}\nOpening it with REA instead: its functions become work items for the agents.")
                     slug = net.import_analysis(game, confirmed=True, copy_target=uploaded, log=log)
+                auto = {}
+                if isinstance(game, Path):
+                    for p in sorted(game.parent.iterdir()):
+                        lower = p.name.lower()
+                        if lower in ("symbol_addrs.txt", "symbols.txt"):
+                            auto.setdefault("symbols", str(p))
+                        elif lower in ("coverage.csv", "trace.csv") or p.suffix.lower() in (".trace", ".cov"):
+                            auto.setdefault("trace", str(p))
+                        elif uploaded and lower in ("types.h", "context.h"):
+                            auto.setdefault("types", str(p))
+                intake = {key: q.get(key, "") or auto.get(key, "")
+                          for key in ("notes", "symbols", "types", "refs", "trace", "libs")}
+                if any(v.strip() for v in intake.values()):
+                    report = net.apply_intake(slug, notes=intake["notes"], symbols=intake["symbols"],
+                                              types=intake["types"], refs=intake["refs"], trace=intake["trace"],
+                                              libraries=intake["libs"], log=log)
+                    if report["warnings"]:
+                        log("starting context warnings: " + "; ".join(report["warnings"]))
+                try:
+                    net.write_intake(slug, log=log)
+                except Exception as e:
+                    log(f"intake report skipped: {e}")
+                settings.data["last_project"] = slug
+                settings.save()
+                if not net.is_analysis(net.project_row(slug)):
+                    autopilot(slug)
+                return {"slug": slug}
             finally:
                 if uploaded:
                     shutil.rmtree(game.parent, ignore_errors=True)
-            intake = {key: q.get(key, "") for key in ("notes", "symbols", "types", "refs", "trace", "libs")}
-            if any(v.strip() for v in intake.values()):
-                report = net.apply_intake(slug, notes=intake["notes"], symbols=intake["symbols"],
-                                          types=intake["types"], refs=intake["refs"], trace=intake["trace"],
-                                          libraries=intake["libs"], log=log)
-                if report["warnings"]:
-                    log("starting context warnings: " + "; ".join(report["warnings"]))
-            try:
-                net.write_intake(slug, log=log)
-            except Exception as e:
-                log(f"intake report skipped: {e}")
-            settings.data["last_project"] = slug
-            settings.save()
-            if not net.is_analysis(net.project_row(slug)):
-                autopilot(slug)
-            return {"slug": slug}
         return JSONResponse({"job": jobs.start("import", work)})
 
     MAP_KEYS = ("name", "vram", "size", "insns", "unit", "status", "best", "attempts", "hits", "agent", "matched_at", "matched_by")

@@ -64,11 +64,11 @@
       </ol>
     </div>
     <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose a file">
-      <input type="file" id="file" hidden>
+      <input type="file" id="file" multiple hidden>
       <div class="drop-idle" id="dropIdle">
         <div class="cart" aria-hidden="true"><span></span></div>
-        <p class="drop-title">Drop your binary here</p>
-        <p class="muted small">ROM, disc image, .exe/.dll, ELF or any binary · or <span class="link">choose a file</span></p>
+        <p class="drop-title">Drop your binary (and its debug files)</p>
+        <p class="muted small">ROM, disc image, .exe/.dll, ELF or any binary · add a PDB/MAP/symbols/trace if you have one · or <span class="link">choose files</span></p>
         <div class="plat-row" id="platRow"><span data-p="gc">GameCube</span><span data-p="wii">Wii</span><span data-p="n64">N64</span><span data-p="psx">PS1</span><span data-p="ps2">PS2</span><span data-p="gba">GBA</span><span data-p="nds">DS</span><span data-p="windows">PC</span><span data-p="linux">Linux</span></div>
         <p class="plat-legend muted small" id="platLegend" hidden><span class="rec-mark">★</span> recommended: the most tested path to a full decomp you can port and mod · a lit chip means its tools are installed</p>
         <button class="link-btn" id="pathPick" type="button">Any binary? Use its path instead</button>
@@ -87,11 +87,11 @@
         <p class="muted small" id="compilerNote" hidden></p>
         <label class="check" id="mwConsent" hidden><input type="checkbox" id="mwAccept"><span id="mwText"></span></label>
         <details class="intake" id="intakeBox">
-          <summary><b>Starting context</b> <span class="muted">optional: give your agents what you already know</span></summary>
+          <summary><b>Starting context</b> <span class="muted">optional: companions beside the binary are added automatically</span></summary>
           <div class="intake-grid">
             <label class="field wide"><span>What is this? Focus, version, engine, known behavior</span><textarea id="intakeNotes" rows="3" placeholder="Total Annihilation 3.1, 32-bit MSVC, focus on the unit AI; zlib and the serial code are known libraries."></textarea></label>
-            <label class="field"><span>Debug/symbol file (PDB, MAP, symbol_addrs, ELF with DWARF)</span><input id="intakeSymbols" class="mono" placeholder="/path/game.pdb"></label>
-            <label class="field"><span>Type or header file</span><input id="intakeTypes" class="mono" placeholder="/path/types.h"></label>
+            <label class="field"><span>Extra debug/symbol file (PDB/MAP/symbol_addrs are found beside the binary)</span><input id="intakeSymbols" class="mono" placeholder="/path/game.pdb"></label>
+            <label class="field"><span>Extra type/header file</span><input id="intakeTypes" class="mono" placeholder="/path/types.h"></label>
             <label class="field"><span>Reference source folder</span><input id="intakeRefs" class="mono" placeholder="/path/existing-decomp (read-only)"></label>
             <label class="field"><span>Runtime trace</span><input id="intakeTrace" class="mono" placeholder="/path/coverage.csv"></label>
             <label class="field"><span>Known libraries</span><input id="intakeLibs" class="mono" placeholder="zlib, libpng, engine"></label>
