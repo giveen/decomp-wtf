@@ -295,6 +295,9 @@ def _pe_debug_path(data: bytes) -> str:
 # ------------------------------------------------------------------ PDB through llvm-pdbutil
 
 def _pdbutil() -> str | None:
+    configured = os.environ.get("DECOMP_PDBUTIL") or os.environ.get("LLVM_PDBUTIL")
+    if configured and Path(configured).expanduser().is_file():
+        return str(Path(configured).expanduser())
     env = shutil.which("llvm-pdbutil")
     if env:
         return env
