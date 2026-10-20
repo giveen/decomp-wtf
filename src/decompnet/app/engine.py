@@ -13,7 +13,9 @@ Everything stays on this computer.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import logging
 import re
@@ -231,9 +233,13 @@ def _preview(data: bytes | None, kind: str) -> str:
 
 
 class RomNetwork(Network):
-    def __init__(self, db_path: str | Path, workspace: Path, claim_ttl: int = 30 * 60):
+    def __init__(self, db_path: str | Path, workspace: Path, claim_ttl: int = 30 * 60,
+                 agent_secret: str | None = None):
         super().__init__(db_path, claim_ttl=claim_ttl)
         self.workspace = Path(workspace)
+        # Stable for the install (CLI: .decomp/agent.secret): a helper's MCP bridge must keep working when the
+        # app restarts. Tests and tools without a secret get a per-process one.
+        self._agent_secret = agent_secret or secrets.token_urlsafe(32)
         self._syms: dict[int, SymbolTable] = {}
         self._sym_override: dict[int, SymbolTable] = {}
         self._roms: dict[int, tuple[bytes, list[split.Segment]]] = {}
@@ -3327,16 +3333,25 @@ class RomNetwork(Network):
         row = self.store.one("SELECT origin FROM agents WHERE id=?", agent.id)
         return bool(row) and row["origin"] == "chat"
 
+    def _local_token(self, name: str) -> str:
+        digest = hmac.new(self._agent_secret.encode(), f"local:{name}".encode(), hashlib.sha256).digest()
+        return "dn_" + base64.urlsafe_b64encode(digest).decode().rstrip("=")
+
     def local_agent(self, name: str) -> tuple[Agent, str]:
         """An agent identity for one runner on this machine (created on first use). A name an agent the user talks
         to had before 0.10.4 (chat identities were numbered like helper sessions) becomes the runner's: a helper
-        never gets the chat agent's tools, and the chat agent never takes over the runner's identity."""
+        never gets the chat agent's tools, and the chat agent never takes over the runner's identity.
+
+        The token is derived from the install's agent secret, so it survives app restarts: a helper's MCP bridge
+        that reconnects after a restart still authenticates, instead of being treated as an unknown agent."""
+        token = self._local_token(name)
         row = self.store.one("SELECT id FROM agents WHERE name=?", name)
         if row is not None:
-            token = "dn_" + secrets.token_urlsafe(24)
             with self.store.tx() as db:
                 db.execute("UPDATE agents SET token_hash=?, origin=CASE origin WHEN 'chat' THEN 'local' ELSE origin END "
                            "WHERE id=?", (_hash_token(token), row["id"]))
         else:
-            token = self.register_agent(name, "you", trusted=True, origin="local")
+            with self.store.tx() as db:
+                db.execute("INSERT INTO agents(name,owner,token_hash,created_at,trusted,origin) VALUES(?,?,?,?,1,?)",
+                           (name, "you", _hash_token(token), time.time(), "local"))
         return self.authenticate(token), token

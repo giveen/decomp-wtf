@@ -191,6 +191,19 @@ def test_helpers_and_the_agent_you_talk_to_never_share_an_identity(tmp_path):
     assert net.local_agent("autopilot")[0].name == "autopilot"
 
 
+def test_local_agent_tokens_survive_restarts(tmp_path):
+    """A helper's MCP bridge reconnects after the app restarts; its token must still authenticate."""
+    from decompnet.app.engine import RomNetwork
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path, agent_secret="stable-secret")
+    a1, t1 = net.local_agent("helper-1")
+    a2, t2 = net.local_agent("helper-1")
+    assert a1.id == a2.id and t1 == t2
+    assert net.authenticate(t1).name == "helper-1"
+    again = RomNetwork(tmp_path / "app.db", tmp_path, agent_secret="stable-secret")
+    assert again.local_agent("helper-1")[1] == t1
+
+
 def test_antigravity_helpers_say_when_it_isnt_connected(tmp_path, monkeypatch):
     from decompnet.app import connect
 

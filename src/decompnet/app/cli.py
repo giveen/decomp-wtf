@@ -107,6 +107,23 @@ def _open_when_ready(url: str, port: int) -> None:
     threading.Thread(target=wait, daemon=True).start()
 
 
+def _agent_secret(internal: Path) -> str:
+    """The install's local-agent secret (0600). Stable across restarts so helpers' MCP bridges keep their identity."""
+    path = internal / "agent.secret"
+    try:
+        secret = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        secret = ""
+    if not secret:
+        secret = secrets.token_urlsafe(32)
+        path.write_text(secret + "\n", encoding="utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    return secret
+
+
 def _restart_state() -> dict | None:
     """Set by updates.restart: this process just became the new version and keeps the old one's port and secret."""
     raw = os.environ.pop("DECOMP_RESTART", "")
@@ -146,7 +163,7 @@ def run(args) -> int:
         os.chmod(state_file, 0o600)
     except OSError:
         pass
-    net = RomNetwork(internal / "decomp.db", home)
+    net = RomNetwork(internal / "decomp.db", home, agent_secret=_agent_secret(internal))
     mcp, manager, security = build(net, internal, port, secret)
     app = mcp.streamable_http_app(transport_security=security, max_request_body_size=80 * 1024 * 1024, host="127.0.0.1")
     url = f"http://127.0.0.1:{port}/?k={secret}"
@@ -446,6 +463,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-browser", action="store_true", help="don't open the browser")
     sub = ap.add_subparsers(dest="cmd")
     sub.add_parser("setup", help="install the compilers and tools this computer needs")
+    sub.add_parser("start", help="start decomp.anything (the same as running decomp with no command)")
     sub.add_parser("stop", help="stop the running app")
     sub.add_parser("shortcut", help="add decomp.anything to your apps menu / desktop")
     sub.add_parser("url", help="print the address that opens the app (starts it if needed)")
@@ -491,7 +509,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "mcp":
         from .bridge import main as bridge
         return bridge(args.name)
-    return {"setup": setup, "stop": stop, "shortcut": shortcut, "connect": connect_agents, "share": share,
+    return {"start": run, "setup": setup, "stop": stop, "shortcut": shortcut, "connect": connect_agents, "share": share,
             "host": host, "join": join, "fork": fork_cmd, "service": service_cmd, "url": url_cmd, "update": update_cmd,
             "install-info": install_info}.get(args.cmd, run)(args)
 
