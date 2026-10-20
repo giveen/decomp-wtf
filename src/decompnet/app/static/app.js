@@ -675,6 +675,7 @@ async function refreshMap(force = true) {
   S.map.forEach((f, i) => { f.i = i; });
   baseDirty = true;
   $("fnTabCount").textContent = S.map.length.toLocaleString();
+  $("dataTabCount").textContent = S.ov && S.ov.data ? S.ov.data.toLocaleString() : "";
   if (S.tab === "overview") layoutMap(); else applyClaims(false);
   renderList();
   renderProgress();
