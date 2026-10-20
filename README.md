@@ -294,8 +294,15 @@ guess:
   blanked, internal branch targets stay relative), so moved code still matches. The report says same, moved,
   changed, added and removed, with a similarity score for changed functions.
 
-Agents get `import_debug_info`, `export_debug_info` and `compare_version` tools; the autopilot and the normal
-matching loop are unchanged.
+Agents get `import_debug_info`, `export_debug_info`, `compare_version`, `import_trace` and `list_hot` tools; the
+autopilot and the normal matching loop are unchanged.
+
+## Runtime coverage
+
+**Settings → Runtime coverage** imports a trace from a debugger, emulator or profiler. Accepted shapes are a
+column of addresses (`0x401000`), `address,count` CSV, or JSON (`[{"address": "0x401000", "hits": 3}]`). Addresses
+can be virtual addresses or RVAs; function names are accepted too. Hit counts are added to the containing
+functions, shown in the **Coverage** filter and the Hits column, and `list_hot` ranks them for agents.
 
 ## Continue a public decomp
 
@@ -481,6 +488,7 @@ projects folder (`~/Decomp`).
 | **Library code out** | CRT, compiler runtime and static-library functions are marked and never handed to agents. |
 | **Data inventory** | PC and ROM data symbols, strings and their addresses are listed in a Data tab and through `list_data`. |
 | **IDE export** | PC projects export a CMake/IDE tree with `compile_commands.json` and a `judge.py` byte-match checker. |
+| **Runtime coverage** | Import debugger/emulator traces (addresses or names, CSV/JSON/text); hit counts map onto functions, with a Coverage filter and `list_hot`. |
 | **Reference folders** | Name a folder in instructions and helpers can read and search it. |
 | **Every major disc format** | ROMs, PlayStation discs, GameCube and Wii discs (ISO, GCM, RVZ, WIA, WBFS, CISO, GCZ) and program files, streamed from disk. |
 | **Local-first** | No account, no telemetry, no server dependency. |

@@ -575,6 +575,7 @@ async function openProject(slug, tab = "overview") {
   $("addTask").hidden = !analysis;
   $("thBest").hidden = analysis;
   $("thTries").hidden = analysis;
+  $("thHits").hidden = analysis;
   $("addTask").onclick = analysis ? addAnalysisTask : null;
   S.analysis = analysis;
   if (analysis && (tab === "source" || tab === "team")) tab = "overview";
@@ -944,8 +945,8 @@ function renderCompilerNotice(ov) {
 }
 
 function fnCounts() {
-  const c = { matched: 0, working: 0, tried: 0, open: 0, asm: 0, library: 0 };
-  for (const f of S.map) c[fnState(f)]++;
+  const c = { matched: 0, working: 0, tried: 0, open: 0, asm: 0, library: 0, hot: 0 };
+  for (const f of S.map) { c[fnState(f)]++; if ((f.hits || 0) > 0) c.hot++; }
   return c;
 }
 
@@ -2260,22 +2261,23 @@ $("fnNext").onclick = () => stepFn(1);
 
 /* ------------------------------------------------------------------ function list */
 const L = { q: "", filter: "all", sort: "i", dir: 1, limit: 200, rows: [] };
-const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["tried", "Tried"], ["matched", "Matched"], ["library", "Library"]];
+const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["tried", "Tried"], ["matched", "Matched"], ["hot", "Coverage"], ["library", "Library"]];
 const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "library" ? "library" : f.status === "asm" ? "asm" : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
 const STATE_RANK = { working: 0, tried: 1, open: 2, matched: 3, asm: 4, library: 5 };
 
 function renderList() {
   if (!S.map.length || S.tab !== "functions") return;
   const analysis = S.ov && S.ov.kind === "analysis";
-  const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0, library: 0 };
-  for (const f of S.map) counts[fnState(f)]++;
+  const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0, library: 0, hot: 0 };
+  for (const f of S.map) { counts[fnState(f)]++; if ((f.hits || 0) > 0) counts.hot++; }
   $("fnFilter").innerHTML = FILTERS.map(([k, label]) => `<button type="button" role="radio" aria-checked="${L.filter === k}" class="${L.filter === k ? "on" : ""}" data-filter="${k}">${analysis && k === "matched" ? "Analyzed" : label}<span>${counts[k].toLocaleString()}</span></button>`).join("");
   const q = L.q.trim().toLowerCase();
-  let rows = S.map.filter((f) => (L.filter === "all" || fnState(f) === L.filter)
+  let rows = S.map.filter((f) => (L.filter === "all" || (L.filter === "hot" ? (f.hits || 0) > 0 : fnState(f) === L.filter))
     && (!q || f.name.toLowerCase().includes(q) || hex8(f.vram).toLowerCase().includes(q) || (f.unit || "").toLowerCase().includes(q)));
   const key = {
     i: (f) => f.i, name: (f) => f.name.toLowerCase(), insns: (f) => f.insns, attempts: (f) => f.attempts || 0,
     best: (f) => (f.status === "matched" ? 2 : f.best == null ? -1 : pctOf(f.best, f.insns)), status: (f) => STATE_RANK[fnState(f)],
+    hits: (f) => f.hits || 0,
   }[L.sort === "vram" ? "i" : L.sort];
   rows = rows.slice().sort((a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : a.i - b.i) * L.dir; });
   L.rows = rows;
@@ -2289,7 +2291,7 @@ function renderList() {
     const measure = analysis ? (f.size ? bytes(f.size) : "—") : f.insns.toLocaleString();
     return `<tr data-fn="${esc(f.name)}" class="${S.fn === f.name ? "sel" : ""}" tabindex="0"><td class="mono dim">${where}</td>
       <td class="mono name">${(S.ov && (S.ov.priority || []).includes(f.name)) ? `<span class="star" title="agents take it next">★</span>` : ""}${esc(f.name)}</td><td class="r mono">${measure}</td>
-      ${analysis ? "" : `<td class="r mono">${best}</td><td class="r mono">${f.attempts || `<span class="dim">0</span>`}</td>`}<td>${status}</td></tr>`;
+      ${analysis ? "" : `<td class="r mono">${best}</td><td class="r mono">${f.attempts || `<span class="dim">0</span>`}</td><td class="r mono">${f.hits || `<span class="dim">–</span>`}</td>`}<td>${status}</td></tr>`;
   }).join("") || `<tr class="none"><td colspan="${analysis ? 4 : 6}">No work item matches${q ? ` “${esc(L.q)}”` : ""}.</td></tr>`;
   $("fnShown").textContent = rows.length > L.limit ? `${L.limit.toLocaleString()} of ${rows.length.toLocaleString()} shown` : plural(rows.length, analysis ? "work item" : "function");
   $("fnMore").hidden = rows.length <= L.limit;
@@ -2604,6 +2606,10 @@ async function renderProjectSettings() {
   $("compilerPanel").hidden = fork || analysis;
   $("debugPanel").hidden = fork || analysis;
   $("comparePanel").hidden = fork || analysis || !["windows", "linux"].includes(ov.platform);
+  $("tracePanel").hidden = analysis;
+  $("traceMsg").textContent = ov.traced
+    ? `${ov.traced.toLocaleString()} functions traced · ${(ov.hits || 0).toLocaleString()} hits`
+    : "No runtime trace imported yet.";
   const dbg = ov.debug;
   $("debugMsg").textContent = dbg
     ? `${dbg.symbols || 0} names and ${dbg.types || 0} types from ${dbg.source}${dbg.imported_at ? ` · ${since(dbg.imported_at)}` : ""}`
@@ -2711,6 +2717,26 @@ function compareTable(r) {
     <div class="fn-table-wrap"><table class="fn-table"><thead><tr><th>This version</th><th>Status</th><th>Other version</th><th class="r">Similar</th><th class="r">Bytes</th></tr></thead><tbody>${rows || `<tr class="none"><td colspan="5">No functions found.</td></tr>`}</tbody></table></div>
     ${r.rows.length > 300 ? `<p class="muted small">Showing the first 300 of ${r.rows.length} rows.</p>` : ""}`;
 }
+$("traceImport").onclick = async () => {
+  const path = $("tracePath").value.trim();
+  if (!path) { toast("Choose a trace file first.", "err"); return; }
+  $("traceImport").disabled = true;
+  $("traceLog").hidden = false;
+  $("traceLog").textContent = "reading trace…";
+  try {
+    const { job } = await api("/api/trace/import", { method: "POST", body: { slug: S.slug, path } });
+    const r = await followJob(job, $("traceLog"));
+    $("traceMsg").textContent = `${r.hits.toLocaleString()} hits in ${r.functions.toLocaleString()} functions` +
+      (r.unmatched ? ` · ${r.unmatched} hits did not match a function` : "");
+    toast("Runtime coverage imported.", "match");
+    S.ov = await api(`/api/project?slug=${S.slug}`);
+    await refreshMap(true);
+    renderProjectSettings(S.ov);
+  } catch (e) {
+    $("traceMsg").textContent = e.message;
+    toast(esc(e.message), "err");
+  } finally { $("traceImport").disabled = false; }
+};
 $("compareGo").onclick = async () => {
   const path = $("comparePath").value.trim();
   if (!path) { toast("Choose another copy first.", "err"); return; }

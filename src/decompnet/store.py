@@ -62,6 +62,8 @@ MIGRATIONS = [
     ("functions", "rom_offset", "INTEGER"),                    # ROM projects: where its bytes are in the ROM
     ("functions", "meta", "TEXT"),                             # forks: symbol, demangled name, source file
     ("functions", "boost", "INTEGER NOT NULL DEFAULT 0"),      # claim order: >0 matching it matches that many twins
+    ("functions", "hits", "INTEGER NOT NULL DEFAULT 0"),       # runtime coverage: times this function was seen
+    ("functions", "trace_at", "REAL"),                         # last trace import that touched it
 ]
 
 

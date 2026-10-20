@@ -270,7 +270,7 @@
       <table class="fn-table">
         <thead><tr>
           <th data-sort="vram" id="thAddr">Address</th><th data-sort="name">Function</th><th data-sort="insns" class="r" id="thInsns">Instructions</th>
-          <th data-sort="best" class="r" id="thBest">Best</th><th data-sort="attempts" class="r" id="thTries">Tries</th><th data-sort="status">Status</th>
+          <th data-sort="best" class="r" id="thBest">Best</th><th data-sort="attempts" class="r" id="thTries">Tries</th><th data-sort="hits" class="r" id="thHits">Hits</th><th data-sort="status">Status</th>
         </tr></thead>
         <tbody id="fnRows"></tbody>
       </table>
@@ -384,6 +384,16 @@
           <div class="row"><button class="primary small-btn" id="debugImport" type="button">Import</button><button class="ghost small-btn" id="debugExport" type="button">Export</button></div>
           <pre class="joblog" id="debugLog" hidden></pre>
           <p class="muted small" id="debugMsg"></p>
+        </div>
+      </section>
+      <section class="panel" id="tracePanel">
+        <header class="panel-head"><h2>Runtime coverage</h2></header>
+        <div class="pad">
+          <p class="muted small">Import a debugger, emulator or profiler trace: one address per line, a CSV with address/count, or JSON. Counts are added to the functions that contain those addresses; use the Coverage filter or <code>list_hot</code> to prioritize.</p>
+          <label class="field"><span>Trace file</span><input id="tracePath" class="mono" placeholder="/path/to/coverage.csv"></label>
+          <div class="row"><button class="primary small-btn" id="traceImport" type="button">Import trace</button></div>
+          <pre class="joblog" id="traceLog" hidden></pre>
+          <p class="muted small" id="traceMsg"></p>
         </div>
       </section>
       <section class="panel" id="comparePanel">

@@ -273,6 +273,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "export_debug_info": lambda net, agent, slug: json.dumps(net.export_debug_info(slug)),
     "compare_version": lambda net, agent, slug, path: json.dumps(net.compare_version(slug, path)),
     "list_data": lambda net, agent, slug, query="", limit=100: _data_text(net.data_symbols(slug, query, limit)),
+    "import_trace": lambda net, agent, slug, path: json.dumps(net.import_trace(slug, path)),
+    "list_hot": lambda net, agent, slug, limit=40: _hot_text(net.hot_functions(slug, limit)),
 }
 
 ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "import_debug_info",
@@ -282,6 +284,12 @@ ANALYSIS_ONLY = {"complete_function", "rea_tool"}
 ANALYSIS_TOOLS = {"project_info", "claim_function", "get_function", "release_function", "complete_function",
                   "rea_tool", "inspect_binary", "search_binary", "read_data", "list_functions", "add_note",
                   "search_notes", "guide", "read_file", "search_code"}
+
+
+def _hot_text(rows) -> str:
+    if not rows:
+        return "No runtime coverage has been imported."
+    return "\n".join(f"- {r['hits']:>8}  {r['name']}  0x{r['vram']:08X}" for r in rows)
 
 
 def _data_text(rows) -> str:
@@ -514,6 +522,17 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
     async def export_debug_info(ctx: Context) -> str:
         """Write portable symbol_addrs.txt, debug_types.h and debug_symbols.json files into the project folder."""
         return await run(ctx, "export_debug_info")
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def import_trace(ctx: Context, path: str) -> str:
+        """Import a debugger/emulator coverage file: addresses or function names with optional counts. Hits are
+        mapped to functions and shown in the Data/Coverage UI; use list_hot to prioritize."""
+        return await run(ctx, "import_trace", path=path)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def list_hot(ctx: Context, limit: int = 40) -> str:
+        """Most-executed functions from the imported runtime traces, hottest first."""
+        return await run(ctx, "list_hot", limit=limit)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def list_data(ctx: Context, query: str = "", limit: int = 100) -> str:

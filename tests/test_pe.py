@@ -209,3 +209,23 @@ def test_pc_export_is_a_cmake_project_with_a_working_judge(built, tmp_path):
     assert check.returncode == 0 and "MATCH" in check.stdout, check.stdout + check.stderr
     all_check = subprocess.run([sys.executable, "judge.py", "--all"], cwd=out, env=env, capture_output=True, text=True)
     assert all_check.returncode == 0, all_check.stdout + all_check.stderr
+
+
+def test_runtime_trace_maps_addresses_and_names_to_functions(built, tmp_path):
+    exe, _obj = built
+    net = RomNetwork(exe.parent / "trace.db", exe.parent)
+    slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game.exe", log=lambda *_: None)
+    image = pe.read(exe.read_bytes(), exe.name)
+    add = next(f.vram for f in image.functions if f.name == "add")
+    bump = next(f.vram for f in image.functions if f.name == "bump")
+    trace = tmp_path / "coverage.csv"
+    trace.write_text(f"address,count\n0x{add:X},3\n0x{bump + 0x2:X},5\n0xDEADBEEF,1\n")
+    result = net.import_trace(slug, str(trace))
+    assert result["hits"] == 8 and result["functions"] == 2 and result["unmatched"] == 1
+    hot = {r["name"]: r["hits"] for r in net.hot_functions(slug)}
+    assert hot["add"] == 3 and hot["bump"] == 5
+    assert net.overview(slug)["traced"] == 2 and net.overview(slug)["hits"] == 8
+    rows = {r["name"]: r for r in net.function_map(slug)}
+    assert rows["add"]["hits"] == 3
+    again = net.import_trace(slug, str(trace))
+    assert again["hits"] == 8 and net.hot_functions(slug)[0]["hits"] in (6, 10)

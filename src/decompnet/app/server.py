@@ -511,7 +511,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return {"slug": slug}
         return JSONResponse({"job": jobs.start("import", work)})
 
-    MAP_KEYS = ("name", "vram", "size", "insns", "unit", "status", "best", "attempts", "agent", "matched_at", "matched_by")
+    MAP_KEYS = ("name", "vram", "size", "insns", "unit", "status", "best", "attempts", "hits", "agent", "matched_at", "matched_by")
 
     @mcp.custom_route("/api/map", methods=["GET"])
     async def api_map(request: Request) -> Response:
@@ -687,6 +687,13 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return net.compare_version(slug, path)
         return {"job": jobs.start("compare", work)}
 
+    def p_trace(slug, request, data):
+        path = str(data.get("path") or "").strip()
+
+        def work(log):
+            return net.import_trace(slug, path, log=log)
+        return {"job": jobs.start("trace", work)}
+
     def p_autopilot(slug, request, data):
         if data.get("action") == "stop":
             net.stop_autopilot(slug)
@@ -710,6 +717,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/debug/import": (p_debug_import, ["POST"]),
         "/api/debug/export": (p_debug_export, ["POST"]),
         "/api/compare": (p_compare, ["POST"]),
+        "/api/trace/import": (p_trace, ["POST"]),
         "/api/stats": (lambda s, r, d: net.stats(s), ["GET"]),
         "/api/data": (lambda s, r, d: {"rows": net.data_symbols(
             s, r.query_params.get("q", ""), int(r.query_params.get("limit", 500) or 500))}, ["GET"]),

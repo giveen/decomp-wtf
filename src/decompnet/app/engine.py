@@ -28,6 +28,7 @@ from .. import rea, scoring, seeds, similarity, toolchains
 from ..elfobj import FunctionObj
 from ..network import Agent, Network, NetworkError, _ago, _hash_token
 from ..rom import bincompare, buildinfo, debuginfo, detect, library, match, pe, split
+from .. import tracefile
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 from . import analysis
 
@@ -2143,7 +2144,8 @@ class RomNetwork(Network):
         cfg = self.cfg(proj)
         agg = self.store.one(
             "SELECT COUNT(*) AS total, SUM(status='matched') AS matched, SUM(size) AS bytes, "
-            "SUM(CASE WHEN status='matched' THEN size ELSE 0 END) AS matched_bytes, SUM(attempts) AS attempts "
+            "SUM(CASE WHEN status='matched' THEN size ELSE 0 END) AS matched_bytes, SUM(attempts) AS attempts, "
+            "SUM(hits>0) AS traced, SUM(hits) AS hits "
             "FROM functions WHERE project_id=? AND status!='library'", proj["id"])
         lib = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='library'",
                              proj["id"])["n"]
@@ -2175,6 +2177,7 @@ class RomNetwork(Network):
             "source_language": source_language(tc.id), "source_ext": source_ext(tc.id),
             "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
             "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0, "library": lib,
+            "traced": agg["traced"] or 0, "hits": agg["hits"] or 0,
             "data": self.store.one("SELECT COUNT(*) AS n FROM symbols WHERE project_id=? AND kind!='func'",
                                     proj["id"])["n"],
             "context_version": self._context(proj["id"])["version"],
@@ -2226,6 +2229,69 @@ class RomNetwork(Network):
             return {"role": "host", "members": self.rooms[slug].members()}
         return None
 
+    def import_trace(self, slug: str, path: str, log=print) -> dict:
+        """Fold a debugger/emulator coverage file into the project: every hit becomes a function's hit count."""
+        proj = self._project(slug)
+        trace = tracefile.read(path)
+        cfg = self.cfg(proj)
+        image_base = int(cfg.get("rom", {}).get("image_base") or 0)
+        rows = self.store.all("SELECT id, name, vram, size FROM functions WHERE project_id=? AND vram IS NOT NULL",
+                              proj["id"])
+        by_name = {r["name"]: r for r in rows}
+        by_addr = {int(r["vram"]): r for r in rows}
+        starts = sorted(by_addr)
+        import bisect
+        def find(addr: int):
+            if addr in by_addr:
+                return by_addr[addr]
+            i = bisect.bisect_right(starts, addr) - 1
+            if i >= 0:
+                r = by_addr[starts[i]]
+                if addr < int(r["vram"]) + int(r["size"] or 0):
+                    return r
+            return None
+        hits: dict[int, int] = {}
+        unmatched = 0
+        for hit in trace.hits:
+            row = by_name.get(hit.name) if hit.name else None
+            if row is None and hit.address is not None:
+                candidates = [hit.address]
+                if image_base:
+                    if hit.address < image_base:
+                        candidates.append(hit.address + image_base)
+                    else:
+                        candidates.append(hit.address - image_base)
+                for addr in candidates:
+                    row = find(addr)
+                    if row is not None:
+                        break
+            if row is None:
+                unmatched += 1
+                continue
+            hits[row["id"]] = hits.get(row["id"], 0) + hit.count
+        now = time.time()
+        if hits:
+            with self.store.tx() as db:
+                db.executemany("UPDATE functions SET hits=hits+?, trace_at=? WHERE id=?",
+                               [(n, now, fid) for fid, n in hits.items()])
+                db.execute("INSERT INTO events(project_id,agent_id,kind,detail,created_at) VALUES(?,?,?,?,?)",
+                           (proj["id"], None, "trace", f"{sum(hits.values())} hits in {len(hits)} functions from {trace.source}",
+                            now))
+        top = sorted(((self.store.one("SELECT name, vram, hits FROM functions WHERE id=?", fid), n) for fid, n in hits.items()),
+                     key=lambda x: -x[1])[:10]
+        log(f"trace {trace.source}: {sum(hits.values())} hits in {len(hits)} functions, {unmatched} unmatched")
+        return {"source": trace.source, "hits": sum(hits.values()), "functions": len(hits), "unmatched": unmatched,
+                "skipped": trace.skipped,
+                "top": [{"name": r["name"], "vram": int(r["vram"]), "hits": n} for r, n in top]}
+
+    def hot_functions(self, slug: str, limit: int = 40) -> list[dict]:
+        proj = self._project(slug)
+        rows = self.store.all(
+            "SELECT name, vram, size, hits, trace_at FROM functions WHERE project_id=? AND hits>0 "
+            "ORDER BY hits DESC, name LIMIT ?", proj["id"], max(1, min(int(limit), 500)))
+        return [{"name": r["name"], "vram": int(r["vram"] or 0), "size": int(r["size"] or 0),
+                 "hits": int(r["hits"] or 0), "trace_at": r["trace_at"]} for r in rows]
+
     def data_symbols(self, slug: str, query: str = "", limit: int = 500) -> list[dict]:
         """Data and string symbols the target already names, as a readable inventory (not code work items)."""
         proj = self._project(slug)
@@ -2249,7 +2315,7 @@ class RomNetwork(Network):
     def function_map(self, slug: str) -> list[dict]:
         proj = self._project(slug)
         rows = self.store.all(
-            "SELECT f.name, f.vram, f.size, f.n_insns, f.status, f.meta, f.best_score, f.attempts, f.unit, f.matched_at, "
+            "SELECT f.name, f.vram, f.size, f.n_insns, f.status, f.meta, f.best_score, f.attempts, f.hits, f.unit, f.matched_at, "
             "a.name AS agent, m.name AS matched_by FROM functions f LEFT JOIN claims c ON c.function_id=f.id "
             "LEFT JOIN agents a ON a.id=c.agent_id LEFT JOIN agents m ON m.id=f.matched_agent_id "
             "WHERE f.project_id=? ORDER BY f.vram, f.unit, f.id", proj["id"])
@@ -2265,7 +2331,7 @@ class RomNetwork(Network):
                 "working" if (r["agent"] or key(r) in remote) else "open")
             out.append({"name": r["name"], "vram": r["vram"], "size": r["size"], "insns": r["n_insns"],
                         "unit": r["unit"], "status": status, "library": meta.get("library"),
-                        "best": r["best_score"], "attempts": r["attempts"],
+                        "best": r["best_score"], "attempts": r["attempts"], "hits": int(r["hits"] or 0),
                         "agent": r["agent"] or remote.get(key(r)), "matched_at": r["matched_at"],
                         "matched_by": r["matched_by"]})
         return out
