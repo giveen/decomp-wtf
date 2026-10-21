@@ -1,6 +1,5 @@
 """Reference folders: what the user names in a ROM project's instructions, agents can read and search."""
 import os
-from pathlib import Path
 
 import pytest
 

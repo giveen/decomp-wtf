@@ -4,7 +4,6 @@ donated compute and upstream export."""
 import json
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 

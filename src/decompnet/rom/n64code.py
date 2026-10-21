@@ -100,7 +100,7 @@ def find_segments(rom: bytes, taken: list[tuple[int, int, int]]) -> list[tuple[i
     # a function start anywhere in the image.
     mappings = collections.Counter(v - s for s, _, v in found)
     frame_at = {i * 4 for i, w in enumerate(struct.unpack(f">{size // 4}I", rom[:size])) if _frame(w)}
-    for lo, hi, floor in stretches:
+    for lo, hi, _ in stretches:
         if any(a <= lo < b or a < hi <= b for a, b, _ in found):
             continue
         words = struct.unpack(f">{(hi - lo) // 4}I", rom[lo:hi])

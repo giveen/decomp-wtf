@@ -48,7 +48,7 @@ def comment_version(compiler: str) -> int:
         return 14
     if (major, minor) >= (2, 7):
         return 11
-    if (major, minor) >= (1, 3) and "1.3" != compiler[3:]:
+    if (major, minor) >= (1, 3) and compiler[3:] != "1.3":
         return 10
     return 8
 
@@ -74,7 +74,7 @@ def _next_linker(compiler: str, log_tail: str) -> str | None:
 def _use_linker(root: Path, game_id: str, compiler: str, sources: list[str], rels: bool) -> None:
     cfg = root / "config" / game_id / "config.yml"
     cfg.write_text(re.sub(r"^mw_comment_version: \d+$", f"mw_comment_version: {comment_version(compiler)}",
-                          cfg.read_text(encoding="utf-8"), count=1, flags=re.M), encoding="utf-8")
+                          cfg.read_text(encoding="utf-8"), count=1, flags=re.MULTILINE), encoding="utf-8")
     _write_configure(root, game_id, compiler, sources, rels)
 
 
@@ -86,10 +86,10 @@ def is_dol(data: bytes) -> bool:
     addrs = struct.unpack(">18I", data[72:144])
     sizes = struct.unpack(">18I", data[144:216])
     entry = struct.unpack(">I", data[0xE0:0xE4])[0]
-    used = [(o, a, s) for o, a, s in zip(offs, addrs, sizes) if s]
+    used = [(o, a, s) for o, a, s in zip(offs, addrs, sizes, strict=False) if s]
     if not used or not 0x80000000 <= entry < 0x81800000:
         return False
-    return all(0x100 <= o and o + s <= len(data) and 0x80000000 <= a < 0x81800000 for o, a, s in used)
+    return all(o >= 0x100 and o + s <= len(data) and 0x80000000 <= a < 0x81800000 for o, a, s in used)
 
 
 def disc_kind(head: bytes) -> str | None:
@@ -182,7 +182,7 @@ def disc_modules(disc: Path, packed: list[str] | None = None) -> list[tuple[str,
     `packed`: gets the paths of modules compressed in a way decomp.wtf can't read (see is_compressed_rel)."""
     files = vfs_list(disc)
     rels = [f for f in files if f.lower().endswith(".rel")]
-    for arc in (f for f in files if re.search(r"rel", Path(f).name, re.I) and Path(f).suffix.lower() in (".arc", ".szs", ".carc")):
+    for arc in (f for f in files if re.search(r"rel", Path(f).name, re.IGNORECASE) and Path(f).suffix.lower() in (".arc", ".szs", ".carc")):
         try:
             rels += [f"{arc}:{inner}" for inner in vfs_list(Path(f"{disc}:{arc}")) if inner.lower().endswith(".rel")]
         except ForkError:
@@ -295,8 +295,8 @@ def _libs_block(compiler: str, sources: list[str], rels: bool = False) -> str:
 def _write_configure(root: Path, game_id: str, compiler: str, sources: list[str], rels: bool = False) -> None:
     p = root / "configure.py"
     s = p.read_text(encoding="utf-8")
-    s = re.sub(r'VERSIONS = \[\n.*?\n\]', f'VERSIONS = [\n    "{game_id}",  # 0\n]', s, count=1, flags=re.S)
-    s = re.sub(r'^config\.linker_version = ".*"$', f'config.linker_version = "{compiler}"', s, count=1, flags=re.M)
+    s = re.sub(r'VERSIONS = \[\n.*?\n\]', f'VERSIONS = [\n    "{game_id}",  # 0\n]', s, count=1, flags=re.DOTALL)
+    s = re.sub(r'^config\.linker_version = ".*"$', f'config.linker_version = "{compiler}"', s, count=1, flags=re.MULTILINE)
     if "config.shift_jis = False" not in s:  # sources are plain C (turn it back on for Japanese string literals)
         s = s.replace(f'config.linker_version = "{compiler}"', f'config.linker_version = "{compiler}"\nconfig.shift_jis = False', 1)
     if rels and "config.rel_empty_file" not in s:  # what an empty module is linked from (marked Matching)
@@ -342,7 +342,7 @@ def _standard_module_sections(root: Path, game_id: str) -> list[str]:
     named = []
     for path in sorted((root / "config" / game_id / "rels").glob("*/splits.txt")):
         text = path.read_text(encoding="utf-8")
-        m = re.search(r"^Sections:\n((?:\t.*\n?)+)", text, re.M)
+        m = re.search(r"^Sections:\n((?:\t.*\n?)+)", text, re.MULTILINE)
         if not m:
             continue
         lines = m.group(1).rstrip("\n").split("\n")
@@ -368,7 +368,7 @@ def _unique_in(path: Path) -> list[str]:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return []
-    m = re.search(r"^Sections:\n((?:\t.*\n?)+)", text, re.M)
+    m = re.search(r"^Sections:\n((?:\t.*\n?)+)", text, re.MULTILINE)
     if not m:
         return []
     lines = m.group(1).rstrip("\n").split("\n")
@@ -395,10 +395,10 @@ def _name_entry(root: Path, game_id: str, dol: bytes) -> bool:
     if not path.exists():
         return False
     text = path.read_text(encoding="utf-8")
-    if re.search(r"^__start = ", text, re.M):
+    if re.search(r"^__start = ", text, re.MULTILINE):
         return False
     entry = struct.unpack(">I", dol[0xE0:0xE4])[0]
-    new, n = re.subn(rf"^\w+ = (\.init|\.text):0x{entry:08X};", rf"__start = \1:0x{entry:08X};", text, count=1, flags=re.M)
+    new, n = re.subn(rf"^\w+ = (\.init|\.text):0x{entry:08X};", rf"__start = \1:0x{entry:08X};", text, count=1, flags=re.MULTILINE)
     if n:
         path.write_text(new, encoding="utf-8")
     return bool(n)
@@ -412,13 +412,13 @@ def _differing(root: Path, game_id: str, log_tail: str) -> list[str] | None:
     step: dtk asked again, as the build's output can be too long to keep); None when something else failed."""
     if not re.search(r"\.(dol|rel): \S*FAILED|build\.sha1", log_tail) or "internal linker error" in log_tail:
         return None
-    if any(e != f"build/{game_id}/ok" for e in re.findall(r"^FAILED: (?:\[code=\d+\] )?(\S+)", log_tail, re.M)):
+    if any(e != f"build/{game_id}/ok" for e in re.findall(r"^FAILED: (?:\[code=\d+\] )?(\S+)", log_tail, re.MULTILINE)):
         return None  # another step failed (what's on disk may be from an earlier build)
     res = subprocess.run(capped([_dtk(), "shasum", "-c", f"config/{game_id}/build.sha1"]), cwd=root, capture_output=True,
                          text=True, timeout=600, encoding="utf-8", errors="replace")
     lines = [re.sub(r"\x1b\[[0-9;]*m", "", ln) for ln in (res.stdout + res.stderr).splitlines()]
     results = [re.match(r"^(\S+\.(?:dol|rel)): (OK|FAILED)$", ln) for ln in lines]
-    if any(m is None for m, ln in zip(results, lines) if re.search(r"\.(dol|rel)\b", ln)):
+    if any(m is None for m, ln in zip(results, lines, strict=False) if re.search(r"\.(dol|rel)\b", ln)):
         return None  # a file is missing or unreadable: the build didn't get that far
     failed = [Path(m.group(1)).name for m in results if m and m.group(2) == "FAILED"]
     return failed or None
@@ -466,7 +466,7 @@ _MISSING_FUNCTION = re.compile(r"Failed to find function symbol @ \d+:0x([0-9A-F
 def _dol_read(dol: bytes, address: int, size: int) -> bytes:
     """`size` bytes of the program at `address` (empty when no section of the file holds them)."""
     offs, addrs, sizes = (struct.unpack(">18I", dol[k:k + 72]) for k in (0, 72, 144))
-    for o, a, n in zip(offs, addrs, sizes):
+    for o, a, n in zip(offs, addrs, sizes, strict=False):
         if n and a <= address and address + size <= a + n:
             return dol[o + address - a:o + address - a + size]
     return b""
@@ -501,7 +501,7 @@ def _declare_function(root: Path, game_id: str, dol: bytes, log_tail: str) -> tu
         return None
     path = root / "config" / game_id / "symbols.txt"
     text = path.read_text(encoding="utf-8") if path.exists() else ""
-    if re.search(rf"^\S+ = {re.escape(section[0])}:0x{address:08X}; // type:function size:0x{size:X}\b", text, re.M):
+    if re.search(rf"^\S+ = {re.escape(section[0])}:0x{address:08X}; // type:function size:0x{size:X}\b", text, re.MULTILINE):
         return None  # already declared, and dtk still fails: something else is wrong
     lines = [ln for ln in text.splitlines() if not re.match(rf"^\S+ = \S+:0x{address:08X};", ln)]
     lines.append(f"fn_{address:08X} = {section[0]}:0x{address:08X}; // type:function size:0x{size:X}")
@@ -517,7 +517,7 @@ def _dtk_sections(dol: bytes) -> list[tuple[str, int, int]]:
                              text=True, timeout=600, encoding="utf-8", errors="replace")
     table = res.stdout.split("Sections:", 1)[-1].split("\n\n", 1)[0]
     return [(m.group(1), int(m.group(2), 16), int(m.group(3), 16))
-            for m in re.finditer(r"^[ \t]*(\S+) \| 0x([0-9A-Fa-f]+)\s*\| 0x([0-9A-Fa-f]+)\s*\|", table, re.M)]
+            for m in re.finditer(r"^[ \t]*(\S+) \| 0x([0-9A-Fa-f]+)\s*\| 0x([0-9A-Fa-f]+)\s*\|", table, re.MULTILINE)]
 
 
 def _code_units(root: Path, game_id: str) -> list[tuple[str | None, int, int, str]]:
@@ -553,12 +553,12 @@ def _drop_module(root: Path, game_id: str, log_tail: str) -> list[str] | None:
         return None
     cfg = root / "config" / game_id / "config.yml"
     text = cfg.read_text(encoding="utf-8")
-    blocks = {b.group(1): b for b in re.finditer(r"^- object: [^\n]*/(\w+)\.rel\n(?:  [^\n]*\n)*", text, re.M)}
+    blocks = {b.group(1): b for b in re.finditer(r"^- object: [^\n]*/(\w+)\.rel\n(?:  [^\n]*\n)*", text, re.MULTILINE)}
     if m.group(1) not in blocks:
         return None
     names = [m.group(1)]
     if (need := re.search(r"Failed to locate module (\d+)", log_tail)):
-        ob = re.search(r"^object_base:\s*(\S+)", text, re.M)
+        ob = re.search(r"^object_base:\s*(\S+)", text, re.MULTILINE)
         base = root / ob.group(1) if ob else root
         for name, block in blocks.items():
             obj = re.match(r"- object: (\S+)", block.group(0)).group(1)
@@ -673,7 +673,8 @@ write_asm: true
             break
         ok, tail = _build(fp, log)
     diff = None if ok else _differing(root, gid, tail)
-    if not ok and closest is not None and closest[1] != compiler and (diff is None or closest[0] <= len(diff)):  # the closest (earliest of equals)
+    # falling back to the closest match (earliest of the equals), which the earlier passes failed on
+    if not ok and closest is not None and closest[1] != compiler and (diff is None or closest[0] <= len(diff)):
         compiler = closest[1]
         _use_linker(root, gid, compiler, [], bool(modules))
         ok, tail = _build(fp, log)

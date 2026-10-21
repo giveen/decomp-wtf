@@ -1,7 +1,7 @@
 """The local engine on Demo Quest 64: import, claim, split, match, rename, read data, export."""
 
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -195,7 +195,9 @@ def test_symbol_addrs_import_renames_a_rom_function(built, tmp_path):  # noqa: F
     path = tmp_path / "symbol_addrs.txt"
     path.write_text("clamp_s32 = 0x800007D0; // type:func size:0x24\n")
     result = net.import_debug_info(slug, str(path))
-    assert result["renamed"] == 1 and not result["warning"]
+    # exit() never returns, so the split ran exit into clamp_s32: the symbol file's address is the real boundary,
+    # so importing it splits the merged function instead of dropping the name.
+    assert result["renamed"] == 1 and result["split"] == 1 and not result["warning"]
     assert net._function("clamp_s32", slug)["vram"] == 0x800007D0
     exported = net.export_debug_info(slug)
     assert "clamp_s32 = 0x800007D0;" in Path(exported["symbol_addrs"]).read_text()

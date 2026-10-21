@@ -93,7 +93,7 @@ class Chd:
     """A CHD v5 image, read as the disc it holds (seek/read/tell, like a file)."""
 
     def __init__(self, path: Path | str):
-        self.f = open(path, "rb")
+        self.f = open(path, "rb")  # noqa: SIM115 the Chd owns this handle for its life: close() closes it
         head = self.f.read(124)
         if not is_chd(head):
             raise RomError("this isn't a CHD image")

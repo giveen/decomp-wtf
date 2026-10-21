@@ -33,8 +33,8 @@ _CONTROL = re.compile(r"\b(return|break|continue|goto|case|default)\b|^\s*(else|
 
 
 def _body_bounds(lines: list[str]) -> tuple[int, int]:
-    start = next((i for i, l in enumerate(lines) if "{" in l), 0)
-    end = max((i for i, l in enumerate(lines) if l.strip().startswith("}")), default=len(lines) - 1)
+    start = next((i for i, ln in enumerate(lines) if "{" in ln), 0)
+    end = max((i for i, ln in enumerate(lines) if ln.strip().startswith("}")), default=len(lines) - 1)
     return start + 1, end
 
 
@@ -224,7 +224,8 @@ def worker(server: str, token: str, minutes_per_job: float = 10, max_jobs: int =
         log(f"job: {job['project']}/{job['function']} (best score {job['best_score']}, {job['toolchain']})")
         submitted = {"best": job["best_score"]}
 
-        def report(score: int, source: str) -> None:
+        def report(score: int, source: str, submitted=submitted, job=job) -> None:
+            # `submitted`/`job` are bound as defaults: this loop's job, not the next one's
             if score < submitted["best"]:
                 verdict = _api(server, token, "/api/jobs/submit",
                                {"project": job["project"], "function": job["function"], "source": source})

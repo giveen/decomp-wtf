@@ -190,7 +190,7 @@ def gba_game():
     put(0x08000200, code)
 
     def read(addr, n):
-        return bytes(image[addr - BASE:addr - BASE + n]) if BASE <= addr and addr + n <= BASE + len(image) else None
+        return bytes(image[addr - BASE:addr - BASE + n]) if addr >= BASE and addr + n <= BASE + len(image) else None
 
     from decompnet.rom.match_arm import ArmTarget
 

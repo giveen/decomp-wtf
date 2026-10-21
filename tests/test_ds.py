@@ -54,13 +54,14 @@ def test_project_rebuilds_the_rom(ds):
 
 def test_agents_match_functions(ds):
     net, slug = ds
-    syms = {s.name: s["st_value"] for s in ELFFile(open(ELF, "rb")).get_section_by_name(".symtab").iter_symbols()}
+    with open(ELF, "rb") as fh:
+        syms = {s.name: s["st_value"] for s in ELFFile(fh).get_section_by_name(".symtab").iter_symbols()}
     agent, _ = net.local_agent("ds-agent")
     source = GAME.read_text()
     # what an agent does first: the game's types into the shared header, and the player under ds-decomp's name
     player = f"data_{syms['g_player']:08x}"
-    types = "\n".join(l for l in (GAME.parent / "game.h").read_text().splitlines()
-                      if not l.startswith(("#include", "typedef signed", "typedef unsigned", "typedef float", "#define NULL")))
+    types = "\n".join(ln for ln in (GAME.parent / "game.h").read_text().splitlines()
+                      if not ln.startswith(("#include", "typedef signed", "typedef unsigned", "typedef float", "#define NULL")))
     types = types.replace("extern Player g_player;", f"extern Player {player};")
     assert net.forks.edit_file(agent, slug, "include/common.h", "", types, "the game's types").startswith("✅")
     for name in ("clamp_s32", "abs_s32", "player_take_damage"):

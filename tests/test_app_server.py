@@ -52,7 +52,7 @@ def test_gui_needs_the_secret_and_the_right_host(app):
 
 @needs_demo
 def test_import_demo_and_follow_it_live(app):
-    client, net, _ = app
+    client, _net, _ = app
     h = {"X-Decomp": "1"}
     assert client.post("/api/import?confirmed=0", content=b"x" * 10, headers=h).status_code == 400
     job = client.post("/api/import?demo=1", content=b"", headers=h).json()["job"]
@@ -98,10 +98,11 @@ def test_parse_agent_output():
 @needs_demo
 def test_builtin_api_agent_matches_a_function(app, monkeypatch):
     """A scripted OpenAI-compatible model: claim, compile the right C, stop. The tool loop must do the rest."""
-    client, net, manager = app
+    _client, net, manager = app
     slug = net.store.one("SELECT slug FROM projects")["slug"]
     script = iter([
-        {"tool_calls": [{"id": "1", "type": "function", "function": {"name": "claim_function", "arguments": json.dumps({"function": "func_800007F4"})}}]},
+        {"tool_calls": [{"id": "1", "type": "function",
+                         "function": {"name": "claim_function", "arguments": json.dumps({"function": "func_800007F4"})}}]},
         {"tool_calls": [{"id": "2", "type": "function", "function": {"name": "compile_and_diff", "arguments": json.dumps(
             {"function": "func_800007F4", "source": "s32 func_800007F4(s32 v) { return v < 0 ? -v : v; }"})}}]},
         {"content": "Matched."},
@@ -145,7 +146,7 @@ def test_an_agent_out_of_credit_stops_and_says_so(tmp_path, monkeypatch):
         monkeypatch.setattr(manager, "_command", lambda s, token, workdir: ([sys.executable, "-c", code], dict(os.environ), ""))
 
     says("AI_APICallError: Insufficient Balance (request_id: 3e759c3b)")
-    with pytest.raises(agents.Fatal, match="out of credit .*Insufficient Balance.*top it up"):
+    with pytest.raises(agents.Fatal, match=r"out of credit .*Insufficient Balance.*top it up"):
         manager._run_cli(s, "token", tmp_path)
     says("AI_APICallError: Too many requests. Your current concurrency is 5, which exceeds your concurrency limit of 5")
     assert manager._run_cli(s, "token", tmp_path) is False and s.throttled
@@ -153,7 +154,7 @@ def test_an_agent_out_of_credit_stops_and_says_so(tmp_path, monkeypatch):
 
 @needs_demo
 def test_builtin_api_agent_out_of_credit(app, monkeypatch):
-    client, net, manager = app
+    _client, net, manager = app
     slug = net.store.one("SELECT slug FROM projects")["slug"]
     answers = iter([httpx.Response(429, json={"error": {"message": "Rate limit reached for requests"}}),
                     httpx.Response(402, json={"error": {"message": "Insufficient Balance"}})])
@@ -178,7 +179,7 @@ def test_agent_spend_is_read_from_their_output():
 
 @needs_demo
 def test_helpers_are_remembered_to_resume(app):
-    client, net, manager = app
+    _client, net, manager = app
     slug = net.store.one("SELECT slug FROM projects")["slug"]
     seen = []
     manager.persist = lambda running: seen.append([r["kind"] for r in running])
@@ -302,10 +303,11 @@ def test_a_project_that_cant_be_read_is_listed_with_the_reason(app, monkeypatch)
         db.execute("DELETE FROM projects WHERE slug='odd-game'")
 
 
+@needs_demo
 def test_the_api_agent_stays_within_a_small_local_context(app, monkeypatch):
     """A local llama.cpp model with a small context: the agent learns it from /props, trims older tool output to
     fit, and when the server still says the request is too long, trims harder and sends it again."""
-    client, net, manager = app
+    _client, net, manager = app
     slug = net.store.one("SELECT slug FROM projects")["slug"]
     names = [r["name"] for r in net.store.all("SELECT name FROM functions WHERE project_id=(SELECT id FROM projects "
                                                  "WHERE slug=?) ORDER BY n_insns DESC LIMIT 6", slug)]

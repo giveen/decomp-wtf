@@ -120,9 +120,9 @@ def candidates(rom: bytes, known: list[int]) -> list[int]:
         after_padding = prev in (0, 0x46C0) and off >= 4 and (
             ((rom[off - 4] | rom[off - 3] << 8) & 0xFF87) == 0x4700 or (rom[off - 3] == 0xBD))
         prologue = (half & 0xFF00) == 0xB500
-        if (prologue and (after_return or after_padding or prev == 0)) or after_return or after_padding:
-            if plausible_function(rom, off):
-                out.add(BASE + off)
+        if ((prologue and (after_return or after_padding or prev == 0)) or after_return or after_padding) \
+                and plausible_function(rom, off):
+            out.add(BASE + off)
     for _, _, body in bodies(rom, known, literals):  # whatever known code calls is a function
         for ins in body:
             if ins.mnemonic == "bl":

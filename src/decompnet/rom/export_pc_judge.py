@@ -60,7 +60,7 @@ def main() -> int:
         print("usage: python judge.py FUNCTION | --all")
         return 2
     names = [f["name"] for f in B["functions"]] if sys.argv[1] == "--all" else [sys.argv[1]]
-    ok = all([check(n) for n in names])
+    ok = all(check(n) for n in names)
     return 0 if ok else 1
 
 

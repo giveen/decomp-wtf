@@ -52,7 +52,7 @@ def room(tmp_path_factory):
 
 
 def test_the_member_gets_the_tree_and_builds_it_with_their_own_copy(room):
-    host, slug, guest, gslug, client, link, said = room
+    host, slug, guest, gslug, _client, _link, said = room
     hroot, groot = Path(host.project_row(slug)["root"]), Path(guest.project_row(gslug)["root"])
     assert _git(groot, "rev-parse", "HEAD") == _git(hroot, "rev-parse", "HEAD")  # the host's commits, as they are
     assert (groot / "extract" / "baserom.nds").exists()  # the member's own copy, placed by the member's setup
@@ -64,7 +64,7 @@ def test_the_member_gets_the_tree_and_builds_it_with_their_own_copy(room):
 
 
 def test_joining_needs_the_same_game(room, tmp_path):
-    host, slug, guest, gslug, client, link, said = room
+    _host, _slug, _guest, _gslug, client, link, _said = room
     other = RomNetwork(tmp_path / "o.db", tmp_path)
     changed = bytearray(ROM.read_bytes())
     changed[0x5000] ^= 0xFF  # a byte of the ARM9 program
@@ -74,7 +74,7 @@ def test_joining_needs_the_same_game(room, tmp_path):
 
 
 def test_state_and_bundles_carry_work_never_the_game(room):
-    host, slug, guest, gslug, client, link, said = room
+    _host, slug, guest, gslug, client, _link, _said = room
     tok = guest.links[gslug].token
     st = client.get(f"/collab/state?room={slug}", headers={"authorization": f"Bearer {tok}"}).json()
     assert st["head"] and st["members"][0]["name"] == "alex" and "functions" not in st and "context" not in st
@@ -84,7 +84,7 @@ def test_state_and_bundles_carry_work_never_the_game(room):
 
 
 def test_a_members_match_is_confirmed_and_committed_by_the_host(room):
-    host, slug, guest, gslug, client, link, said = room
+    host, slug, guest, gslug, _client, _link, _said = room
     syms = _syms()
     agent, _ = guest.local_agent("claude-1")
     hroot = Path(host.project_row(slug)["root"])
@@ -112,7 +112,7 @@ def test_a_members_match_is_confirmed_and_committed_by_the_host(room):
 
 
 def test_the_hosts_work_reaches_the_member(room):
-    host, slug, guest, gslug, client, link, said = room
+    host, slug, guest, gslug, _client, _link, _said = room
     syms = _syms()
     agent, _ = host.local_agent("claude-host")
     fn = f"func_{syms['abs_s32']:08x}"
@@ -129,7 +129,7 @@ def test_the_hosts_work_reaches_the_member(room):
 
 
 def test_work_in_progress_survives_following_the_host(room):
-    host, slug, guest, gslug, client, link, said = room
+    host, slug, guest, gslug, _client, _link, _said = room
     syms = _syms()
     other = f"func_{syms['player_take_damage']:08x}"
     busy = guest._function(other, gslug)["unit"]
@@ -154,7 +154,7 @@ def test_work_in_progress_survives_following_the_host(room):
 
 
 def test_the_hosts_version_wins_where_both_changed_the_same_lines(room):
-    host, slug, guest, gslug, client, link, said = room
+    host, slug, guest, gslug, _client, _link, _said = room
     hroot, groot = Path(host.project_row(slug)["root"]), Path(guest.project_row(gslug)["root"])
     rel = "include/common.h"
     (groot / rel).write_text((groot / rel).read_text() + "\n#define MEMBER_ONLY 1\n")  # unsaved work here
@@ -168,7 +168,7 @@ def test_the_hosts_version_wins_where_both_changed_the_same_lines(room):
 
 
 def test_reconnecting_keeps_the_place_in_the_tree(room):
-    host, slug, guest, gslug, client, link, said = room
+    host, slug, guest, gslug, client, link, _said = room
     head = json.loads(guest.project_row(gslug)["config"])["link"]["head"]
     assert head == _git(Path(host.project_row(slug)["root"]), "rev-parse", "HEAD")
     assert collab.join_room(guest, link, "alex", b"", log=lambda *_: None, client=client, start=False) == gslug

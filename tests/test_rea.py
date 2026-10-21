@@ -163,7 +163,8 @@ def test_draft_uses_the_configured_bridge(monkeypatch, fake, tmp_path):
 def test_search_and_dossier(fake, monkeypatch, tmp_path):
     from decompnet.rom.symbols import Symbol, SymbolTable
     monkeypatch.setenv("DECOMP_REA", " ".join(fake))
-    rea._clients.clear(); rea._opened.clear()
+    rea._clients.clear()
+    rea._opened.clear()
     binary = tmp_path / "game.exe"
     binary.write_bytes(b"MZ" + b"\0" * 100)
     symbols = SymbolTable([Symbol("helper", 0x1010, 8, "func"), Symbol("caller", 0x1020, 8, "func")])

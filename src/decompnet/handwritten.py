@@ -68,7 +68,7 @@ def _uses(w: int) -> tuple[list[int], list[int]] | None:
         update = bool(op & 1)
         addr = [a] if update else base
         if op in (36, 37, 38, 39, 44, 45):  # stores
-            return [d] + addr, [a] if update else []
+            return [d, *addr], [a] if update else []
         return addr, [d] + ([a] if update else [])
     if 48 <= op <= 55 or op in (56, 57, 60, 61):  # float loads and stores, psq_l(u)/psq_st(u): rA only
         update = bool(op & 1)
@@ -103,7 +103,7 @@ def _uses(w: int) -> tuple[list[int], list[int]] | None:
         if xo in (467, 144):  # mtspr, mtcrf
             return [d], []
         if xo in _X_CACHE:
-            return base + [b], []
+            return [*base, b], []
         if xo in _X_NEUTRAL:
             return [], [d] if xo == 19 else []
         return None

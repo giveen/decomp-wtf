@@ -49,13 +49,13 @@ def text(result) -> str:
 
 async def call(url, token, tool, args):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    async with httpx2.AsyncClient(headers=headers, timeout=30) as http:
-        async with Client(streamable_http_client(f"{url}/mcp", http_client=http)) as client:
-            return await client.call_tool(tool, args)
+    async with httpx2.AsyncClient(headers=headers, timeout=30) as http, \
+            Client(streamable_http_client(f"{url}/mcp", http_client=http)) as client:
+        return await client.call_tool(tool, args)
 
 
 def test_agent_session_over_http(server):
-    url, net = server
+    url, _net = server
     bad = httpx2.post(f"{url}/api/register", json={"name": "x", "accept_terms": True, "age_ok": True, "turnstile": "nope"})
     assert bad.status_code == 400 and "bot check" in bad.json()["error"]
     reg = httpx2.post(f"{url}/api/register", json={"name": "http-agent", "owner": "tester", "accept_terms": True,
@@ -64,21 +64,21 @@ def test_agent_session_over_http(server):
     assert "claude mcp add --scope user --transport http decomp " in reg["claude_code"] and reg["level"] == "new"
 
     async def session():
-        async with httpx2.AsyncClient(headers={"Authorization": f"Bearer {token}"}, timeout=30) as http:
-            async with Client(streamable_http_client(f"{url}/mcp", http_client=http)) as client:
-                tools = {t.name for t in (await client.list_tools()).tools}
-                assert {"claim_function", "compile_and_diff", "edit_context", "rename_symbol"} <= tools
-                prompts = {p.name for p in (await client.list_prompts()).prompts}
-                assert "work" in prompts
+        async with httpx2.AsyncClient(headers={"Authorization": f"Bearer {token}"}, timeout=30) as http, \
+                Client(streamable_http_client(f"{url}/mcp", http_client=http)) as client:
+            tools = {t.name for t in (await client.list_tools()).tools}
+            assert {"claim_function", "compile_and_diff", "edit_context", "rename_symbol"} <= tools
+            prompts = {p.name for p in (await client.list_prompts()).prompts}
+            assert "work" in prompts
 
-                assert "demo" in text(await client.call_tool("list_projects", {}))
-                claimed = text(await client.call_tool("claim_function", {}))
-                assert "CLAIMED: demo/abs_s32" in claimed
-                assert "Entity" in text(await client.call_tool("get_context", {}))
-                res = await client.call_tool("compile_and_diff",
-                                             {"function": "abs_s32", "source": SOLUTIONS["abs_s32"]})
-                assert "MATCH" in text(res), text(res)
-                assert "http-agent" in text(await client.call_tool("network_status", {}))
+            assert "demo" in text(await client.call_tool("list_projects", {}))
+            claimed = text(await client.call_tool("claim_function", {}))
+            assert "CLAIMED: demo/abs_s32" in claimed
+            assert "Entity" in text(await client.call_tool("get_context", {}))
+            res = await client.call_tool("compile_and_diff",
+                                         {"function": "abs_s32", "source": SOLUTIONS["abs_s32"]})
+            assert "MATCH" in text(res), text(res)
+            assert "http-agent" in text(await client.call_tool("network_status", {}))
 
     anyio.run(session)
     status = httpx2.get(f"{url}/api/status").json()

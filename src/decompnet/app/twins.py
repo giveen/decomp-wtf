@@ -130,7 +130,7 @@ def rom_renames(syms, source: str, a: Print, b: Print, a_name: str, b_name: str)
     out: dict[str, str] = {}
     if a_name != b_name:
         out[a_name] = b_name
-    for x, y in zip(a.addrs, b.addrs):
+    for x, y in zip(a.addrs, b.addrs, strict=False):
         if x == y:
             continue
         i = bisect.bisect_right(syms._starts, x) - 1
@@ -161,14 +161,14 @@ def renames(a: Print, b: Print, a_name: str, b_name: str) -> dict[str, str] | No
         if not (IDENT.match(a_name) and IDENT.match(b_name)):
             return None
         out[a_name] = b_name
-    for x, y in zip(a.refs, b.refs):
+    for x, y in zip(a.refs, b.refs, strict=False):
         if x == y:
             continue
         bx, _, ox = x.partition("+")
         by, _, oy = y.partition("+")
         if ox != oy:
             return None  # another field or element: the code differs, not just the names
-        if bx.startswith(".") or by.startswith(".") or bx.startswith("@") or by.startswith("@"):
+        if bx.startswith((".", "@")) or by.startswith((".", "@")):
             continue  # a file's own data (literals, statics): the C writes the values, the judge compares them
         if not (IDENT.match(bx) and IDENT.match(by)):
             return None
@@ -231,7 +231,7 @@ class Twins:
             "SELECT id, target, relocs FROM functions WHERE project_id=? AND status NOT IN ('asm', 'library')", proj["id"])}
 
     def _fork_prints(self, proj) -> dict[int, Print]:
-        from ..forks.project import ForkError, ForkProject, STATE
+        from ..forks.project import STATE, ForkError, ForkProject
 
         fp = ForkProject(Path(proj["root"]))
         cache_path = fp.root / STATE / "twins.json"
@@ -259,7 +259,7 @@ class Twins:
             if not entry or entry.get("mtime") != mtime:
                 try:
                     prints = object_prints(unit.target.read_bytes())
-                except Exception:  # an object pyelftools can't read: no twins for it
+                except Exception:  # noqa: BLE001 an object pyelftools can't read: no twins for it
                     prints = {}
                 entry = {"mtime": mtime, "prints": {k: [p.key, p.refs, p.size, p.asm] for k, p in prints.items()}}
                 cache[uname] = entry
@@ -417,7 +417,7 @@ class Twins:
         def work() -> None:
             try:
                 self.full_pass(slug, job)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 log.info("twins: %s: %s", slug, e)
                 job.state = "done"
         threading.Thread(target=work, daemon=True, name=f"twins-{slug}").start()
@@ -624,12 +624,12 @@ class Twins:
 
                 fresh: set[int] = set()
 
-                def one(pair: tuple[int, int]) -> None:
+                def one(pair: tuple[int, int], fresh=fresh) -> None:  # `fresh`: bind this pass's set
                     if job.stop.is_set():
                         return
                     try:
                         outcome = self.try_pair(agent, proj, *pair)
-                    except Exception as e:  # one odd function must not stop the rest
+                    except Exception as e:  # noqa: BLE001 one odd function must not stop the rest
                         log.info("twins: %s failed: %s", pair, e)
                         outcome = "skip"
                     job.tried += outcome not in ("skip", "asm", "known")
@@ -685,7 +685,7 @@ class Twins:
                             self.run(proj["slug"], only=batch)
                             # twins that didn't match by themselves: back in line (unless a full pass is still on)
                             self.update_boosts(proj, pending=self._full_running(proj["slug"]))
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001
                         log.info("twins after a match: %s", e)
             finally:
                 with self._lock:

@@ -5,10 +5,10 @@ output: the executable is split by decomp.wtf, the candidate is compiled by the 
 toolchain's flags, and the x86 matcher has to accept it byte for byte.
 """
 
+import json
 import shutil
 import subprocess
 import sys
-import json
 from pathlib import Path
 
 import pytest
@@ -249,7 +249,6 @@ def test_data_symbols_are_listed_and_counted(built):
 def test_pc_export_is_a_cmake_project_with_a_working_judge(built, tmp_path):
     import os
     import subprocess
-    import sys
 
     exe, _obj = built
     net = RomNetwork(exe.parent / "pc-export.db", exe.parent)
@@ -278,7 +277,7 @@ def test_runtime_trace_maps_addresses_and_names_to_functions(built, tmp_path):
     image = pe.read(exe.read_bytes(), exe.name)
     add = next(f.vram for f in image.functions if f.name == "add")
     bump = next(f.vram for f in image.functions if f.name == "bump")
-    data = next(s.address for s in image.symbols if s.name == "g_counter")
+    _data = next(s.address for s in image.symbols if s.name == "g_counter")
     trace = tmp_path / "coverage.csv"
     trace.write_text(f"address,count\n0x{add:X},3\n0x{bump + 0x2:X},5\n0xDEADBEEF,1\n")
     result = net.import_trace(slug, str(trace))
@@ -297,7 +296,7 @@ def test_intake_context_applies_notes_symbols_types_trace_and_libraries(built, t
     net = RomNetwork(exe.parent / "intake.db", exe.parent)
     slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game.exe", log=lambda *_: None)
     image = pe.read(exe.read_bytes(), exe.name)
-    add = next(f.vram for f in image.functions if f.name == "add")
+    _add = next(f.vram for f in image.functions if f.name == "add")
     bump = next(f.vram for f in image.functions if f.name == "bump")
     data = next(s.address for s in image.symbols if s.name == "g_counter")
     refs = tmp_path / "reference"

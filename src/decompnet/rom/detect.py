@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 import re
 import struct
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import chd, elfexe, gba, n64, overlays, pe, ps2, psx
@@ -104,7 +103,7 @@ def identify(src: bytes | Path, name: str = "") -> Picked:
 
 
 def _from_disc(src, name: str = "") -> Picked:
-    raw, boot, platform = psx.from_disc(src)
+    raw, boot, _platform = psx.from_disc(src)
     picked = _program(raw, boot)
     if picked is None:
         raise RomError(f"the disc's program {boot} isn't a PlayStation executable this app can read")

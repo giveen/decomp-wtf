@@ -15,9 +15,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from ..coffobj import is_coff
 from ..coffobj import extract_function as coff_function
-from ..elfobj import FunctionObj, Reloc, extract_function as elf_function, mask_relocs
+from ..coffobj import is_coff
+from ..elfobj import FunctionObj, Reloc
+from ..elfobj import extract_function as elf_function
 from .match import LinkResult
 from .symbols import SymbolTable
 
@@ -58,7 +59,7 @@ def target_obj(t: X86Target, symbols: SymbolTable) -> FunctionObj:
     disassemble() renders a PC-relative reloc as `symbol + (addend + instruction end - field)`, so
     the addend is chosen to make that the symbol's own offset from its address."""
     relocs = []
-    for field, rtype, addr, end in t.relocs:
+    for field, rtype, addr, _ in t.relocs:
         name, delta = symbols.name_at(addr)
         relocs.append(Reloc(field, rtype, name, delta))
     return FunctionObj(t.name, t.arch, False, t.code, relocs, format="coff")
@@ -83,7 +84,7 @@ def _mask(code: bytes, relocs, arch: str) -> bytes:
         off = r[0] if isinstance(r, tuple) else r.offset
         rtype = r[1] if isinstance(r, tuple) else r.type
         size = _field_size(arch, rtype)
-        if 0 <= off and off + size <= len(buf):
+        if off >= 0 and off + size <= len(buf):
             buf[off:off + size] = b"\0" * size
     return bytes(buf)
 
@@ -110,7 +111,7 @@ def link(obj: bytes, name: str, target: X86Target, symbols: SymbolTable) -> Link
     mine, theirs = _mask(candidate.code, [(r.offset, r.type) for r in candidate.relocs], target.arch), \
         _mask(target.code, target.relocs, target.arch)
     if len(mine) == len(theirs) and mine != theirs:
-        at = next(i for i, (a, b) in enumerate(zip(mine, theirs)) if a != b)
+        at = next(i for i, (a, b) in enumerate(zip(mine, theirs, strict=False)) if a != b)
         problems.append(f"bytes differ from 0x{at:X}")
     by_field = {r[0]: r for r in target.relocs}
     rel_set = {r.offset for r in candidate.relocs}
@@ -141,7 +142,7 @@ def link(obj: bytes, name: str, target: X86Target, symbols: SymbolTable) -> Link
         if dest != original:
             got = symbols.label(dest) if dest < 1 << 63 else hex(dest)
             problems.append(f"refers to {got} where the original refers to {symbols.label(original)} (byte 0x{r.offset:X})")
-    for field, rtype, addr, _end in target.relocs:
+    for field, _, _, _ in target.relocs:
         if field not in rel_set and field < len(candidate.code):
             problems.append(f"the original has a reference at byte 0x{field:X} your code doesn't")
     problems = list(dict.fromkeys(problems))

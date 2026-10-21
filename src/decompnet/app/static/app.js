@@ -668,6 +668,7 @@ async function openProject(slug, tab = "overview") {
   $("thTries").hidden = analysis;
   $("thHits").hidden = analysis;
   $("addTask").onclick = analysis ? addAnalysisTask : null;
+  $("addFeature").onclick = analysis ? addFeatureDialog : null;
   S.analysis = analysis;
   if (analysis && (tab === "source" || tab === "team")) tab = "overview";
   groups.clear(); S.claimSig = "";
@@ -685,6 +686,8 @@ async function openProject(slug, tab = "overview") {
   renderIntake(slug);
   renderContents();
   await refreshMap();
+  await renderFeatures(true);
+  await renderSources(true);
   await poll(true);
   S.timer = setInterval(() => poll(false), 1000);
   S.statsTimer = setInterval(loadStats, 8000);
@@ -857,6 +860,214 @@ $("contentsDetail").addEventListener("click", async (e) => {
   }
 });
 
+/* ------------------------------------------------------------------ features (JavaScript/Electron)
+   A feature is one REA trace through the application graph. Its nodes become work items in the project's queue, so
+   agents analyze a feature instead of a flat list of procedures. */
+const FS = { data: null, slug: null, detail: null, busy: false };
+
+function featureSeedText(seed = {}) {
+  return `${seed.kind || "seed"} ${JSON.stringify(seed.value ?? "")}${seed.match && seed.match !== "exact" ? ` (${seed.match})` : ""}`;
+}
+function featureCoverage(f = {}) {
+  return (f.coverage || {}).status || "unknown";
+}
+
+async function renderFeatures(force = false) {
+  const panel = $("featuresPanel");
+  if (!S.ov || S.ov.kind !== "analysis" || !(S.ov.analysis || {}).features_traceable) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  if (FS.slug !== S.slug) { FS.slug = S.slug; FS.data = null; FS.detail = null; }
+  if (!FS.data || force) {
+    try {
+      FS.data = await api(`/api/analysis/features?slug=${encodeURIComponent(S.slug)}`);
+    } catch (e) {
+      $("featureList").innerHTML = `<p class="bad small">${esc(e.message)}</p>`;
+      return;
+    }
+  }
+  const features = FS.data.features || [];
+  $("featuresCount").textContent = features.length ? `${features.length} traced` : "none yet";
+  $("featureList").innerHTML = features.length ? features.map((f) => `
+    <div class="feature-row" data-feature="${esc(f.name)}">
+      <div class="feature-main"><b>${esc(f.name)}</b><span class="muted small">${esc(featureSeedText(f.seed))} · ${esc(f.direction || "both")}</span></div>
+      <div class="feature-stats"><span class="chip-s">${f.node_count} nodes</span><span class="chip-s">${f.item_count} work items</span><span class="chip-s">${esc(featureCoverage(f))}</span></div>
+    </div>`).join("")
+    : `<p class="muted small">No feature traced yet. Pick a route, string, IPC channel or module and let REA walk the app from there.</p>`;
+  paintFeatureDetail();
+}
+
+function featureDetailHtml(f) {
+  const rows = (f.nodes || []).map((n) => `<div class="feature-node">
+      <span class="feature-kind">${esc(n.kind || "")}</span>
+      <span class="feature-name" title="${esc(n.path || n.name || n.node_id)}">${esc(n.path || n.name || n.node_id)}</span>
+      <span class="feature-reach" title="${esc(n.reached_by || "")}">${esc(n.reached_by || "seed")}</span>
+      <span class="feature-item">${n.work_item ? `<span class="fn" data-feature-fn="${esc(n.work_item)}">${esc(n.work_item)}</span><small>${esc(n.status || "open")}</small>` : `<small class="muted">in the graph</small>`}</span>
+    </div>`).join("");
+  return `<div class="contents-detail-head"><b>${esc(f.name)}</b><span class="grow"></span>
+      <button class="ghost small-btn" type="button" data-feature-close="1">Close</button>
+      <button class="ghost small-btn" type="button" data-feature-remove="${esc(f.name)}">Remove</button></div>
+    <dl class="contents-facts">
+      <dt>Seed</dt><dd>${esc(featureSeedText(f.seed))}</dd>
+      <dt>Direction</dt><dd>${esc(f.direction || "both")}</dd>
+      <dt>Coverage</dt><dd>${esc(featureCoverage(f))}</dd>
+      <dt>Graph</dt><dd>${f.node_count} nodes · ${f.edge_count} edges · ${f.summary?.terminal_paths || 0} paths</dd>
+      ${(f.limitations || []).length ? `<dt>Limits</dt><dd>${f.limitations.map(esc).join("<br>")}</dd>` : ""}
+    </dl>
+    <div class="feature-nodes">${rows || `<p class="muted small">The trace reached no named nodes.</p>`}</div>`;
+}
+
+function paintFeatureDetail() {
+  const box = $("featureDetail");
+  if (!FS.detail) { box.hidden = true; box.innerHTML = ""; return; }
+  box.hidden = false;
+  box.innerHTML = featureDetailHtml(FS.detail);
+}
+
+async function openFeature(name) {
+  try {
+    const feature = await api(`/api/analysis/feature?slug=${encodeURIComponent(S.slug)}&name=${encodeURIComponent(name)}`);
+    if (FS.slug !== S.slug) return;
+    FS.detail = feature;
+    paintFeatureDetail();
+  } catch (e) { toast(esc(e.message), "err"); }
+}
+
+async function removeFeature(name) {
+  if (FS.busy) return;
+  FS.busy = true;
+  try {
+    await api("/api/analysis/feature/remove", { method: "POST", body: { slug: S.slug, name } });
+    FS.detail = null;
+    FS.data = null;
+    await renderFeatures(true);
+    await refreshMap(true);
+    toast("Feature removed; work items nobody analyzed are gone.", "match");
+  } catch (err) { toast(esc(err.message), "err"); }
+  finally { FS.busy = false; }
+}
+
+$("featureList").addEventListener("click", async (e) => {
+  const row = e.target.closest("[data-feature]");
+  if (!row || FS.busy) return;
+  FS.busy = true;
+  try { await openFeature(row.dataset.feature); } finally { FS.busy = false; }
+});
+$("featureDetail").addEventListener("click", (e) => {
+  const fn = e.target.closest("[data-feature-fn]");
+  if (fn) { openFn(fn.dataset.featureFn); return; }
+  if (e.target.closest("[data-feature-close]")) { FS.detail = null; paintFeatureDetail(); return; }
+  const remove = e.target.closest("[data-feature-remove]");
+  if (remove) removeFeature(remove.dataset.featureRemove);
+});
+
+function addFeatureDialog() {
+  const body = dialog("Trace a feature", `<p class="muted">REA walks the application graph from one literal seed and reports every part it reaches. Each module, channel or endpoint becomes a work item.</p>
+    <label class="field"><span>Seed kind</span><select id="featKind">${["route", "string", "api", "channel", "module", "native-export", "node-id"].map((k) => `<option value="${k}">${k}</option>`).join("")}</select></label>
+    <label class="field"><span>Seed value</span><input id="featValue" placeholder="/api/update or ipc:check-update or src/main.js"></label>
+    <div class="row"><label class="field grow"><span>Match</span><select id="featMatch"><option value="">default</option><option value="exact">exact</option><option value="contains">contains</option></select></label>
+      <label class="field grow"><span>Direction</span><select id="featDir"><option value="both">both</option><option value="outgoing">outgoing</option><option value="incoming">incoming</option></select></label></div>
+    <label class="field"><span>Name <span class="muted">(optional)</span></span><input id="featName" placeholder="Update flow"></label>
+    <pre class="joblog" id="featLog" hidden></pre>
+    <div class="row"><button class="primary" id="featGo" type="button">Trace it</button><button class="ghost" data-close type="button">Cancel</button></div>`);
+  body.querySelector("#featGo").onclick = async (e) => {
+    const value = body.querySelector("#featValue").value.trim();
+    if (!value) { toast("Give the feature a seed value.", "err"); return; }
+    const log = body.querySelector("#featLog");
+    log.hidden = false; log.textContent = "Tracing… a big application can take a few minutes.";
+    e.target.disabled = true;
+    try {
+      const start = await api("/api/analysis/feature/add", { method: "POST", body: {
+        slug: S.slug, kind: body.querySelector("#featKind").value, value,
+        match: body.querySelector("#featMatch").value || null,
+        direction: body.querySelector("#featDir").value, name: body.querySelector("#featName").value.trim(),
+      } });
+      const result = await followJob(start.job, log);
+      $("dialog").hidden = true;
+      document.body.classList.remove("locked");
+      FS.data = null;
+      await renderFeatures(true);
+      await refreshMap(true);
+      toast(`Feature ${esc(result.name)}: ${result.node_count} nodes, ${result.item_count} work items.`, "match");
+    } catch (err) {
+      log.textContent = err.message;
+      toast(esc(err.message), "err");
+      e.target.disabled = false;
+    }
+  };
+}
+
+/* ------------------------------------------------------------------ sources (recovered / reconstructed)
+   Source maps give original files back exactly; modules without one become reconstruction items agents write with
+   write_source. Verified and unverified are never mixed up. */
+const SRC = { data: null, slug: null, busy: false };
+
+function sourceState(f) {
+  if (f.state === "verified") return "verified";
+  if (f.state === "reconstructed") return "reconstructed";
+  return SRC.data && SRC.data.kind === "analysis" ? "to reconstruct" : "no code yet";
+}
+
+async function renderSources(force = false) {
+  const panel = $("sourcesPanel");
+  const rec = S.ov && S.ov.kind !== "fork"
+    ? (S.ov.analysis ? (S.ov.analysis || {}).reconstruction : S.ov.reconstruction) : null;
+  if (!rec) { panel.hidden = true; SRC.data = null; return; }
+  panel.hidden = false;
+  if (SRC.slug !== S.slug) { SRC.slug = S.slug; SRC.data = null; }
+  if (!SRC.data || force) {
+    try { SRC.data = await api(`/api/sources?slug=${encodeURIComponent(S.slug)}`); }
+    catch (e) { $("sourceList").innerHTML = `<p class="bad small">${esc(e.message)}</p>`; return; }
+  }
+  const c = SRC.data.counts || {};
+  const tier = SRC.data.tier || (SRC.data.kind === "rom" ? "match" : "source-map");
+  $("sourcesCount").textContent = tier === "match"
+    ? `${c.matches || 0} matched · ${c.reconstructed || 0} reconstructed · ${c.pending || 0} without code`
+    : tier === "binary"
+    ? `${c.reconstructed || 0} reconstructed · ${c.pending || 0} without code`
+    : `${c.recovered || 0} recovered · ${c.reconstructed || 0} reconstructed · ${c.pending || 0} to go`;
+  $("sourcesNote").textContent = tier === "binary"
+    ? "This target was analyzed, not matched: there is no byte-exact reference, so every file here is a reconstruction."
+    : "Original files and matched code are verified; reconstructed code is kept apart.";
+  $("sourceList").innerHTML = (SRC.data.files || []).map((f) => `
+    <div class="source-row" data-source="${esc(f.path)}">
+      <span class="source-state ${f.state === "verified" ? "ok" : f.state === "reconstructed" ? "warn" : "open"}">${esc(sourceState(f))}</span>
+      <span class="source-path" title="${esc(f.path)}">${esc(f.path)}</span>
+      <span class="source-size">${f.size ? bytes(f.size) : ""}</span>
+    </div>`).join("") || `<p class="muted small">No reconstructed code yet: claim a work item and use write_source.</p>`;
+}
+
+async function openSource(path) {
+  try {
+    const f = await api(`/api/sources/file?slug=${encodeURIComponent(S.slug)}&path=${encodeURIComponent(path)}`);
+    const state = f.state === "verified" ? (f.kind === "rom" || SRC.data?.kind === "rom" ? "matched byte for byte"
+      : "recovered from its source map") : f.state === "reconstructed" ? "reconstructed by an agent (unverified)"
+      : "no code yet";
+    const body = dialog(f.path, `<p class="muted small">${esc(state)}${f.map ? ` · ${esc(f.map)}` : ""}</p>
+      <pre class="intake-md source-code">${esc(f.source || "(no source yet: claim it and use write_source)")}</pre>
+      <div class="row"><button class="ghost" id="copySource" type="button">Copy</button></div>`);
+    body.querySelector("#copySource").onclick = () => navigator.clipboard.writeText(f.source || "");
+  } catch (e) { toast(esc(e.message), "err"); }
+}
+
+$("sourceList").addEventListener("click", (e) => {
+  const row = e.target.closest("[data-source]");
+  if (row) openSource(row.dataset.source);
+});
+$("exportSources").onclick = async (e) => {
+  if (SRC.busy) return;
+  SRC.busy = true;
+  e.target.disabled = true;
+  try {
+    const start = await api("/api/sources/export", { method: "POST", body: { slug: S.slug } });
+    const result = await followJob(start.job);
+    toast(`Exported ${result.files} files (${result.verified} verified, ${result.unverified} unverified) to ${esc(result.zip)}`, "match");
+  } catch (err) { toast(esc(err.message), "err"); }
+  finally { SRC.busy = false; e.target.disabled = false; }
+};
+
 let summaryReq = 0;
 async function renderSummary() {
   if (!S.ov || S.slug == null || S.ov.kind !== "analysis") return;
@@ -940,7 +1151,7 @@ function setTab(tab) {
   document.querySelectorAll("#ptabs [data-ptab]").forEach((a) => { a.classList.toggle("on", a.dataset.ptab === tab); a.setAttribute("aria-selected", a.dataset.ptab === tab); });
   if (S.ov && S.ov.kind === "fork" && !S.ov.ready) return;
   document.querySelectorAll("[data-pane]").forEach((p) => { p.hidden = p.dataset.pane !== tab; });
-  if (tab === "overview") { if (S.map.length) layoutMap(); renderOverview(); renderContents(); }
+  if (tab === "overview") { if (S.map.length) layoutMap(); renderOverview(); renderContents(); renderFeatures(); renderSources(); }
   if (tab === "functions") renderList();
   if (tab === "summary") renderSummary();
   if (tab === "data") renderData();
@@ -1135,7 +1346,7 @@ function renderHeader(ov) {
     pill.classList.toggle("off", room.role === "guest" && !room.connected);
     pill.innerHTML = room.role === "host" ? `<span class="dot ${online ? "on" : ""}"></span>Sharing · ${online} online`
       : /waiting for the host/i.test(room.error || "") ? `<span class="dot work"></span>Waiting to be let in`
-      : `<span class="dot ${room.connected ? "on" : "err"}"></span>${room.connected ? `In a room as ${esc(room.member)}` : "Room offline"}`;
+      : `<span class="dot ${room.connected ? "on" : "err"}"></span>${room.syncing ? "Syncing the room's work…" : room.connected ? `In a room as ${esc(room.member)}` : "Room offline"}`;
     $("teamTabCount").textContent = members.length ? members.length : "";
   } else $("teamTabCount").textContent = "";
   $("agTabCount").textContent = w.n || "";
@@ -1251,7 +1462,7 @@ function renderCompilerNotice(ov) {
 }
 
 function fnCounts() {
-  const c = { matched: 0, working: 0, tried: 0, open: 0, asm: 0, library: 0, hot: 0 };
+  const c = { matched: 0, working: 0, tried: 0, recon: 0, open: 0, asm: 0, library: 0, hot: 0 };
   for (const f of S.map) { c[fnState(f)]++; if ((f.hits || 0) > 0) c.hot++; }
   return c;
 }
@@ -1277,10 +1488,10 @@ function renderOverview() {
   const label = analysis ? "analyzed" : "matched";
   const c = fnCounts(), total = Math.max(1, S.map.length);
   const seg = (k, cls) => (c[k] ? `<i class="${cls}" data-w="${(100 * c[k]) / total}" title="${c[k]} ${k === "open" ? "to do" : k === "matched" ? label : k}"></i>` : "");
-  $("fnStack").innerHTML = seg("matched", "s-match") + seg("working", "s-work") + seg("tried", "s-tried") + seg("asm", "s-asm") + seg("library", "s-lib") + seg("open", "s-open");
+  $("fnStack").innerHTML = seg("matched", "s-match") + seg("recon", "s-recon") + seg("working", "s-work") + seg("tried", "s-tried") + seg("asm", "s-asm") + seg("library", "s-lib") + seg("open", "s-open");
   setWidths($("fnStack"));
   const togo = S.ov.functions - S.ov.matched;
-  $("fnSub").textContent = `${togo.toLocaleString()} to go${c.tried ? ` · ${c.tried.toLocaleString()} tried` : ""}${c.working ? ` · ${c.working} in progress` : ""}${c.asm ? ` · ${c.asm} assembly` : ""}${c.library ? ` · ${c.library} library` : ""}`;
+  $("fnSub").textContent = `${togo.toLocaleString()} to go${c.recon ? ` · ${c.recon} reconstructed` : ""}${c.tried ? ` · ${c.tried.toLocaleString()} tried` : ""}${c.working ? ` · ${c.working} in progress` : ""}${c.asm ? ` · ${c.asm} assembly` : ""}${c.library ? ` · ${c.library} library` : ""}`;
   const st = S.stats;
   if (st) {
     const ph = st.matches_per_hour, max = Math.max(1, ...ph);
@@ -1404,8 +1615,10 @@ function renderGuest(box, room) {
   const waiting = /waiting for the host/i.test(room.error || "");
   const people = members.map((m) => `<div class="line-item"><span class="dot ${m.online ? "on" : ""}"></span><div class="txt"><b>${esc(m.name)}${m.name === room.member ? " (you)" : ""}</b>
       <span>${m.agents && m.agents.length ? esc(m.agents.join(", ")) : "no agents yet"} · ${m.matched || 0} matched${m.working && m.working.length ? ` · on ${esc(m.working.slice(0, 3).join(", "))}` : ""}</span></div></div>`).join("");
-  box.innerHTML = `<h2 class="pane-title">${waiting ? "Waiting for the host to let you in" : room.connected ? "In a team room" : "The room is offline"}</h2>
-    <p class="muted">${waiting ? `You asked to join as <b>${esc(room.member)}</b>. Your agents start working with the room as soon as the host lets you in.`
+  const syncing = !!room.syncing;
+  box.innerHTML = `<h2 class="pane-title">${waiting ? "Waiting for the host to let you in" : syncing ? "Syncing the room's work…" : room.connected ? "In a team room" : "The room is offline"}</h2>
+    <p class="muted">${syncing ? `The host is sending the room's work: a big room's first sync takes a moment. Your agents start as soon as it lands.`
+      : waiting ? `You asked to join as <b>${esc(room.member)}</b>. Your agents start working with the room as soon as the host lets you in.`
       : room.connected ? `You're <b>${esc(room.member)}</b>. Your agents claim functions through the room, so nobody does the same one twice; matches are checked and shared by the host.`
       : `${esc(room.error || "Waiting for the host…")} Your agents wait and carry on when it's back.`}</p>
     <dl class="facts"><div><dt>Host</dt><dd>${esc(room.host)}</dd></div><div><dt>Members</dt><dd>${members.length}</dd></div><div><dt>Online</dt><dd>${members.filter((m) => m.online).length}</dd></div></dl>
@@ -1826,7 +2039,7 @@ function applyClaims(draw = true) {
   const working = new Map(S.claims.map((c) => [c.name, c.agent]));
   let changed = false;
   for (const f of S.map) {
-    const status = f.status === "matched" || f.status === "asm" || f.status === "library" ? f.status : working.has(f.name) ? "working" : "open";
+    const status = ["matched", "asm", "library", "reconstructed"].includes(f.status) ? f.status : working.has(f.name) ? "working" : "open";
     if (status !== f.status) { f.status = status; changed = true; }
     f.agent = working.get(f.name) || null;
   }
@@ -1847,6 +2060,7 @@ function applyAttempts(attempts) {
 
 function cellColor(f) {
   if (f.status === "matched") return [colors.match, 1];
+  if (f.status === "reconstructed") return [colors.work, 0.7];
   if (f.status === "asm") return [colors.tried, 0.35];
   if (f.status === "library") return [colors.faint || colors.open, 0.3];
   if (f.best != null) return [mix(colors.tried, colors.hi, Math.pow(pctOf(f.best, f.insns) || 0, 3)), 1];
@@ -2202,6 +2416,7 @@ function eventHtml(ev) {
     case "match": return `<span class="ok">✓</span> ${who} matched ${fnLink(d)}`;
     case "analyze": return `<span class="ok">✓</span> ${who} analyzed ${fnLink(d)}`;
     case "task": return `${who ? who + " " : ""}added the task ${esc(d)}`;
+    case "feature": return `${who ? who + " " : ""}traced the feature ${esc(d)}`;
     case "link": return `<span class="ok">🔗</span> ${esc(d)} is linked: the game builds from its C, byte for byte`;
     case "release": return `${who} set ${fnLink(d)} aside, with notes for the next agent`;
     case "note": return `${who}: ${esc(d)}`;
@@ -2338,6 +2553,10 @@ function highlightC(text) {
 async function openFn(name) {
   if (S.ov && S.ov.kind === "analysis") {
     const f = S.map.find((x) => x.name === name);
+    if (f && (f.kind === "recovered-source" || f.kind === "reconstruction") && f.path) {
+      openSource(f.path);  // the code this entry handed back: read it where it lives
+      return;
+    }
     if (f && f.kind === "artifact-entry") {
       if (f.child) { location.hash = `#/p/${f.child}`; return; }
       if (f.path) CT.pendingSelect = { slug: S.slug, path: f.path };
@@ -2424,7 +2643,7 @@ async function refreshFn(first) {
     };
     $("fnAsm").innerHTML = highlightAsm(d.asm);
     const lang = S.ov.kind === "analysis" ? "" : (S.ov.source_language || "C");
-    const kinds = { matched: lang ? `Matching ${lang}` : "Matching source", best: "Best attempt so far", latest: S.ov.kind === "fork" ? "In the source now" : "Latest attempt", draft: "Machine draft (m2c)" };
+    const kinds = { matched: lang ? `Matching ${lang}` : "Matching source", reconstructed: `Reconstructed ${lang || "code"} (unverified)`, best: "Best attempt so far", latest: S.ov.kind === "fork" ? "In the source now" : "Latest attempt", draft: "Machine draft (m2c)" };
     $("fnSrcKind").textContent = kinds[d.source_kind] || (lang ? `No ${lang} yet` : "No source yet");
     if (!S.editDirty || first) setEditor(d.source || "", d);
     $("copySrc").onclick = () => navigator.clipboard.writeText($("fnEdit").value).then(() => toast("Copied."));
@@ -2618,14 +2837,14 @@ $("fnNext").onclick = () => stepFn(1);
 
 /* ------------------------------------------------------------------ function list */
 const L = { q: "", filter: "all", sort: "i", dir: 1, limit: 200, rows: [] };
-const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["tried", "Tried"], ["matched", "Matched"], ["hot", "Coverage"], ["library", "Library"]];
-const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "library" ? "library" : f.status === "asm" ? "asm" : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
-const STATE_RANK = { working: 0, tried: 1, open: 2, matched: 3, asm: 4, library: 5 };
+const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["recon", "Reconstructed"], ["tried", "Tried"], ["matched", "Matched"], ["hot", "Coverage"], ["library", "Library"]];
+const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "reconstructed" ? "recon" : f.status === "library" ? "library" : f.status === "asm" ? "asm" : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
+const STATE_RANK = { working: 0, recon: 1, tried: 2, open: 3, matched: 4, asm: 5, library: 6 };
 
 function renderList() {
   if (!S.map.length || S.tab !== "functions") return;
   const analysis = S.ov && S.ov.kind === "analysis";
-  const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0, library: 0, hot: 0 };
+  const counts = { all: S.map.length, open: 0, working: 0, recon: 0, tried: 0, matched: 0, asm: 0, library: 0, hot: 0 };
   for (const f of S.map) { counts[fnState(f)]++; if ((f.hits || 0) > 0) counts.hot++; }
   $("fnFilter").innerHTML = FILTERS.map(([k, label]) => `<button type="button" role="radio" aria-checked="${L.filter === k}" class="${L.filter === k ? "on" : ""}" data-filter="${k}">${analysis && k === "matched" ? "Analyzed" : label}<span>${counts[k].toLocaleString()}</span></button>`).join("");
   const q = L.q.trim().toLowerCase();
@@ -2642,12 +2861,12 @@ function renderList() {
   $("fnRows").innerHTML = rows.slice(0, L.limit).map((f) => {
     const st = fnState(f), p = pctOf(f.best, f.insns);
     const best = st === "matched" ? `<span class="ok">100%</span>` : p == null ? `<span class="dim">–</span>` : pctText(p);
-    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">${analysis ? "analyzed" : "matched"}</span>` : st === "library" ? `<span class="st" title="library/CRT code: not the program's own">${esc(f.library || "library")}</span>` : st === "asm" ? `<span class="st" title="hand-written assembly: no C compiles to it">assembly</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
+    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">${analysis ? "analyzed" : "matched"}</span>` : st === "recon" ? `<span class="st recon" title="reconstructed by an agent: unverified, not a match">reconstructed</span>` : st === "library" ? `<span class="st" title="library/CRT code: not the program's own">${esc(f.library || "library")}</span>` : st === "asm" ? `<span class="st" title="hand-written assembly: no C compiles to it">assembly</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
       : st === "tried" ? `<span class="st tried">tried</span>` : `<span class="st">${analysis ? "to do" : "to do"}</span>`;
-    const where = analysis ? (f.vram ? hex8(f.vram) : f.kind === "artifact-entry" ? "file" : "task")
+    const where = analysis ? (f.vram ? hex8(f.vram) : ["artifact-entry", "recovered-source", "reconstruction"].includes(f.kind) ? "file" : "task")
       : fork ? esc(f.unit || "") : hex8(f.vram);
     const measure = analysis ? (f.size ? bytes(f.size) : "—") : f.insns.toLocaleString();
-    const clickTitle = f.child ? "Open child project" : analysis && f.kind === "artifact-entry" ? "Show this file in Contents" : analysis ? "Open in the RE console" : "Open function";
+    const clickTitle = f.child ? "Open child project" : analysis && f.kind === "artifact-entry" ? "Show this file in Contents" : analysis && (f.kind === "recovered-source" || f.kind === "reconstruction") ? "Open the recovered source" : analysis ? "Open in the RE console" : "Open function";
     return `<tr data-fn="${esc(f.name)}" class="${S.fn === f.name ? "sel" : ""}" tabindex="0" title="${esc(clickTitle)}"><td class="mono dim">${where}</td>
       <td class="mono name">${(S.ov && (S.ov.priority || []).includes(f.name)) ? `<span class="star" title="agents take it next">★</span>` : ""}${esc(f.name)}${f.child ? ` <span class="dim" title="child project">↗</span>` : ""}</td><td class="r mono">${measure}</td>
       ${analysis ? "" : `<td class="r mono">${best}</td><td class="r mono">${f.attempts || `<span class="dim">0</span>`}</td><td class="r mono">${f.hits || `<span class="dim">–</span>`}</td>`}<td>${status}</td></tr>`;
@@ -3038,9 +3257,10 @@ $("debugImport").onclick = async () => {
   try {
     const { job } = await api("/api/debug/import", { method: "POST", body: { slug: S.slug, path } });
     const r = await followJob(job, $("debugLog"));
+    const split = r.split ? `, ${r.split} merged function${r.split === 1 ? "" : "s"} split at a symbol boundary` : "";
     $("debugMsg").textContent = r.warning
-      ? `Imported ${r.source}: ${r.renamed} renamed, ${r.symbols} new symbols. Types were not added: ${r.warning}`
-      : `Imported ${r.source}: ${r.renamed} renamed, ${r.symbols} new symbols, ${r.types} types${r.types_added ? " added to the header" : ""}.`;
+      ? `Imported ${r.source}: ${r.renamed} renamed${split}, ${r.symbols} new symbols. Types were not added: ${r.warning}`
+      : `Imported ${r.source}: ${r.renamed} renamed${split}, ${r.symbols} new symbols, ${r.types} types${r.types_added ? " added to the header" : ""}.`;
     toast("Debug information imported.", "match");
     S.ov = await api(`/api/project?slug=${S.slug}`);
     await refreshMap(true);

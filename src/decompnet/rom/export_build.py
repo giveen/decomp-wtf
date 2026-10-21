@@ -168,7 +168,7 @@ def fill_gaps(provides: dict[str, str]) -> list[tuple[int, str]]:
         covered += [(fn["vram"], _size(provides[fn["name"]], (".text",))) for fn in B["functions"]
                     if fn["rom"] is not None and seg["start"] <= fn["rom"] < end]
         pos = seg["vram"]
-        for vram, size in sorted(covered) + [(seg["vram"] + end - seg["start"], 0)]:
+        for vram, size in [*sorted(covered), (seg["vram"] + end - seg["start"], 0)]:
             if vram > pos:
                 raw = image[seg["start"] + pos - seg["vram"]:seg["start"] + vram - seg["vram"]]
                 if raw.strip(b"\0"):

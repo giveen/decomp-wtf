@@ -6,6 +6,7 @@ A copy that was trimmed (the unused end of the cartridge cut off, as many dumps 
 same when everything before the padding matches. When the ROM differs, this says where: which header fields, the ARM9
 or ARM7 program, an overlay, the file tables, which files, or only where the files sit in the ROM.
 """
+import contextlib
 import hashlib
 import struct
 import sys
@@ -79,10 +80,8 @@ class Rom:
                 else:
                     out.setdefault(fid, path + name)
                     fid += 1
-        try:
+        with contextlib.suppress(struct.error, IndexError):
             walk(0xF000, "")
-        except (struct.error, IndexError):
-            pass
         return out
 
 
@@ -120,7 +119,7 @@ def explain(built: bytes, original: bytes) -> list[str]:
         out.append("the banner (icon and title) differs")
     names = o.names()
     changed = []
-    for i, ((bs, be), (os_, oe)) in enumerate(zip(b.files, o.files)):
+    for i, ((bs, be), (os_, oe)) in enumerate(zip(b.files, o.files, strict=False)):
         if built[bs:be] != original[os_:oe]:
             changed.append(names.get(i, f"file #{i}"))
     if len(b.files) != len(o.files):
@@ -128,7 +127,7 @@ def explain(built: bytes, original: bytes) -> list[str]:
     if changed:
         out.append(f"{len(changed)} {'files differ' if len(changed) != 1 else 'file differs'}: " + ", ".join(changed[:8])
                    + (", ..." if len(changed) > 8 else ""))
-    moved = sum(1 for (bs, _), (os_, _) in zip(b.files, o.files) if bs != os_)
+    moved = sum(1 for (bs, _), (os_, _) in zip(b.files, o.files, strict=False) if bs != os_)
     if not out and moved:
         out.append(f"every program and file is the same; only where {moved} file{'s' if moved != 1 else ''} sit in "
                    "the ROM differs (alignment or padding between files)")
@@ -143,16 +142,20 @@ def explain(built: bytes, original: bytes) -> list[str]:
 
 def main(argv: list[str]) -> int:
     if argv[0] == "--touch":
-        open(argv[-1], "w", encoding="utf-8").write("ok\n")
+        with open(argv[-1], "w", encoding="utf-8") as f:
+            f.write("ok\n")
         return 0
     built_path, original_path, stamp = argv[:3]
-    built, original = open(built_path, "rb").read(), open(original_path, "rb").read()
+    with open(built_path, "rb") as bf, open(original_path, "rb") as of:
+        built, original = bf.read(), of.read()
     if built == original:
-        open(stamp, "w", encoding="utf-8").write("ok\n")
+        with open(stamp, "w", encoding="utf-8") as f:
+            f.write("ok\n")
         return 0
     if padding_only(built, original) or padding_only(original, built):
         trimmed = len(original) < len(built)
-        open(stamp, "w", encoding="utf-8").write("ok: identical up to the padding at the end\n")
+        with open(stamp, "w", encoding="utf-8") as f:
+            f.write("ok: identical up to the padding at the end\n")
         print(f"note: {built_path} is your copy byte for byte up to its end; your copy "
               f"{'was trimmed (the unused end of the cartridge was cut off)' if trimmed else 'has more padding at its end'}"
               f": {len(original):#x} bytes, this {len(built):#x}")

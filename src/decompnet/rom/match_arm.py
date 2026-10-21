@@ -122,7 +122,7 @@ def link(obj: bytes, name: str, target: ArmTarget, symbols: SymbolTable, read) -
                 else:  # data this function defines itself (a string, a table): the original's copy is at `original`
                     place((sym["st_shndx"], addend + (0 if is_section else sym["st_value"])), original)
                 code[at:at + 4] = tcode[at:at + 4]
-            elif rtype in (R_ARM_THM_CALL,):
+            elif rtype == R_ARM_THM_CALL:
                 dest = thumb_bl_dest(tcode, at, pc)
                 base = symbols.resolve(sname)
                 if base is None:

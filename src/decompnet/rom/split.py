@@ -143,7 +143,7 @@ def named_symbols(workdir: Path) -> dict[str, int]:
     out = {}
     path = workdir / "symbol_addrs.txt"
     if path.exists():
-        for m in re.finditer(r"^\s*([A-Za-z_]\w*)\s*=\s*(0x[0-9A-Fa-f]+)\s*;", path.read_text(encoding="utf-8"), re.M):
+        for m in re.finditer(r"^\s*([A-Za-z_]\w*)\s*=\s*(0x[0-9A-Fa-f]+)\s*;", path.read_text(encoding="utf-8"), re.MULTILINE):
             out[m.group(1)] = int(m.group(2), 16)
     return out
 
@@ -166,9 +166,9 @@ def _patch_config(path: Path) -> tuple[str, str, int]:
     and keep empty functions as asm too (we want every function to be a target).
     Returns (compiler guess, platform, gp value)."""
     text = path.read_text(encoding="utf-8")
-    compiler = (re.search(r"^\s*compiler:\s*(\w+)", text, re.M) or [None, "KMC"])[1]
-    platform = (re.search(r"^\s*platform:\s*(\w+)", text, re.M) or [None, "n64"])[1]
-    gp = re.search(r"^\s*gp_value:\s*(0x[0-9A-Fa-f]+)", text, re.M)
+    compiler = (re.search(r"^\s*compiler:\s*(\w+)", text, re.MULTILINE) or [None, "KMC"])[1]
+    platform = (re.search(r"^\s*platform:\s*(\w+)", text, re.MULTILINE) or [None, "n64"])[1]
+    gp = re.search(r"^\s*gp_value:\s*(0x[0-9A-Fa-f]+)", text, re.MULTILINE)
     out, segment = [], None
     for line in text.splitlines():
         m = re.match(r"^\s*- name:\s*(\S+)", line)
@@ -361,7 +361,7 @@ def _add_overlays(config: Path, workdir: Path, image: str, found: list[tuple[str
         data += code
         subs = [[start, "data", f"ovl_{name}_header"]] if code_at else []  # what comes before its code: a header
         segs.append({"name": f"ovl_{name}", "type": "code", "start": start, "vram": vram,
-                     "subsegments": subs + [[start + code_at, "c", f"ovl_{name}"]]})
+                     "subsegments": [*subs, [start + code_at, "c", f"ovl_{name}"]]})
     data += bytes(-len(data) % 0x10)
     segs.append([len(data)])
     out = f"{Path(image).stem}.overlays{Path(image).suffix}"

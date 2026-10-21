@@ -7,12 +7,13 @@ checked on every request, so web pages can't reach it through DNS rebinding.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import logging.handlers
 import mimetypes
-import re
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -99,13 +100,17 @@ class Jobs:
 
     def __init__(self, log_path: Path | None = None):
         self.jobs: dict[str, dict] = {}
+        # jid -> event set when the job ends. Kept beside `jobs`, not inside it: job dicts are JSON to the GUI.
+        self.done: dict[str, threading.Event] = {}
         self.log_path = log_path
         self.logger = file_log(log_path) if log_path else logging.getLogger("decomp.anything")
 
     def start(self, kind: str, fn) -> str:
         jid = uuid.uuid4().hex[:12]
+        event = threading.Event()  # async watchers wait on this instead of polling the dict every 0.5s
         job = {"id": jid, "kind": kind, "state": "running", "log": [], "result": None, "error": None, "t": time.time()}
         self.jobs[jid] = job
+        self.done[jid] = event
         logger = self.logger
         logger.info("job %s %s started", kind, jid)
 
@@ -118,7 +123,7 @@ class Jobs:
                 job["result"] = fn(log)
                 job["state"] = "done"
                 logger.info("job %s %s done in %.0fs", kind, jid, time.time() - job["t"])
-            except BaseException as e:  # noqa: BLE001: a job must end, whatever went wrong
+            except BaseException as e:  # a job must end, whatever went wrong
                 if getattr(e, "details", None):  # what the tool said, in full
                     job["trace"] = str(e.details)[-6000:]
                 elif not isinstance(e, (NetworkError, RomError, ValueError)):
@@ -128,6 +133,8 @@ class Jobs:
                 logger.error("job %s %s failed: %s\n%s", kind, jid, job["error"], traceback.format_exc())
                 if isinstance(e, (KeyboardInterrupt, SystemExit)):
                     raise
+            finally:
+                event.set()  # state is already final here, so a waiter always reads the real outcome
         threading.Thread(target=run, daemon=True, name=f"job-{kind}").start()
         return jid
 
@@ -145,10 +152,8 @@ class Settings:
 
     def save(self) -> None:
         self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
-        try:
+        with contextlib.suppress(OSError):
             os.chmod(self.path, 0o600)
-        except OSError:
-            pass
 
     # -- API endpoints: OpenAI-compatible servers for the built-in agent, each with its own address, model and key
 
@@ -402,7 +407,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         for p in net.store.all("SELECT slug, name FROM projects ORDER BY id DESC"):
             try:
                 out.append((p["slug"], net.overview(p["slug"]), ""))
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 jobs.logger.warning("project %s can't be read: %s", p["slug"], e, exc_info=not isinstance(e, NetworkError))
                 out.append((p["slug"], {"slug": p["slug"], "title": p["name"] or p["slug"]}, job_error(e, jobs.log_path)))
         return out
@@ -428,10 +433,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         """Free matches first, in the background, when the user wants that (the default): a game started from
         scratch, on any platform, as soon as it's ready. A public decomp, or one not set up yet, says no."""
         if settings.data.get("autopilot", True):
-            try:
+            with contextlib.suppress(NetworkError):
                 net.start_autopilot(slug)
-            except NetworkError:
-                pass
 
     def project_list() -> list[dict]:
         """The sidebar: every project with its progress and how many helper agents work on it right now."""
@@ -474,14 +477,14 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         folder.mkdir(parents=True, exist_ok=True)
         target = folder / name
         size = 0
-        with open(target, "wb") as f:
+        async with await anyio.open_file(target, "wb") as f:
             async for chunk in request.stream():
                 size += len(chunk)
                 if size > MAX_DISC:
-                    f.close()
+                    await f.aclose()
                     target.unlink(missing_ok=True)
                     return fail(ValueError("that companion file is too large"))
-                f.write(chunk)
+                await f.write(chunk)
         if size == 0:
             target.unlink(missing_ok=True)
             return fail(ValueError("the companion file was empty"))
@@ -494,6 +497,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return bad
         q = request.query_params
         toolchain = q.get("toolchain") or None
+        app_dir = False
         if q.get("demo") == "1":
             game: bytes | Path | None = _static("demo/demo-quest-64.z64")
             if game is None:
@@ -504,8 +508,9 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 return fail(ValueError("confirm that this is your own legally obtained copy of the game"))
             if q.get("path"):
                 game = hostenv.local_path(q["path"])
-                if not game.is_file():
-                    return fail(ValueError(f"no file at {game}"))
+                app_dir = game.is_dir()
+                if not game.is_file() and not app_dir:
+                    return fail(ValueError(f"no file or folder at {game}"))
                 name = game.name
             else:
                 name = Path(q.get("name") or "game.bin").name
@@ -521,28 +526,32 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 upload_dir.mkdir(parents=True, exist_ok=True)
                 game = upload_dir / name
                 size = 0
-                with open(game, "wb") as f:
+                async with await anyio.open_file(game, "wb") as f:
                     async for chunk in request.stream():
                         size += len(chunk)
                         if size > MAX_DISC:
-                            f.close()
+                            await f.aclose()
                             game.unlink(missing_ok=True)
                             return fail(ValueError("that file is larger than any game disc"))
-                        f.write(chunk)
+                        await f.write(chunk)
                 if size == 0:
                     game.unlink(missing_ok=True)
                     return fail(ValueError("the file was empty"))
-        uploaded = isinstance(game, Path) and game.parent.parent == home / "uploads"
+        uploaded = isinstance(game, Path) and not app_dir and game.parent.parent == home / "uploads"
 
         def work(log):
             try:
-                try:
-                    slug = net.import_rom(game, toolchain=toolchain, confirmed=True, name=name, log=log)
-                except RomError as e:
-                    if not isinstance(game, Path) or not _analyze_instead(e):
-                        raise
-                    log(f"{e}\nOpening it with REA instead: its functions become work items for the agents.")
-                    slug = net.import_analysis(game, confirmed=True, copy_target=uploaded, log=log)
+                if app_dir:
+                    log("a folder: opening it as a JavaScript or Electron application with REA")
+                    slug = net.import_analysis(game, tool="analyze_javascript_application", confirmed=True, log=log)
+                else:
+                    try:
+                        slug = net.import_rom(game, toolchain=toolchain, confirmed=True, name=name, log=log)
+                    except RomError as e:
+                        if not isinstance(game, Path) or not _analyze_instead(e):
+                            raise
+                        log(f"{e}\nOpening it with REA instead: its functions become work items for the agents.")
+                        slug = net.import_analysis(game, confirmed=True, copy_target=uploaded, log=log)
                 auto = {}
                 if isinstance(game, Path):
                     for p in sorted(game.parent.iterdir()):
@@ -563,7 +572,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                         log("starting context warnings: " + "; ".join(report["warnings"]))
                 try:
                     net.write_intake(slug, log=log)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     log(f"intake report skipped: {e}")
                 settings.data["last_project"] = slug
                 settings.save()
@@ -612,9 +621,9 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return bad
         path = home / "logs" / "decomp.log"
         try:
-            with open(path, "rb") as f:
-                f.seek(max(0, path.stat().st_size - (512 << 10)))
-                text = f.read().decode("utf-8", "replace")
+            async with await anyio.open_file(path, "rb") as f:
+                await f.seek(max(0, (await anyio.Path(path).stat()).st_size - (512 << 10)))
+                text = (await f.read()).decode("utf-8", "replace")
         except OSError:
             text = "(nothing logged yet)"
         return Response(text, media_type="text/plain; charset=utf-8",
@@ -721,10 +730,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     def p_release(slug, request, data):
         agent, _ = net.local_agent("you")
-        try:
+        with contextlib.suppress(NetworkError):  # not yours (any more): nothing to give back
             net.release(agent, str(data.get("name", "")), "", slug)
-        except NetworkError:
-            pass  # not yours (any more): nothing to give back
         return {"ok": True}
 
     def p_instructions(slug, request, data):
@@ -747,6 +754,32 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if not name:
             raise ValueError("name the task first")
         return {"name": net.add_analysis_task(None, slug, name, str(data.get("brief", ""))[:4000])}
+
+    def p_add_feature(slug, request, data):
+        value = str(data.get("value", "")).strip()
+        if not value:
+            raise ValueError("give the feature a seed value")
+        def work(log):
+            return net.add_feature(slug, str(data.get("kind") or "string"), value,
+                                   name=str(data.get("name") or ""), direction=str(data.get("direction") or "both"),
+                                   match=str(data.get("match") or "") or None,
+                                   case_sensitive=bool(data.get("case_sensitive")), log=log)
+        return {"job": jobs.start("feature", work)}
+
+    def p_feature(slug, request, data):
+        return net.feature(slug, str(request.query_params.get("name") or ""))
+
+    def p_remove_feature(slug, request, data):
+        return net.remove_feature(slug, str(data.get("name") or ""))
+
+    def p_source_file(slug, request, data):
+        path = str(request.query_params.get("path") or "")
+        if not path:
+            raise ValueError("name the source file to read")
+        return net.source_file(slug, path)
+
+    def p_export_sources(slug, request, data):
+        return {"job": jobs.start("sources", lambda log: net.export_sources(slug, log=log))}
 
     def p_debug_import(slug, request, data):
         path = str(data.get("path") or "").strip()
@@ -797,6 +830,13 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]),
         "/api/analysis/task": (p_add_task, ["POST"]),
+        "/api/analysis/features": (lambda s, r, d: net.features(s), ["GET"]),
+        "/api/analysis/feature": (p_feature, ["GET"]),
+        "/api/analysis/feature/add": (p_add_feature, ["POST"]),
+        "/api/analysis/feature/remove": (p_remove_feature, ["POST"]),
+        "/api/sources": (lambda s, r, d: net.sources(s), ["GET"]),
+        "/api/sources/file": (p_source_file, ["GET"]),
+        "/api/sources/export": (p_export_sources, ["POST"]),
         "/api/debug/import": (p_debug_import, ["POST"]),
         "/api/debug/export": (p_debug_export, ["POST"]),
         "/api/compare": (p_compare, ["POST"]),
@@ -864,14 +904,14 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         tmp = Path(proj["root"]) / ".decomp-wtf" / f"upload-{uuid.uuid4().hex[:8]}.tmp"
         tmp.parent.mkdir(parents=True, exist_ok=True)
         size = 0
-        with open(tmp, "wb") as f:
+        async with await anyio.open_file(tmp, "wb") as f:
             async for chunk in request.stream():
                 size += len(chunk)
                 if size > MAX_DISC:
-                    f.close()
+                    await f.aclose()
                     tmp.unlink(missing_ok=True)
                     return fail(ValueError("that file is larger than any game disc"))
-                f.write(chunk)
+                await f.write(chunk)
         name = Path(q.get("name") or "game.iso").name
 
         def work(log):
@@ -898,9 +938,10 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if path:
             if not data.get("confirmed"):
                 return fail(ValueError("confirm that this is your own legally obtained copy of the game"))
-            src = Path(path).expanduser()
-            if not src.is_file():
-                return fail(ValueError(f"no file at {src}"))
+            checked = await anyio.Path(path).expanduser()
+            if not await checked.is_file():
+                return fail(ValueError(f"no file at {checked}"))
+            src = Path(str(checked))  # work() runs in a thread: it wants a plain pathlib.Path
 
         def work(log):
             res = net.forks.setup(slug, src, src.name, log=log) if path else net.forks.setup(slug, None, log=log)
@@ -1017,7 +1058,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         settings.data["launcher"] = {"kind": kind, "model": model, "count": count} | ({"endpoints": picked} if picked else {})
         if model and kind != "api":
             recent = settings.data.setdefault("recent_models", {}).setdefault(kind, [])
-            settings.data["recent_models"][kind] = [model] + [m for m in recent if m != model][:7]
+            settings.data["recent_models"][kind] = [model, *[m for m in recent if m != model][:7]]
         settings.save()
         return JSONResponse({"started": ids})
 
@@ -1041,7 +1082,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             with ThreadPoolExecutor(len(found) or 1) as pool:  # each agent's own CLI answers; ask them all at once
                 linked = list(pool.map(lambda a: a["installed"] and connect.status(a["id"]), found))
             return [{"id": a["id"], "name": a["name"], "installed": a["installed"], "connected": ok,
-                     "command": connect.shown(a["id"])} for a, ok in zip(found, linked)]
+                     "command": connect.shown(a["id"])} for a, ok in zip(found, linked, strict=False)]
         if (host := hostenv.host_bridge()) is not None:  # the user's agents live outside decomp.anything's Linux
             return JSONResponse({"agents": [], "bridge": host, "host_bridge": host, **hostenv.info()})
         return JSONResponse({"agents": await anyio.to_thread.run_sync(rows), "bridge": connect.bridge_command()})
@@ -1148,6 +1189,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         for jid, job in list(jobs.jobs.items()):  # answers can be megabytes: keep only recent ones
             if job["kind"] == "rea" and job["state"] != "running" and time.time() - job["t"] > 600:
                 jobs.jobs.pop(jid, None)
+                jobs.done.pop(jid, None)
         return JSONResponse({"job": jobs.start("rea", lambda log: console.call(tool, args, log))})
 
     @mcp.custom_route("/api/rea/stop", methods=["POST"])
@@ -1269,10 +1311,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     for p in net.store.all("SELECT slug, config FROM projects"):
         c = json.loads(p["config"]).get("collab") or {}
         if c.get("open") and c.get("mode") == "address" and c.get("address"):
-            try:
+            with contextlib.suppress(NetworkError, OSError):
                 open_room(p["slug"], "address", c["address"], int(c.get("port") or 6481), keep=True)
-            except (NetworkError, OSError):
-                pass
 
     @mcp.custom_route("/api/collab", methods=["GET"])
     async def api_collab(request: Request) -> Response:
@@ -1392,14 +1432,14 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             upload.mkdir(parents=True, exist_ok=True)
             game = upload / (Path(q.get("filename") or "game.bin").name or "game.bin")
             size = 0
-            with open(game, "wb") as f:
+            async with await anyio.open_file(game, "wb") as f:
                 async for chunk in request.stream():
                     size += len(chunk)
                     if size > MAX_DISC:
-                        f.close()
+                        await f.aclose()
                         shutil.rmtree(upload, ignore_errors=True)
                         return fail(ValueError("that file is larger than any game disc"))
-                    f.write(chunk)
+                    await f.write(chunk)
             if size == 0:
                 shutil.rmtree(upload, ignore_errors=True)
                 game = None

@@ -98,8 +98,8 @@ def run_m2c(asm_text: str, name: str, target: str, context_header: str = "", dat
     if not available():
         return None
     if target.startswith("gba"):  # luvdis / pret style: function macro, pre-UAL load mnemonics
-        asm_text = re.sub(r"^\s*(?:non_word_aligned_)?thumb_func_start\s+(\w+)", r"glabel \1", asm_text, flags=re.M)
-        asm_text = re.sub(r"^\s*arm_func_start\s+(\w+)", r"glabel \1", asm_text, flags=re.M)
+        asm_text = re.sub(r"^\s*(?:non_word_aligned_)?thumb_func_start\s+(\w+)", r"glabel \1", asm_text, flags=re.MULTILINE)
+        asm_text = re.sub(r"^\s*arm_func_start\s+(\w+)", r"glabel \1", asm_text, flags=re.MULTILINE)
         asm_text = re.sub(r"\bld(s[hb])\b", r"ldr\1", asm_text)
     m2c = toolchains.venv_bin(toolchains.path("m2c") / "venv", "m2c")
     with tempfile.TemporaryDirectory(prefix="decompnet-m2c-") as tmp:

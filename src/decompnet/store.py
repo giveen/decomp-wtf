@@ -80,6 +80,9 @@ class Store:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_agent_time ON attempts(agent_id, created_at)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_unit ON functions(project_id, unit, status)")
+        # by address: a room's sync looks functions up by vram (matches, notes, renames). Without this each lookup
+        # scanned every function of the project, so a big room's first sync took minutes to apply.
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_vram ON functions(project_id, vram)")
         # the progress the GUI asks for every second (totals, the map's "anything new?"), answered from this narrow
         # index instead of reading every function's assembly and sources: 31 ms -> about 2 for 36,000 functions
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_progress ON functions(project_id, status, size, "

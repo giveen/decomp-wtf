@@ -131,7 +131,7 @@ def _cstr(data: bytes, sections: list[PeSection], rva: int, limit: int = 512) ->
 
 def _headers(data: bytes) -> tuple[int, str, int, bool, list[PeSection], int, list[tuple[int, int]]]:
     at = _u32(data, 0x3C)
-    machine, nsections, _time, symptr, nsyms, optsize, _chars = struct.unpack_from("<HHIIIHH", data, at + 4)
+    machine, nsections, _time, _symptr, _nsyms, optsize, _chars = struct.unpack_from("<HHIIIHH", data, at + 4)
     opt = at + 24
     magic = _u16(data, opt)
     if magic not in (0x10B, 0x20B) or machine not in MACHINES:
@@ -190,7 +190,7 @@ def _exports(data: bytes, sections: list[PeSection], dirs: list[tuple[int, int]]
     raw = _rva(data, sections, rva, 40)
     if raw is None:
         return []
-    nfuncs, nnames, funcs, names, ords = struct.unpack_from("<IIIII", raw, 20)
+    _nfuncs, nnames, funcs, names, ords = struct.unpack_from("<IIIII", raw, 20)
     out = []
     for i in range(min(nnames, 65536)):
         name_rva = _rva32(data, sections, names + 4 * i)
@@ -293,7 +293,7 @@ def _decode(code: bytes, vram: int, arch: str, image_lo: int, image_hi: int, abs
         count += 1
         end = ins.address + ins.size - vram
         e = ins.encoding
-        direct = ins.group(capstone.CS_GRP_CALL) or ins.id in (capstone.x86.X86_INS_JMP,)
+        direct = ins.group(capstone.CS_GRP_CALL) or ins.id == capstone.x86.X86_INS_JMP
         target = None
         if direct and e.imm_size and ins.operands and ins.operands[0].type == capstone.x86.X86_OP_IMM:
             value = ins.operands[0].imm
@@ -392,13 +392,12 @@ def build(data: bytes, arch: str, image_base: int, sections: list[PeSection], sy
         for sec in exec_sections:
             body = sec.data(data)
             for ins in md.disasm(body, image_base + sec.va):
-                if ins.id and ins.group(capstone.CS_GRP_CALL) or ins.id == capstone.x86.X86_INS_JMP:
-                    if ins.operands and ins.operands[0].type == capstone.x86.X86_OP_IMM:
-                        target = ins.operands[0].imm
-                        if image_base + sec.va <= target < image_base + sec.va + len(body):
-                            starts.setdefault(target, "")
+                if ((ins.id and ins.group(capstone.CS_GRP_CALL)) or ins.id == capstone.x86.X86_INS_JMP) \
+                        and ins.operands and ins.operands[0].type == capstone.x86.X86_OP_IMM:
+                    target = ins.operands[0].imm
+                    if image_base + sec.va <= target < image_base + sec.va + len(body):
+                        starts.setdefault(target, "")
     # Entry points inside an already known function are not separate functions.
-    by_name = {s.address: s for s in symbols if s.kind == "func"}
     named = {s.address: s.name for s in symbols if s.kind == "func"}
     ordered = sorted(starts)
     exec_end = image_base + max((s.va + s.raw_size for s in exec_sections), default=0x1000)

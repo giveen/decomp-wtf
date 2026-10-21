@@ -22,11 +22,11 @@ from ..rom.match import _raw_relocs
 # Bytes a load or store moves, by mnemonic (PowerPC, MIPS). Anything else (an address computed with addi or lui)
 # is only compared when both sides point at a C string.
 _WIDTH = {
-    **{m: 8 for m in ("lfd", "lfdu", "lfdx", "lfdux", "stfd", "stfdu", "ldc1", "sdc1", "ld", "sd", "ldl", "ldr")},
-    **{m: 4 for m in ("lfs", "lfsu", "lfsx", "stfs", "stfsu", "lwz", "lwzu", "lwzx", "stw", "stwu", "lwc1", "swc1",
-                      "lw", "lwu", "sw", "l.s", "s.s")},
-    **{m: 2 for m in ("lhz", "lhzu", "lha", "lhau", "sth", "sthu", "lh", "lhu", "sh")},
-    **{m: 1 for m in ("lbz", "lbzu", "stb", "stbu", "lb", "lbu", "sb")},
+    **dict.fromkeys(("lfd", "lfdu", "lfdx", "lfdux", "stfd", "stfdu", "ldc1", "sdc1", "ld", "sd", "ldl", "ldr"), 8),
+    **dict.fromkeys(("lfs", "lfsu", "lfsx", "stfs", "stfsu", "lwz", "lwzu", "lwzx", "stw", "stwu",
+                    "lwc1", "swc1", "lw", "lwu", "sw", "l.s", "s.s"), 4),
+    **dict.fromkeys(("lhz", "lhzu", "lha", "lhau", "sth", "sthu", "lh", "lhu", "sh"), 2),
+    **dict.fromkeys(("lbz", "lbzu", "stb", "stbu", "lb", "lbu", "sb"), 1),
 }
 _ADDRESS = {"addi", "addic", "addiu", "daddiu", "ori", "la", "li"}
 
@@ -107,7 +107,7 @@ def mismatches(target: Path, base: Path, symbol: str, insns: list[tuple[int, str
         return []
     try:
         a, b = left.refs(symbol), right.refs(symbol)
-    except Exception:  # an unusual object: no verdict rather than a wrong one
+    except Exception:  # noqa: BLE001 an unusual object: no verdict rather than a wrong one
         return []
     if a is None or b is None:
         return []

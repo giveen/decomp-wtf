@@ -75,8 +75,8 @@ def disassemble() -> None:
     pieces, cur, lines = [], B["base"], []
 
     def flush() -> None:
-        if any(l.strip() for l in lines):
-            first = next((m.group(1) for l in lines if (m := _START.match(l))), None)
+        if any(ln.strip() for ln in lines):
+            first = next((m.group(1) for ln in lines if (m := _START.match(ln))), None)
             name = first if first and addr.get(first) == cur else "rom_header" if cur == B["base"] else f"_{cur:08X}"
             path = asm / f"{name}.s"
             path.write_text('.syntax unified\n.include "macros.inc"\n.text\n' + "\n".join(lines) + "\n",
@@ -180,7 +180,7 @@ def layout(pieces: list[dict], c_objs: dict[str, str]) -> list[tuple[int, str, s
         items.append((next(f["addr"] for f in B["functions"] if f["name"] == name), obj, ".text"))
     image = (ROOT / B["image"]).read_bytes()
     pos, end, gaps = B["base"], B["base"] + len(image), []
-    for addr, obj, _ in sorted(items) + [(end, None, "")]:
+    for addr, obj, _ in [*sorted(items), (end, None, "")]:
         if addr > pos:
             raw = image[pos - B["base"]:addr - B["base"]]
             src = ROOT / "build" / "gaps" / f"{pos:08X}.s"
@@ -215,7 +215,7 @@ def linker_script(items: list[tuple[int, str, str]], c_objs: dict[str, str]) -> 
     # luvdis's labels (_08001234) jumped to from another piece: their names are their addresses
     for p in json.loads((ROOT / "asm" / "pieces.json").read_text(encoding="utf-8")):
         text = (ROOT / p["src"]).read_text(encoding="utf-8")
-        own = set(re.findall(r"^(_[0-9A-F]{8}):", text, re.M))
+        own = set(re.findall(r"^(_[0-9A-F]{8}):", text, re.MULTILINE))
         wanted.update({lab: int(lab[1:], 16) for lab in set(_LABEL.findall(text)) - own})
         wanted.update({name: int(name[4:], 16) for name in re.findall(r"\b(sub_[0-9A-F]{8})\b", text)})
     lines += [f"{name} = 0x{addr:08X};" for name, addr in sorted(wanted.items(), key=lambda kv: kv[1]) if name not in defined]

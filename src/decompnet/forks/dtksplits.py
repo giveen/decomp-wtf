@@ -18,7 +18,7 @@ import yaml
 _FILE = re.compile(r"^(\S.*?):\s*$")
 _RANGE = re.compile(r"^\s+(\.\S+)\s+start:(0x[0-9A-Fa-f]+)\s+end:(0x[0-9A-Fa-f]+)(.*)$")
 _STRING = re.compile(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'')
-_OBJ_ENTRY = re.compile(r'\bObject\(\s*(NonMatching|Matching|Equivalent|MatchingFor\([^()]*\))\s*,\s*"([^"]+)"', re.S)
+_OBJ_ENTRY = re.compile(r'\bObject\(\s*(NonMatching|Matching|Equivalent|MatchingFor\([^()]*\))\s*,\s*"([^"]+)"', re.DOTALL)
 
 
 @dataclass
@@ -35,7 +35,7 @@ class Splits:
     files: list[FileSplit]
 
     @staticmethod
-    def parse(text: str) -> "Splits":
+    def parse(text: str) -> Splits:
         lines = text.splitlines()
         header: list[str] = []
         files: list[FileSplit] = []
@@ -156,7 +156,7 @@ class Lib:
 
 def libs(text: str) -> list[Lib]:
     """The items of `config.libs = [...]`: one per library, a dict or a helper call (Rel("m656DLL", objects=...))."""
-    m = re.search(r"^config\.libs\s*=\s*\[", text, re.M)
+    m = re.search(r"^config\.libs\s*=\s*\[", text, re.MULTILINE)
     if not m:
         return []
     end = _match(text, m.end() - 1) - 1
@@ -220,7 +220,7 @@ def add_objects(text: str, module: str, sources: list[str]) -> str:
             continue  # listed already (dtk-template leaves a file out of objdiff.json until it exists)
         folder = str(Path(src).parent)
 
-        def shared(lib: Lib) -> int:
+        def shared(lib: Lib, folder=folder) -> int:  # `folder`: bind this file's folder
             best = 0
             for path, _, _ in lib.objects:
                 a, b = Path(path).parent.parts, Path(folder).parts

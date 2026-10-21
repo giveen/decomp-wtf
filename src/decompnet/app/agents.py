@@ -13,6 +13,7 @@ characters, and the prompt with its guides and the user's instructions can be lo
 from __future__ import annotations
 
 import collections
+import contextlib
 import json
 import os
 import re
@@ -26,6 +27,7 @@ from pathlib import Path
 
 import httpx
 
+from ..network import NetworkError
 from . import tools
 from .engine import RomNetwork
 
@@ -136,7 +138,7 @@ def is_local(base: str, resolve: bool = True) -> bool:
 
     if private(host):
         return True
-    if "." not in host or re.search(r"\.(local|lan|home|internal|localdomain|home\.arpa)$", host, re.I) \
+    if "." not in host or re.search(r"\.(local|lan|home|internal|localdomain|home\.arpa)$", host, re.IGNORECASE) \
             or host.lower() == "localhost":
         return True
     if not resolve or re.fullmatch(r"[\d.]+|[0-9a-fA-F:]+", host):
@@ -150,13 +152,13 @@ def is_local(base: str, resolve: bool = True) -> bool:
 
 # what an agent CLI says when nobody signed in to it (Claude Code: "Not logged in · Please run /login")
 _SIGNED_OUT = re.compile(r"not logged in|run /login|invalid api key|not authenticated|please (?:log|sign) ?in|"
-                         r"auth(?:entication)? method", re.I)
+                         r"auth(?:entication)? method", re.IGNORECASE)
 # what a model's provider says when the account has no credit left (DeepSeek: "Insufficient Balance", OpenAI:
 # "insufficient_quota", Anthropic: "credit balance is too low"): trying again can't help until it's topped up
 _NO_CREDIT = re.compile(r"insufficient[ _](?:balance|credits?|funds|quota)|exceeded your current quota|"
-                        r"credit balance is too low|payment required|out of credits?", re.I)
+                        r"credit balance is too low|payment required|out of credits?", re.IGNORECASE)
 # and when it's asked too much at once (HTTP 429): it works again in a while
-_THROTTLED = re.compile(r"too many requests|rate[ _-]?limit|concurrency limit|\b429\b|overloaded", re.I)
+_THROTTLED = re.compile(r"too many requests|rate[ _-]?limit|concurrency limit|\b429\b|overloaded", re.IGNORECASE)
 
 
 def no_credit(said: str) -> str | None:
@@ -268,7 +270,7 @@ def _which(cmd: str) -> str | None:
 
 
 # npm's Windows launcher (cmd-shim) ends with: "%_prog%" [node options] "%dp0%\node_modules\...\cli.js" %*
-_NPM_SHIM = re.compile(r'"%_prog%"\s+(?P<opts>[^"\r\n]*?)\s*"%~?dp0%?\\(?P<script>[^"\r\n]+)"\s+%\*', re.I)
+_NPM_SHIM = re.compile(r'"%_prog%"\s+(?P<opts>[^"\r\n]*?)\s*"%~?dp0%?\\(?P<script>[^"\r\n]+)"\s+%\*', re.IGNORECASE)
 
 
 def argv(cmd: list[str]) -> list[str]:
@@ -593,7 +595,7 @@ class Manager:
         try:
             self.net.twins.refresh(slug)
             self.net.permuter.start(slug)  # near misses agents leave, on spare CPU
-        except Exception:  # agents work without them
+        except Exception:  # noqa: BLE001 agents work without them
             pass
         with self._lock:
             if slug in self._prep:
@@ -601,17 +603,17 @@ class Manager:
             try:
                 if not self.net.fork_slug(slug):
                     return
-                _, fp, cfg = self.net.forks.get(slug)
+                _, fp, _cfg = self.net.forks.get(slug)
                 if not (self.net.forks.uncovered(slug) or {}).get("functions") or not fp.linkable():
                     return
-            except Exception:
+            except Exception:  # noqa: BLE001
                 return
             done = self._prep[slug] = threading.Event()
 
         def run() -> None:
             try:
                 self.net.forks.start_files(slug, log=lambda *_: None)
-            except Exception:  # the agents still work on what has files
+            except Exception:  # noqa: BLE001 the agents still work on what has files
                 pass
             finally:
                 done.set()
@@ -633,11 +635,9 @@ class Manager:
                 if s.proc and s.proc.poll() is None:
                     _terminate(s.proc)
                 if s.http is not None:  # a local model can take minutes to answer: don't wait for it
-                    try:
+                    with contextlib.suppress(Exception):
                         s.http.close()
-                    except Exception:
-                        pass
-                if s.state not in ("error",):
+                if s.state != "error":
                     s.state = "stopped"
         if sid is not None:
             self.persist(self.running())
@@ -711,10 +711,8 @@ class Manager:
                 if s.state != "waiting" or not s.feed or "waiting for the room" not in s.feed[-1]["text"]:
                     s.push("info", f"waiting for the room's host: {link.error or 'not reachable right now'}")
                 s.state = "waiting"
-                try:
+                with contextlib.suppress(Exception):
                     link.sync()
-                except Exception:
-                    pass
                 s.stop.wait(10)
                 continue
             s.state = "working"
@@ -726,7 +724,7 @@ class Manager:
             except Fatal as e:  # needs the user first: retrying can't help
                 s.state, s.error = "error", str(e)
                 break
-            except Exception as e:  # keep the runner alive; show what happened
+            except Exception as e:  # noqa: BLE001 keep the runner alive; show what happened
                 s.push("error", f"{type(e).__name__}: {e}")
                 ok = False
             if ok and not s.stop.is_set() and self._progress(agent.id) == before:
@@ -762,10 +760,8 @@ class Manager:
         held = self.net.store.one("SELECT f.name FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=?", agent.id)
         link = self.net.links.get(s.slug)
         if held and link is not None:  # in a room, the host holds the real claim
-            try:
+            with contextlib.suppress(Exception):
                 link.call("/collab/release", agent, function=held["name"], notes="")
-            except Exception:
-                pass
         with self.net.store.tx() as db:  # release any claim the agent still holds so others can take it
             db.execute("DELETE FROM claims WHERE agent_id=?", (agent.id,))
 
@@ -1085,7 +1081,7 @@ def _tokens(obj) -> int:
 def _too_long(r) -> bool:
     """The server refused the request because it doesn't fit the model's context."""
     return r.status_code in (400, 413, 422, 500) and bool(re.search(
-        r"context|too long|exceed|maximum.*tokens|n_ctx|prompt is too|reduce the length", r.text[:2000], re.I))
+        r"context|too long|exceed|maximum.*tokens|n_ctx|prompt is too|reduce the length", r.text[:2000], re.IGNORECASE))
 
 
 def fit(messages: list[dict], budget: int) -> int:
@@ -1120,7 +1116,7 @@ def _request_or_stop(stop: threading.Event, client, method: str, url: str, **kwa
     def call() -> None:
         try:
             box["response"] = getattr(client, method)(url, **kwargs)
-        except BaseException as e:  # noqa: BLE001: handed to the waiting thread
+        except BaseException as e:  # noqa: BLE001 handed to the waiting thread
             box["error"] = e
         finally:
             done.set()
@@ -1128,10 +1124,8 @@ def _request_or_stop(stop: threading.Event, client, method: str, url: str, **kwa
     threading.Thread(target=call, daemon=True, name="agent-api-request").start()
     while not done.wait(0.25):
         if stop.is_set():
-            try:
+            with contextlib.suppress(Exception):
                 client.close()
-            except Exception:
-                pass
             return None
     if stop.is_set():
         return None
@@ -1163,9 +1157,14 @@ def context_window(client, base: str, options: dict, stop: threading.Event | Non
 
 def api_tool_schemas(fork: bool = False, analysis: bool = False) -> list[dict]:
     """OpenAI-style tool definitions for the built-in agent, from the same tools CLI agents get."""
-    s = lambda **props: {"type": "object", "properties": props, "required": [k for k, v in props.items() if v.pop("req", False)]}
-    st = lambda desc, req=False: {"type": "string", "description": desc, "req": req}
-    it = lambda desc: {"type": "integer", "description": desc}
+    def s(**props):
+        return {"type": "object", "properties": props, "required": [k for k, v in props.items() if v.pop("req", False)]}
+
+    def st(desc, req=False):
+        return {"type": "string", "description": desc, "req": req}
+
+    def it(desc):
+        return {"type": "integer", "description": desc}
     defs = {
         "project_info": ("Which game, compiler and progress.", s()),
         "claim_function": ("Claim the next function (or one by name/address). Returns assembly, data, best attempt, "
@@ -1179,6 +1178,11 @@ def api_tool_schemas(fork: bool = False, analysis: bool = False) -> list[dict]:
         "complete_function": ("Analysis projects: mark this work item analyzed and save the finding.",
                               s(function=st("work item", True),
                                 summary=st("what it does, calls, data, surprises", True))),
+        "write_source": ("Save the code you reconstructed into recovered/: a module, a procedure or task of an "
+                         "analyzed binary, or a function that can't be made byte-exact. Labelled reconstructed "
+                         "(unverified), never a match.",
+                         s(function=st("work item: a module, procedure, task or function", True),
+                           source=st("the complete module, or the function's code", True))),
         "rea_tool": ("Analysis projects: run one read-only REA tool on the target.",
                      s(tool=st("tool name, e.g. search_strings", True),
                        arguments=st("JSON object of arguments (optional)"))),

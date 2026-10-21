@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .agents import AGY_ALLOW, KINDS, agy_settings, _which, argv, kind_id
+from .agents import AGY_ALLOW, KINDS, _which, agy_settings, argv, kind_id
 
 NAME = "decomp"
 LABEL = {"claude": "claude-code", "codex": "codex", "antigravity": "antigravity", "opencode": "opencode"}
@@ -89,7 +89,8 @@ def shown(kind: str) -> str:
     """The same, as text a user could run themselves."""
     cmd = commands(kind)
     if cmd is None:
-        return f"add {{\"mcp\": {{\"decomp\": {{\"type\": \"local\", \"command\": {json.dumps(bridge_command())}}}}}}} to {_opencode_config()}"
+        cfg = json.dumps(bridge_command())
+        return f"add {{\"mcp\": {{\"decomp\": {{\"type\": \"local\", \"command\": {cfg}}}}}}} to {_opencode_config()}"
     return subprocess.list2cmdline([Path(cmd[0]).stem if sys.platform == "win32" else Path(cmd[0]).name, *cmd[1:]])
 
 

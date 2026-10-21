@@ -40,12 +40,12 @@ def _code_like(data: bytes, least: int = 16) -> bool:
 
 
 def _walk(disc, lba: int, length: int, path: str = ""):
-    for name, l, size, is_dir in disc.entries(lba, length):
+    for name, entry_lba, size, is_dir in disc.entries(lba, length):
         if is_dir:
             if name not in (".", ".."):
-                yield from _walk(disc, l, size, f"{path}{name}/")
+                yield from _walk(disc, entry_lba, size, f"{path}{name}/")
         else:
-            yield f"{path}{name}", l, size
+            yield f"{path}{name}", entry_lba, size
 
 
 def disc_files(disc) -> list[tuple[str, int, int]]:

@@ -45,7 +45,8 @@ class SymbolTable:
         old = self.by_addr.get(sym.address)
         # One address, several names: keep the most useful as the display name (g_counter over the linker's
         # __data_start__, a function over an alias) while every alias still resolves.
-        rank = lambda s: (not s.name.startswith("__"), s.kind == "func", len(s.name))
+        def rank(s):
+            return (not s.name.startswith("__"), s.kind == "func", len(s.name))
         if old is None or rank(sym) > rank(old):
             self.by_addr[sym.address] = sym
         if reindex:

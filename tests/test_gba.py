@@ -42,8 +42,9 @@ def test_import_finds_the_functions(gba):
     net, slug = gba
     ov = net.overview(slug)
     assert ov["platform"] == "gba" and ov["compiler"]["toolchain"] == "agbcc"
-    real = {s["st_value"] & ~1 for s in ELFFile(open(ELF, "rb")).get_section_by_name(".symtab").iter_symbols()
-            if s["st_info"]["type"] == "STT_FUNC"}
+    with open(ELF, "rb") as fh:
+        real = {s["st_value"] & ~1 for s in ELFFile(fh).get_section_by_name(".symtab").iter_symbols()
+                if s["st_info"]["type"] == "STT_FUNC"}
     found = {r["vram"] for r in net.store.all("SELECT vram FROM functions")}
     assert len(found & real) >= 110 and not found - real  # most functions, and no false starts
 
@@ -51,9 +52,11 @@ def test_import_finds_the_functions(gba):
 def test_every_game_function_matches(gba):
     net, slug = gba
     agent, _ = net.local_agent("gba-agent")
-    syms = {s.name: s["st_value"] & ~1 for s in ELFFile(open(ELF, "rb")).get_section_by_name(".symtab").iter_symbols() if s.name}
-    header = "\n".join(l for l in (GAME / "game.h").read_text().splitlines()
-                       if not l.startswith("#include") and not re.match(r"typedef \w+( \w+)? [su]\d+;|typedef \w+ f\d+;", l))
+    with open(ELF, "rb") as fh:
+        syms = {s.name: s["st_value"] & ~1 for s in ELFFile(fh).get_section_by_name(".symtab").iter_symbols()
+                if s.name}
+    header = "\n".join(ln for ln in (GAME / "game.h").read_text().splitlines()
+                       if not ln.startswith("#include") and not re.match(r"typedef \w+( \w+)? [su]\d+;|typedef \w+ f\d+;", ln))
     assert net.edit_context(agent, slug, "", header, "the game's types").startswith("✅")
     pid = net.project_row(slug)["id"]
     for name in FUNCTIONS:  # merged into the function before, or never found: split it off / add it
@@ -62,8 +65,9 @@ def test_every_game_function_matches(gba):
         if row["vram"] != syms[name]:
             assert net.split_function(agent, slug, row["name"], f"0x{syms[name]:08X}", name).startswith("✅")
     table = net.symbols(pid)
-    for name in FUNCTIONS + ["g_player", "g_entities", "g_score", "g_frame_count", "g_rng_state", "__mulsf3", "__addsf3",
-                             "__subsf3", "__divsi3", "__modsi3", "__floatsisf", "__fixsfsi", "__ltsf2", "__gtsf2"]:
+    for name in [*FUNCTIONS, "g_player", "g_entities", "g_score", "g_frame_count", "g_rng_state",
+                 "__mulsf3", "__addsf3", "__subsf3", "__divsi3", "__modsi3", "__floatsisf", "__fixsfsi",
+                 "__ltsf2", "__gtsf2"]:
         if name in syms:
             current, offset = table.name_at(syms[name])
             if offset:

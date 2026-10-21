@@ -73,7 +73,7 @@ class Registrar:
             raise NetworkError("the bot check is missing; reload the page and try again")
         try:
             result = self._verify(token, ip)
-        except Exception:  # network error or non-JSON: fail closed
+        except Exception:  # noqa: BLE001 network error or non-JSON: fail closed
             raise NetworkError("could not verify the bot check; try again") from None
         if not (result.get("success") is True and result.get("action") == EXPECTED_ACTION
                 and result.get("hostname") in self.hostnames):

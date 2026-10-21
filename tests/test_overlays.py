@@ -83,7 +83,7 @@ def _iso(files: dict[str, bytes]) -> bytes:
     pvd[0:7] = b"\x01CD001\x01"
     pvd[156:156 + 34] = record(b"\0", 18, 2048, True)
     image = bytearray(16 * 2048) + pvd + bytearray(b"\xffCD001\x01".ljust(2048, b"\0")) + bytearray(root.ljust(2048, b"\0"))
-    for name, data in files.items():
+    for _, data in files.items():
         image += data + bytes(-len(data) % 2048)
     return bytes(image)
 

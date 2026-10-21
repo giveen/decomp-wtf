@@ -54,7 +54,7 @@ def test_what_differs_is_named(same, tmp_path, capsys):
     assert f"the ARM9 program differs from offset 0x800 (RAM 0x{arm9_ram + 0x800:08X})" in said
 
     fat_off = struct.unpack_from("<I", rom, 0x48)[0]
-    start, end = struct.unpack_from("<II", rom, fat_off)
+    start, _end = struct.unpack_from("<II", rom, fat_off)
     changed = bytearray(rom)
     changed[start] ^= 0xFF  # the first file's first byte
     names = same.Rom(rom).names()

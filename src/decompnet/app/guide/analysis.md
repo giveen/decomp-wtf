@@ -26,7 +26,7 @@ open a child yourself: read the claimed entry within its limits.
 4. Write while you work: `add_note(text, function)` for anything the next agent should know.
 5. Finish with `complete_function(function, summary)`. The summary is required: what the item does, its inputs and
    outputs, what it calls, the data it touches, and anything surprising. It is saved on the item and in the project's
-   notes.
+   notes. When you reconstructed its code too, save it first with `write_source(function, source)`.
 6. If the item is too large or needs a decision you can't make, `release_function(function, notes)` with what you
    tried and what is left.
 
@@ -35,6 +35,18 @@ open a child yourself: read the claimed entry within its limits.
 The user can add a task without an address (for example "map the network protocol" or "find the update check"). A
 task comes with the user's brief; follow it and finish with a summary. Tasks are not procedures, so `rea_tool` is
 where the work happens.
+
+## Recovered code
+
+When the evidence supports it, you can save the code you reconstructed for a procedure or task with
+`write_source(function, source)`. It lands in `recovered/functions/` (or `recovered/tasks/`), the item is marked
+analyzed, and any finding it already had is kept. The code is labelled **reconstructed**: there is no byte-exact
+reference for an analyzed target, so nothing here is verified. Never call it the original source.
+
+Base the code on what REA showed you (pseudocode, assembly, callers, referenced strings) and say what you based it
+on in a note or the finding. If the reconstruction is partial or guesses at a structure, say which parts are guesses.
+An app or archive project can also ask you to reconstruct a module: those items say so in their brief and use the
+same tool.
 
 ## What counts as a good finding
 

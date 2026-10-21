@@ -30,8 +30,8 @@ UNIT_BYTES = 0x1000
 TEMPLATE = Path(__file__).with_name("ds_template")
 REGIONS = {"E": "North America", "P": "Europe", "J": "Japan", "K": "Korea", "D": "Germany", "F": "France",
            "I": "Italy", "S": "Spain", "U": "Australia", "C": "China"}
-_FUNC = re.compile(r"^(\S+) kind:function\((arm|thumb),size=(0x[0-9a-fA-F]+)\)[^\n]*?addr:(0x[0-9a-fA-F]+)", re.M)
-_SECTION = re.compile(r"^\s+(\.\w+)\s+start:(0x[0-9a-fA-F]+)\s+end:(0x[0-9a-fA-F]+)", re.M)
+_FUNC = re.compile(r"^(\S+) kind:function\((arm|thumb),size=(0x[0-9a-fA-F]+)\)[^\n]*?addr:(0x[0-9a-fA-F]+)", re.MULTILINE)
+_SECTION = re.compile(r"^\s+(\.\w+)\s+start:(0x[0-9a-fA-F]+)\s+end:(0x[0-9a-fA-F]+)", re.MULTILINE)
 
 
 def crc16(data: bytes) -> int:
@@ -159,7 +159,7 @@ def _units(module: Path) -> list[tuple[int, int, int]]:
         return []
     starts = [text[0]] + [u[0] for u in units[1:]]
     ends = [u[0] for u in units[1:]] + [text[1]]
-    return [(a, b, u[2]) for a, b, u in zip(starts, ends, units)]
+    return [(a, b, u[2]) for a, b, u in zip(starts, ends, units, strict=False)]
 
 
 def _init(dsd: str, root: Path, version: str, log) -> None:

@@ -28,15 +28,15 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..network import NetworkError
 from ..limits import capped, killed_for_memory
+from ..network import NetworkError
 from . import objdiff
 
 STATE = ".decomp-wtf"
 _CONFIG_CACHE: dict[str, tuple] = {}  # objdiff.json path -> (stat key, parsed, units by name)
 _CONFIG_LOCK = threading.Lock()
 # Agents may only edit source and header files, never the project's build setup, targets or verification.
-EDITABLE = re.compile(r"\.(c|cc|cpp|cxx|h|hh|hpp|hxx|inc|inl)$", re.I)
+EDITABLE = re.compile(r"\.(c|cc|cpp|cxx|h|hh|hpp|hxx|inc|inl)$", re.IGNORECASE)
 FORBIDDEN_PARTS = {".git", STATE, "orig", "build", "asm", "expected", "tools", "config", ".github", "assets", "bin"}
 
 
@@ -77,8 +77,8 @@ def _git_env(root: Path) -> dict | None:
 
 
 # dtk-template's configure.py: Object(NonMatching, "path.c"), also over several lines, MatchingFor("GALE01")...
-_OBJECT = re.compile(r'\bObject\(\s*(NonMatching|Matching|Equivalent|MatchingFor\([^()]*\))\s*,\s*"([^"]+)"', re.S)
-_SRC_DIR = re.compile(r'^\s*config\.src_dir\s*=\s*Path\(\s*"([^"]+)"\s*\)', re.M)
+_OBJECT = re.compile(r'\bObject\(\s*(NonMatching|Matching|Equivalent|MatchingFor\([^()]*\))\s*,\s*"([^"]+)"', re.DOTALL)
+_SRC_DIR = re.compile(r'^\s*config\.src_dir\s*=\s*Path\(\s*"([^"]+)"\s*\)', re.MULTILINE)
 _CHECK = re.compile(r"^build (\S+[/\\]ok): check\b")  # dtk-template writes build\<version>\ok on Windows
 # A target the build couldn't make: ninja's "FAILED: out.o", make's "make: *** [Makefile:12: out.o] Error 1"
 _FAILED = re.compile(r"^FAILED: (.+)$|^make(?:\[\d+\])?: \*\*\* \[(?:[^\]]*?:\d+: )?([^\]]+)\] Error")
@@ -137,7 +137,7 @@ class ForkProject:
                 return True
             return bool(lines[i].strip()) and i + 1 < len(lines) and bool(re.fullmatch(r"\s*[=-]{3,}\s*", lines[i + 1]))
 
-        wanted = re.compile(r"build|setup|set up|getting started|usage|install|requirements|prerequisite", re.I)
+        wanted = re.compile(r"build|setup|set up|getting started|usage|install|requirements|prerequisite", re.IGNORECASE)
         start = next((i for i in range(len(lines)) if heading(i) and wanted.search(lines[i])), 0)
         return "\n".join(lines[start:start + limit]).strip()
 
@@ -188,9 +188,9 @@ class ForkProject:
             return manual
         if kind == "splat":
             y = self._splat_yaml().read_text(errors="replace", encoding="utf-8")
-            target = re.search(r"^\s*target_path:\s*['\"]?([^'\"\n#]+)", y, re.M)
-            base = re.search(r"^\s*base_path:\s*['\"]?([^'\"\n#]+)", y, re.M)
-            sha1 = re.search(r"^sha1:\s*['\"]?([0-9a-fA-F]{40})", y, re.M)
+            target = re.search(r"^\s*target_path:\s*['\"]?([^'\"\n#]+)", y, re.MULTILINE)
+            base = re.search(r"^\s*base_path:\s*['\"]?([^'\"\n#]+)", y, re.MULTILINE)
+            sha1 = re.search(r"^sha1:\s*['\"]?([0-9a-fA-F]{40})", y, re.MULTILINE)
             path = target.group(1).strip() if target else ""
             yaml_dir = os.path.relpath(self._splat_yaml().parent, self.root)
             if path and base:
@@ -271,8 +271,8 @@ class ForkProject:
             return [[sys.executable, "configure.py"], [_tool("ninja") or "ninja"]]
         if kind == "splat":
             make = (self.root / "Makefile").read_text(errors="replace", encoding="utf-8")
-            steps = [["make", t] for t in ("setup", "extract") if re.search(rf"^{t}\s*:", make, re.M)][:1]
-            return steps + [["make", f"-j{os.cpu_count() or 4}"]]
+            steps = [["make", t] for t in ("setup", "extract") if re.search(rf"^{t}\s*:", make, re.MULTILINE)][:1]
+            return [*steps, ["make", f"-j{os.cpu_count() or 4}"]]
         if kind == "objdiff":
             cfg = self.objdiff_config()
             return [[cfg.get("custom_make") or "make", *cfg.get("custom_args", [])]]
@@ -325,7 +325,7 @@ class ForkProject:
         if not cfg.is_file() or not orig.is_dir():
             return 0
         text = cfg.read_text(errors="replace", encoding="utf-8")
-        if re.search(r"^\s*object_base\s*:", text, re.M):
+        if re.search(r"^\s*object_base\s*:", text, re.MULTILINE):
             return 0  # this dtk reads the disc image itself
         wanted = sorted({m.group(1) for m in re.finditer(rf"orig/{re.escape(version)}/([^\s'\"#,\]]+)", text)})
         missing = [w for w in wanted if not w.endswith("/") and ".." not in w and not (orig / w).exists()]

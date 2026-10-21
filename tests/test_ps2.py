@@ -7,7 +7,6 @@ them must match byte for byte.
 """
 
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -70,15 +69,16 @@ def test_a_removed_game_can_be_imported_again(tmp_path):
 def test_every_game_function_matches(psx):
     net, slug = psx
     agent, _ = net.local_agent("psx-agent")
-    syms = {s.name: s["st_value"] for s in ELFFile(open(ELF, "rb")).get_section_by_name(".symtab").iter_symbols()}
+    with open(ELF, "rb") as fh:
+        syms = {s.name: s["st_value"] for s in ELFFile(fh).get_section_by_name(".symtab").iter_symbols()}
     header = (GAME / "game.h").read_text()
-    header = "\n".join(l for l in header.splitlines()
-                       if not l.startswith("#include") and not re.match(r"typedef \w+( \w+)? [su]\d+;|typedef \w+ f\d+;", l))
-    header = re.sub(r"^extern (s32|u32) (g_\w+);", r"\1 \2;", header, flags=re.M)  # small globals: no extern
+    header = "\n".join(ln for ln in header.splitlines()
+                       if not ln.startswith("#include") and not re.match(r"typedef \w+( \w+)? [su]\d+;|typedef \w+ f\d+;", ln))
+    header = re.sub(r"^extern (s32|u32) (g_\w+);", r"\1 \2;", header, flags=re.MULTILINE)  # small globals: no extern
     assert net.edit_context(agent, slug, "", header, "the game's types").startswith("✅")
     table = net.symbols(net.project_row(slug)["id"])
-    for name in FUNCTIONS + ["g_player", "g_entities", "g_score", "g_frame_count", "g_rng_state",
-                             "__muldi3", "__udivdi3", "__umoddi3", "__divdi3", "__moddi3"]:
+    for name in [*FUNCTIONS, "g_player", "g_entities", "g_score", "g_frame_count", "g_rng_state",
+                 "__muldi3", "__udivdi3", "__umoddi3", "__divdi3", "__moddi3"]:
         if name in syms:
             current, offset = table.name_at(syms[name])
             if offset:  # inside a bigger data symbol (adjacent globals): name the address itself

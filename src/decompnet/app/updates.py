@@ -10,6 +10,7 @@ running app becomes the new version with exec (the process, its console window a
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -78,7 +79,7 @@ def _first_line(message: str) -> str:
 def _check_release(cur: dict) -> dict:
     repo = cur.get("repo") or REPO
     text = _get(f"https://raw.githubusercontent.com/{repo}/main/install/install.sh").decode("utf-8", "replace")
-    m = re.search(r'^VERSION="([^"]+)"', text, re.M)
+    m = re.search(r'^VERSION="([^"]+)"', text, re.MULTILINE)
     if not m:
         raise ValueError("the installer didn't say which version is current")
     latest = m.group(1)
@@ -91,7 +92,7 @@ def _check_release(cur: dict) -> dict:
 def _branch_version(repo: str, sha: str) -> str:
     try:
         text = _get(f"https://raw.githubusercontent.com/{repo}/{sha}/pyproject.toml").decode("utf-8", "replace")
-        m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+        m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
         return m.group(1) if m else ""
     except (OSError, ValueError):
         return ""
@@ -182,7 +183,7 @@ def _stream(cmd: list[str], log, failure: str) -> None:
     for line in proc.stdout:
         line = line.rstrip()
         if line:
-            tail = (tail + [line])[-20:]
+            tail = ([*tail, line])[-20:]
             log(f"  {line}")
     if proc.wait() != 0:
         raise RuntimeError(f"{failure} (exit code {proc.returncode}): {' / '.join(tail[-3:])}")
@@ -193,10 +194,8 @@ def restart(port: int, secret: str) -> None:
     browser tab keeps working). Never returns."""
     env = dict(os.environ, DECOMP_RESTART=json.dumps({"port": port, "secret": secret}))
     for stream in (sys.stdout, sys.stderr):
-        try:
+        with contextlib.suppress(OSError, ValueError, AttributeError):
             stream.flush()
-        except (OSError, ValueError, AttributeError):
-            pass
     argv = [sys.executable, "-m", "decompnet.app.cli", "--no-browser", "--port", str(port)]
     if not Path(sys.executable).exists():  # the environment moved: its decomp command starts the same way
         bindir = subprocess.run([uv() or "uv", "tool", "dir", "--bin"], capture_output=True, text=True).stdout.strip()

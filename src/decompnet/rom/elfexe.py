@@ -91,7 +91,7 @@ def _eh_frame(elf: ELFFile) -> list[tuple[int, int]]:
             if header is not None and "initial_location" in header and header["address_range"]:
                 out.append((header["initial_location"], header["initial_location"] + header["address_range"]))
         return out
-    except Exception:  # an odd or damaged .eh_frame: call targets still find the functions
+    except Exception:  # noqa: BLE001 an odd or damaged .eh_frame: call targets still find the functions
         return []
 
 
@@ -105,7 +105,7 @@ def _imports(elf: ELFFile, arch: str, data: bytes) -> list[Symbol]:
             continue
         try:
             symtab = elf.get_section(sec["sh_link"])
-        except Exception:
+        except Exception:  # noqa: BLE001
             continue
         if not isinstance(symtab, SymbolTableSection):
             continue

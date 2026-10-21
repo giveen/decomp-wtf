@@ -102,7 +102,7 @@ class _Disc:
         lba, length = struct.unpack_from("<I", pvd, 156 + 2)[0], struct.unpack_from("<I", pvd, 156 + 10)[0]
         parts = [p for p in re.split(r"[\\/]", path.upper()) if p]
         for k, part in enumerate(parts):
-            hit = next(((l, s, d) for name, l, s, d in self.entries(lba, length) if name == part), None)
+            hit = next(((elba, s, d) for name, elba, s, d in self.entries(lba, length) if name == part), None)
             if hit is None:
                 return None
             lba, length, is_dir = hit
@@ -118,11 +118,11 @@ def from_disc(src) -> tuple[bytes, str, str]:
     cnf = disc.find("SYSTEM.CNF")
     boot, platform = "PSX.EXE", "psx"
     if cnf is not None:
-        m = re.search(rb"BOOT2\s*=\s*cdrom0?:?\\*([^\s;]+)", cnf, re.I)
+        m = re.search(rb"BOOT2\s*=\s*cdrom0?:?\\*([^\s;]+)", cnf, re.IGNORECASE)
         if m:
             platform = "ps2"
         else:
-            m = re.search(rb"BOOT\s*=\s*cdrom:?\\*([^\s;]+)", cnf, re.I)
+            m = re.search(rb"BOOT\s*=\s*cdrom:?\\*([^\s;]+)", cnf, re.IGNORECASE)
         if m:
             boot = m.group(1).decode("ascii", "replace")
     exe = disc.find(boot)
