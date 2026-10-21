@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import difflib
 import hashlib
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -71,7 +70,7 @@ def _normalized(fn, arch: str) -> tuple[list[str], str]:
     obj = FunctionObj(fn.name, arch, False, fn.code, relocs, format="coff")
     try:
         lines = [ins.text for ins in scoring.disassemble(obj)]
-    except Exception:
+    except Exception:  # noqa: BLE001
         lines = []
     if not lines:
         lines = [fn.code.hex()]
@@ -149,7 +148,7 @@ def _match(old: list[VersionFunction], new: list[VersionFunction], threshold: fl
                 if ratio >= threshold:
                     candidates.append((ratio, i, j))
         candidates.sort(reverse=True)
-        for ratio, i, j in candidates:
+        for _, i, j in candidates:
             if i not in paired and j not in used_new:
                 paired[i] = j
                 used_new.add(j)

@@ -16,13 +16,13 @@ import tempfile
 
 # files a project states its rules in, at the top, in .github/ or docs/
 _POLICY_FILE = re.compile(r"^(?:\.github/|docs/)?(?:readme|contributing|contribute|code_of_conduct|agents|claude|"
-                          r"gemini|ai|ai[-_]?policy|policy|guidelines)(?:\.(?:md|markdown|txt|rst))?$", re.I)
+                          r"gemini|ai|ai[-_]?policy|policy|guidelines)(?:\.(?:md|markdown|txt|rst))?$", re.IGNORECASE)
 # mentions of AI ("AI" in capitals only: "said", "mail"...)
 _AI = re.compile(r"\bA\.?I\b|\bLLMs?\b|\blarge language models?\b|\bChatGPT\b|\bCopilot\b|\bClaude\b|\bCodex\b|"
                  r"\bGPT-?\d|\bGemini\b|\bmachine[- ]generated\b|\bgenerative\b|\bartificial intelligence\b|\bvibe[- ]?cod")
 _NO = re.compile(r"\b(?:no|not|never|don'?t|do not|won'?t|will not|cannot|can'?t|prohibit\w*|ban(?:ned|s)?|forbid\w*|"
-                 r"disallow\w*|reject\w*|refus\w*|unwelcome|without|closed|removed|deleted)\b", re.I)
-_YES = re.compile(r"\b(?:welcome\w*|allowed|accept\w*|encourag\w*|fine|okay|ok|permitted|may use|can use|feel free)\b", re.I)
+                 r"disallow\w*|reject\w*|refus\w*|unwelcome|without|closed|removed|deleted)\b", re.IGNORECASE)
+_YES = re.compile(r"\b(?:welcome\w*|allowed|accept\w*|encourag\w*|fine|okay|ok|permitted|may use|can use|feel free)\b", re.IGNORECASE)
 
 
 def _git(*args: str, cwd: str | None = None, timeout: int = 90) -> subprocess.CompletedProcess:

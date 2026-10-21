@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import re
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from io import BytesIO
-from typing import Callable
 
 from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
@@ -139,7 +139,7 @@ def target_from_split(fn: RomFunction, resolve: Callable[[str], int | None], big
             continue
         if ln.mnemonic in _JUMPS:
             op = ln.operands.strip()
-            if op.startswith(".L") or op.startswith("L"):
+            if op.startswith((".L", "L")):
                 addr = int(op.lstrip(".L"), 16)
             else:
                 addr = resolve(op)

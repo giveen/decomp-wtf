@@ -20,7 +20,8 @@ def function_page(net: Network, project: str, name: str) -> dict:
     legal = cfg.get("legal", {})
     hash_only = net._hash_only(fn)
     agents = {r["id"]: (r["name"], r["owner"]) for r in net.store.all("SELECT id, name, owner FROM agents")}
-    who = lambda aid: agents.get(aid, ("?", None))[0] if aid else None
+    def who(aid):
+        return agents.get(aid, ("?", None))[0] if aid else None
 
     attempts = net.store.all(
         "SELECT agent_id, score, compiled, via, created_at FROM attempts WHERE function_id=? ORDER BY id DESC LIMIT ?",

@@ -9,11 +9,11 @@ turns up.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
 import re
 import struct
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from .. import toolchains
@@ -59,7 +59,7 @@ def _luvdis(rom: Path, workdir: Path, cfg_in: Path | None) -> tuple[str, list[in
     if res.returncode != 0 or not out.exists():
         raise RomError("luvdis couldn't disassemble the ROM: " + (res.stderr or res.stdout)[-400:])
     found = sorted({int(m.group(1), 16) for m in re.finditer(r"^(?:[a-z_]+[ \t]+)?(0x[0-9A-Fa-f]+)",
-                                                             cfg.read_text(encoding="utf-8"), re.M)})
+                                                             cfg.read_text(encoding="utf-8"), re.MULTILINE)})
     return out.read_text(encoding="utf-8"), found
 
 

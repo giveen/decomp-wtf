@@ -93,10 +93,7 @@ def _symbols(data: bytes, ptr: int, count: int) -> list[_Symbol]:
     index, at = 0, ptr
     while index < count and at + 18 <= len(data):
         raw, value, section, typ, storage, naux = struct.unpack_from("<8sIhHBB", data, at)
-        if raw[:4] == b"\0\0\0\0":
-            name = _string(data, strings + struct.unpack_from("<I", raw, 4)[0])
-        else:
-            name = _cstr(raw)
+        name = _string(data, strings + struct.unpack_from("<I", raw, 4)[0]) if raw[:4] == b"\x00\x00\x00\x00" else _cstr(raw)
         out.append(_Symbol(name, value, section, typ, storage, index))
         index += 1 + naux
         at += 18 * (1 + naux)

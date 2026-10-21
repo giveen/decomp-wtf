@@ -49,7 +49,7 @@ def find_asm(root: Path, unit_name: str, symbol: str, source_text: str | None) -
 
 def _block(text: str, symbol: str) -> str:
     """Just one function from a large dtk assembly file."""
-    m = re.search(rf"^\.fn {re.escape(symbol)}\b.*?^\.endfn {re.escape(symbol)}\b.*?$", text, re.M | re.S)
+    m = re.search(rf"^\.fn {re.escape(symbol)}\b.*?^\.endfn {re.escape(symbol)}\b.*?$", text, re.MULTILINE | re.DOTALL)
     return m.group(0) if m else text
 
 
@@ -110,10 +110,10 @@ def _dsd_block(root: Path, unit_name: str, symbol: str) -> tuple[str, bool] | No
         return None
     text = path.read_text(errors="replace", encoding="utf-8")
     m = re.search(rf"^\s*(arm|thumb)_func_start {re.escape(symbol)}\n(.*?)^\s*\1_func_end {re.escape(symbol)}\b",
-                  text, re.M | re.S)
+                  text, re.MULTILINE | re.DOTALL)
     if not m:
         return None
-    body = re.sub(r"\s*;.*$", "", m.group(2), flags=re.M)  # dsd's comments (addresses)
+    body = re.sub(r"\s*;.*$", "", m.group(2), flags=re.MULTILINE)  # dsd's comments (addresses)
     lines = [ln for ln in body.splitlines() if ln.strip() and not ln.strip().startswith(f"{symbol}:")]
     return f".text\nglabel {symbol}\n" + "\n".join(lines) + "\n", m.group(1) == "thumb"
 

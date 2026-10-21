@@ -45,5 +45,6 @@ def diff(obj: Path, function: str, source: Path, toolchain: str, context: Path |
     if cand is None:
         return f"compiled, but there is no function named {function!r}"
     d = scoring.diff(target, cand)
-    head = "MATCH (submit it to the coordinator with compile_and_diff)" if d.bytes_match else f"score {d.score} ({scoring.percent_text(d.percent)})"
+    head = ("MATCH (submit it to the coordinator with compile_and_diff)" if d.bytes_match
+            else f"score {d.score} ({scoring.percent_text(d.percent)})")
     return f"{head}\n{d.render()}"

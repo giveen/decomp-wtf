@@ -186,6 +186,8 @@ MAX_COMPRESSION_RATIO = 1000
 MAX_ENTRY_BYTES = 256 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 512 * 1024 * 1024
 MAX_NESTING = 3
+MAX_SOURCE_BYTES = 4 * 1024 * 1024        # one source entry read back out of an archive
+MAX_RECOVERED_BYTES = 64 * 1024 * 1024    # all source entries recovered from one archive
 INSPECT_TIMEOUT = 300
 
 
@@ -294,6 +296,30 @@ def read_archive_entry(path: str | Path, name: str, offset: int = 0, length: int
 
 
 
+# Text source inside an archive: its code shipped as text, so it comes back exactly (verified, not reconstructed).
+SOURCE_EXTS = {
+    ".c": "C", ".h": "C", ".cc": "C++", ".cpp": "C++", ".cxx": "C++", ".hpp": "C++", ".hh": "C++",
+    ".hxx": "C++", ".cs": "C#", ".java": "Java", ".kt": "Kotlin", ".kts": "Kotlin", ".groovy": "Groovy",
+    ".js": "JavaScript", ".mjs": "JavaScript", ".cjs": "JavaScript", ".jsx": "JavaScript",
+    ".ts": "TypeScript", ".tsx": "TypeScript", ".vue": "Vue", ".svelte": "Svelte",
+    ".py": "Python", ".rb": "Ruby", ".php": "PHP", ".lua": "Lua", ".pl": "Perl", ".pm": "Perl",
+    ".go": "Go", ".rs": "Rust", ".swift": "Swift", ".m": "Objective-C", ".mm": "Objective-C++",
+    ".dart": "Dart", ".scala": "Scala", ".r": "R", ".jl": "Julia",
+    ".html": "HTML", ".htm": "HTML", ".xhtml": "HTML", ".css": "CSS", ".scss": "SCSS", ".less": "Less",
+    ".s": "Assembly", ".asm": "Assembly", ".inc": "Assembly",
+    ".sh": "Shell", ".bash": "Shell", ".zsh": "Shell", ".ps1": "PowerShell", ".bat": "Batch", ".cmd": "Batch",
+    ".sql": "SQL", ".glsl": "GLSL", ".vert": "GLSL", ".frag": "GLSL", ".hlsl": "HLSL", ".wgsl": "WGSL",
+}
+# Code that did not ship as text: the source has to be reconstructed from the artifact.
+COMPILED_EXTS = {
+    ".pyc": "Python bytecode", ".pyo": "Python bytecode", ".class": "Java bytecode",
+    ".luac": "Lua bytecode", ".beam": "Erlang bytecode", ".elc": "Emacs Lisp bytecode",
+}
+# What a reconstructed compiled entry is written as (the source file, not the bytecode).
+COMPILED_SOURCE_EXTS = {".pyc": ".py", ".pyo": ".py", ".class": ".java", ".luac": ".lua",
+                        ".beam": ".erl", ".elc": ".el"}
+
+
 # What an archive entry is, for the Contents tree and for choosing how to open it as a child target.
 _ENTRY_TYPES = {
     ".exe": ("binary", "PE", "open_binary"), ".dll": ("binary", "PE", "open_binary"),
@@ -304,10 +330,10 @@ _ENTRY_TYPES = {
     ".img": ("binary", "binary", "open_binary"), ".fw": ("binary", "binary", "open_binary"),
     ".apk": ("android", "APK", "inspect_android_package"),
     ".dex": ("android", "DEX", "open_binary"),
-    ".js": ("javascript", "JavaScript", "analyze_javascript_application"),
-    ".asar": ("javascript", "Electron app", "open_binary"),
-    ".mjs": ("javascript", "JavaScript", "analyze_javascript_application"),
-    ".cjs": ("javascript", "JavaScript", "analyze_javascript_application"),
+    ".js": ("javascript", "JavaScript", "open_binary"),  # REA analyses an app folder or .asar, not one script
+    ".asar": ("javascript", "Electron app", "analyze_javascript_application"),
+    ".mjs": ("javascript", "JavaScript", "open_binary"),
+    ".cjs": ("javascript", "JavaScript", "open_binary"),
     ".wasm": ("wasm", "WASM", "open_binary"),
     ".zip": ("archive", "ZIP", "open_binary"), ".jar": ("archive", "JAR", "open_binary"),
     ".whl": ("archive", "wheel", "open_binary"), ".ipa": ("archive", "IPA", "open_binary"),
@@ -337,6 +363,71 @@ def classify_entry(path: str, data: bytes | None = None) -> dict:
     ext = posixpath.splitext(str(path).lower())[1]
     kind, fmt, tool = _ENTRY_TYPES.get(ext, ("unknown", ext.lstrip(".") or "file", ""))
     return {"entry_type": kind, "entry_format": fmt, "tool": tool, "analyzable": bool(tool)}
+
+
+def recovered_ext(target: dict) -> str:
+    """The source extension for code reconstructed from an analyzed target: REA doesn't know the language, so the
+    inspector that opened it decides, and C is the honest default for a native binary."""
+    target = target or {}
+    tool = str(target.get("tool") or "")
+    fmt = str(target.get("format") or "").lower()
+    kind = str(target.get("kind") or "").lower()
+    if tool == "analyze_javascript_application" or "javascript" in fmt:
+        return ".js"
+    if tool == "inspect_android_package" or "apk" in fmt or "dalvik" in kind or "dex" in kind:
+        return ".java"
+    if tool == "inspect_managed_artifact" or "managed" in kind or "cil" in kind or "msil" in kind:
+        return ".cs"
+    return ".c"
+
+
+def source_language(path: str) -> str | None:
+    """The language of a text source entry, or None when the entry isn't source we can hand back as text."""
+    return SOURCE_EXTS.get(posixpath.splitext(str(path).lower())[1])
+
+
+def compiled_language(path: str) -> str | None:
+    """The language of a compiled entry whose source didn't ship (bytecode, class files), or None."""
+    return COMPILED_EXTS.get(posixpath.splitext(str(path).lower())[1])
+
+
+def decode_source(data: bytes | None) -> str | None:
+    """UTF-8 source text, or None when the bytes are binary (a NUL byte or an undecodable sequence)."""
+    if not data or b"\0" in data[:4096]:
+        return None
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return None
+    return text if text.strip() else None
+
+
+def read_entry_bytes(path: str | Path, name: str, max_bytes: int = MAX_SOURCE_BYTES) -> bytes | None:
+    """One regular entry read whole, up to max_bytes; None when it is a directory, encrypted, too large or unreadable."""
+    try:
+        if zipfile.is_zipfile(path):
+            with zipfile.ZipFile(path) as archive:
+                info = archive.getinfo(name)
+                if info.is_dir() or info.flag_bits & 0x1 or info.file_size > max_bytes:
+                    return None
+                if info.compress_size > 0 and info.file_size > info.compress_size * MAX_COMPRESSION_RATIO:
+                    return None
+                with archive.open(info) as handle:
+                    data = handle.read(max_bytes + 1)
+                return data if len(data) <= max_bytes else None
+        if tarfile.is_tarfile(path):
+            with tarfile.open(path) as archive:
+                member = archive.getmember(name)
+                if not member.isfile() or member.size > max_bytes:
+                    return None
+                handle = archive.extractfile(member)
+                if handle is None:
+                    return None
+                data = handle.read(max_bytes + 1)
+                return data if len(data) <= max_bytes else None
+    except (OSError, KeyError, tarfile.TarError, zipfile.BadZipFile):
+        return None
+    return None
 
 
 def extract_archive_entry(path: str | Path, name: str, dest: str | Path,
@@ -404,6 +495,129 @@ def preview_bytes(data: bytes | None, limit: int = 4096) -> str:
     if len(text) >= 3 and all(32 <= c < 127 or c in (9, 10, 13) for c in text):
         return text.decode("ascii", "replace")
     return sample[:512].hex(" ")
+
+
+# Feature tracing: REA walks a JavaScript or Electron application graph from one literal seed.
+FEATURE_SEED_KINDS = ("route", "string", "api", "channel", "module", "native-export", "node-id")
+FEATURE_DIRECTIONS = ("both", "outgoing", "incoming")
+# Application nodes worth an agent's attention. Containers (a frame, a package) stay in the graph, not the queue.
+# One path can appear as several graph roles (an asset, a module, an asar entry, an electron main script).
+# The first kind in this list names the work item; the others point at that same item.
+FEATURE_WORK_PRIORITY = (
+    "javascript-module", "ipc-handler", "ipc-channel", "endpoint", "electron-main", "electron-preload",
+    "electron-renderer", "electron-utility", "source-module", "native-addon", "native-export", "worker",
+    "service-worker", "storage", "runtime-script-instance", "managed-method", "managed-type", "managed-module",
+    "managed-assembly", "javascript-chunk", "javascript-asset", "asar-entry",
+)
+FEATURE_WORK_KINDS = set(FEATURE_WORK_PRIORITY)
+MAX_FEATURES = 40            # per project: a queue people can still read
+MAX_FEATURE_NODES = 1500    # stored in the project config and drawn by the page
+MAX_FEATURE_EDGES = 3000
+MAX_FEATURE_ITEMS = 300     # work items one trace may add
+
+
+def feature_seed(kind: str, value: str, match: str | None = None, case_sensitive: bool = False) -> dict:
+    """One literal seed for trace_application_feature, validated the way REA validates it."""
+    kind = str(kind or "").strip()
+    if kind not in FEATURE_SEED_KINDS:
+        raise ValueError(f"seed kind must be one of {', '.join(FEATURE_SEED_KINDS)}")
+    value = str(value or "")
+    if not value:
+        raise ValueError("give the feature a seed value (a route, string, API, channel, module or node id)")
+    match = (str(match).strip() if match else None) or ("contains" if kind == "string" else "exact")
+    if match not in ("exact", "contains"):
+        raise ValueError("match must be exact or contains")
+    if kind == "node-id" and match != "exact":
+        raise ValueError("a node-id seed is always exact")
+    return {"kind": kind, "value": value, "match": match, "case_sensitive": bool(case_sensitive)}
+
+
+_DIGEST_PREFIX = re.compile(r"^[0-9a-f]{64}:")
+# Labels REA reuses for every node of a kind; the node's own key or path says more.
+_GENERIC_LABELS = {"network endpoint", "artifact root", "artifact", "unknown"}
+# Namespaces of modules the app imports but does not ship (node's stdlib, electron, npm): nothing to analyze.
+_EXTERNAL_NAMESPACES = ("unresolved-", "external-")
+
+
+def feature_node(node: dict) -> dict | None:
+    """One application graph node as the app stores it: a readable name, its path and what it is."""
+    if not isinstance(node, dict) or not node.get("node_id"):
+        return None
+    identity = node.get("identity") if isinstance(node.get("identity"), dict) else {}
+    observations = [o for o in node.get("observations") or [] if isinstance(o, dict)]
+    label = next((str(o.get("label")) for o in observations if o.get("label")), "")
+    path = _DIGEST_PREFIX.sub("", str(identity.get("path") or identity.get("original_source") or ""))
+    key = str(identity.get("key") or identity.get("runtime_key") or "")
+    kind = str(node.get("kind") or "unknown")
+    name = label if label and label.casefold() not in _GENERIC_LABELS else (key or path or label)
+    name = name or f"{kind}-{str(node['node_id'])[-8:]}"
+    first = observations[0].get("evidence") if observations else {}
+    evidence = first if isinstance(first, dict) else {}
+    return {
+        "node_id": str(node["node_id"]), "kind": kind, "name": name, "label": label, "path": path,
+        "namespace": str(identity.get("namespace") or ""),
+        "identity": str(identity.get("strategy") or ""),
+        "state": str(evidence.get("state") or ""),
+        "authority": str(evidence.get("authority") or ""),
+        "observations": len(observations),
+    }
+
+
+def feature_external(node: dict) -> bool:
+    """A module the app imports but does not ship; a trace reaches it, but there is nothing of the app in it."""
+    return str(node.get("namespace") or "").lower().startswith(_EXTERNAL_NAMESPACES)
+
+
+def feature_graph(trace: dict, max_nodes: int = MAX_FEATURE_NODES,
+                  max_edges: int = MAX_FEATURE_EDGES) -> dict:
+    """The reachable subgraph of one trace, bounded: nodes with names, and the edges between them."""
+    trace = trace if isinstance(trace, dict) else {}
+    graph = trace.get("graph") if isinstance(trace.get("graph"), dict) else {}
+    nodes: list[dict] = []
+    seen: set[str] = set()
+    truncated = False
+    for raw in graph.get("nodes") or []:
+        node = feature_node(raw)
+        if node is None or node["node_id"] in seen:
+            continue
+        if len(nodes) >= max_nodes:
+            truncated = True
+            break
+        seen.add(node["node_id"])
+        nodes.append(node)
+    edges: list[dict] = []
+    edge_seen: set[tuple] = set()
+    for raw in graph.get("edges") or []:
+        if not isinstance(raw, dict):
+            continue
+        source, target = str(raw.get("source_node_id") or ""), str(raw.get("target_node_id") or "")
+        relation = str(raw.get("relation") or "")
+        key = (source, target, relation)
+        if source not in seen or target not in seen or key in edge_seen:
+            continue
+        if len(edges) >= max_edges:
+            truncated = True
+            break
+        edge_seen.add(key)
+        edges.append({"source": source, "target": target, "relation": relation})
+    return {"nodes": nodes, "edges": edges, "paths": len(trace.get("paths") or []), "truncated": truncated}
+
+
+def reached_by(edges: list[dict], nodes: list[dict], node_id: str, limit: int = 3) -> str:
+    """How a trace reached one node, in words: `source —imports→` (containment included, as REA reports it)."""
+    names = {n["node_id"]: (n.get("path") or n.get("label") or n.get("name") or n["node_id"]) for n in nodes}
+    rows = [f"{names.get(e['source'], e['source'])} —{e['relation']}→" for e in edges if e["target"] == node_id]
+    if not rows:
+        return ""
+    more = f" (+{len(rows) - limit} more)" if len(rows) > limit else ""
+    return ", ".join(rows[:limit]) + more
+
+
+def feature_seed_text(seed: dict | None) -> str:
+    seed = seed or {}
+    kind, value = str(seed.get("kind") or ""), str(seed.get("value") or "")
+    match = seed.get("match") or "exact"
+    return f"{kind} {value!r}" + (f" ({match})" if match != "exact" else "")
 
 
 def safe_name(name: str, address: int | None = None) -> str:

@@ -22,7 +22,6 @@ from pathlib import Path
 
 import yaml
 
-from .. import toolchains
 from ..limits import capped
 from . import match
 from .symbols import AUTO_NAME
@@ -36,7 +35,7 @@ LD_ENDIAN = {"n64": "-EB", "psx": "-EL", "ps2": "-EL"}
 IMAGE_EXT = {"n64": ".z64", "psx": ".exe", "ps2": ".bin"}
 _ADDR_COMMENT = re.compile(r"/\*\s*([0-9A-F]+)\s+([0-9A-F]{8})\b")
 _BSS_COMMENT = re.compile(r"/\*\s*([0-9A-F]{8})\s*\*/\s*\.space")
-_DEFINES = re.compile(r"^\s*(?:glabel|dlabel|jlabel|alabel|ehlabel)\s+(\w+)|^\s*\.globl\s+(\w+)|^\s*(\w+):", re.M)
+_DEFINES = re.compile(r"^\s*(?:glabel|dlabel|jlabel|alabel|ehlabel)\s+(\w+)|^\s*\.globl\s+(\w+)|^\s*(\w+):", re.MULTILINE)
 DISCARD = ["*(.reginfo)", "*(.MIPS.abiflags)", "*(.MIPS.options)", "*(.pdr)", "*(.comment)", "*(.mdebug*)",
            "*(.gnu.attributes)", "*(.note*)", "*(.gptab.*)"]
 
@@ -239,7 +238,7 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
     for auto in ("undefined_syms_auto.txt", "undefined_funcs_auto.txt"):
         p = out / auto
         if p.exists():
-            for m in re.finditer(r"^\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+)\s*;", p.read_text(encoding="utf-8"), re.M):
+            for m in re.finditer(r"^\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+)\s*;", p.read_text(encoding="utf-8"), re.MULTILINE):
                 if m.group(1) not in defined:
                     absolute.setdefault(m.group(1), int(m.group(2), 16))
     fn_json = []
@@ -255,7 +254,7 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
     base = f"baserom{ext}"
     (out / image_name).rename(out / base)
     yml = out / "splat.yaml"
-    yml.write_text(re.sub(r"(^\s*target_path:\s*).*$", rf"\g<1>{base}", yml.read_text(encoding="utf-8"), count=1, flags=re.M),
+    yml.write_text(re.sub(r"(^\s*target_path:\s*).*$", rf"\g<1>{base}", yml.read_text(encoding="utf-8"), count=1, flags=re.MULTILINE),
                    encoding="utf-8")
     build = {
         "title": proj["name"], "platform": platform, "image": base, "output": f"build/game{ext}",
@@ -264,7 +263,7 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
         "as_flags": [*AS_FLAGS[platform], "-G0", "-no-pad-sections", "-I", "include"],
         "ld_flags": [LD_ENDIAN[platform], "--no-check-sections"],
         "assembly": objects, "segments": layout, "functions": fn_json,
-        "symbols": {k: v for k, v in sorted(absolute.items(), key=lambda kv: kv[1])},
+        "symbols": dict(sorted(absolute.items(), key=lambda kv: kv[1])),
     }
     (out / "build.json").write_text(json.dumps(build, indent=1), encoding="utf-8")
     shutil.copyfile(Path(__file__).with_name("export_build.py"), out / "build.py")

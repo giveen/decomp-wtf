@@ -93,7 +93,7 @@ def resplit(functions):
 
 
 def test_split_finds_every_function(splitres):
-    res, rom, info = splitres
+    res, _rom, _info = splitres
     elf_funcs = [s for s in truth().by_name.values() if s.kind == "func" and s.address >= 0x80000460]
     found = {f.vram for f in res.functions}
     missed = {s.address for s in elf_funcs} - found
@@ -121,7 +121,7 @@ def _compile_units():
 
 
 def test_original_source_matches_the_rom_byte_for_byte(splitres):
-    res, rom, info = splitres
+    res, rom, _info = splitres
     symbols = truth()
     read = reader(rom, res.segments)
     by_vram = {f.vram: f for f in resplit(res.functions)}
@@ -145,7 +145,7 @@ def test_original_source_matches_the_rom_byte_for_byte(splitres):
 
 
 def test_a_wrong_function_does_not_match(splitres):
-    res, rom, info = splitres
+    res, rom, _info = splitres
     symbols = truth()
     fn = next(f for f in resplit(res.functions) if f.vram == symbols.resolve("clamp_s32"))
     target = match.target_from_split(fn, symbols.resolve)
@@ -162,13 +162,14 @@ def test_a_wrong_function_does_not_match(splitres):
 
 
 def test_unknown_names_are_explained(splitres):
-    res, rom, info = splitres
+    res, rom, _info = splitres
     symbols = SymbolTable()  # nothing renamed: only automatic names resolve
     fn = next(f for f in res.functions if any(ln.mnemonic == "jal" for ln in f.lines))
     target = match.target_from_split(fn, symbols.resolve)
     tc = toolchains.get("gcc-2.7.2-kmc")
     tc_dir = str(toolchains.require(tc.id))
     cmd = [a.replace("{tc}", tc_dir) for a in tc.cc] + tc.flags + ["-I{include}", "{src}", "-o", "{obj}"]
-    out = compile_source(CompilerConfig(cmd=cmd, ro_paths=(tc_dir,)), "", f"void some_helper(void);\nvoid {fn.name}(void) {{ some_helper(); }}")
+    src = f"void some_helper(void);\nvoid {fn.name}(void) {{ some_helper(); }}"
+    out = compile_source(CompilerConfig(cmd=cmd, ro_paths=(tc_dir,)), "", src)
     result = match.link(out.obj, fn.name, target, symbols, reader(rom, res.segments))
     assert not result.exact and any("some_helper" in p for p in result.problems)

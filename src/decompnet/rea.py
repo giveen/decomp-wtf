@@ -16,6 +16,7 @@ or REA installed from Compilers & tools, or an ``rea`` server registered with Cl
 from __future__ import annotations
 
 import atexit
+import contextlib
 import json
 import os
 import queue
@@ -32,7 +33,7 @@ from . import toolchains
 PACKAGE = "rea-agents@6.7.0"  # the version tested with decomp.anything
 PROVIDERS = ("ghidra", "hopper", "ida", "rizin")
 CONFIG: Path | None = None  # rea.json, set by the app at start
-_SECRET = re.compile(r"key|token|secret|password|auth|cookie|credential", re.I)
+_SECRET = re.compile(r"key|token|secret|password|auth|cookie|credential", re.IGNORECASE)
 
 # Only read-only analysis. Nothing that opens files by arbitrary path after the initial target,
 # executes code, writes annotations, or touches the network.
@@ -48,6 +49,8 @@ ANALYSIS_ALLOWED = (ALLOWED - {"open_binary", "close_binary"}) | {
     "analyze_javascript_application", "inspect_analysis_view", "inspect_firmware_regions", "inspect_artifact",
     "inspect_pe_resources", "inspect_macho", "inspect_plist", "inspect_signature", "inspect_binary_layout",
     "inspect_native_data_type", "inspect_native_instruction", "inspect_address_context",
+    # a static trace through the application graph the project was opened with; it opens nothing and runs nothing
+    "trace_application_feature",
 }
 
 
@@ -263,12 +266,10 @@ class Client:
             self.proc.terminate()
             self.proc.wait(timeout=5)
         except (OSError, subprocess.TimeoutExpired):
-            try:
+            with contextlib.suppress(OSError):
                 self.proc.kill()
-            except OSError:
-                pass
 
-    def __enter__(self) -> "Client":
+    def __enter__(self) -> Client:
         return self
 
     def __exit__(self, *exc) -> None:
@@ -402,6 +403,7 @@ atexit.register(lambda: close_all())
 
 _analysis_clients: dict[tuple, Client] = {}
 _analysis_results: dict[tuple, object] = {}
+_analysis_records: dict[tuple, object] = {}  # the whole evidence record, for tools that take it inline
 _analysis_lock = threading.Lock()
 
 
@@ -427,7 +429,9 @@ def open_analysis(target: dict, provider: str = "") -> tuple[Client, object]:
             if tool == "open_binary" and provider and "provider_id" not in args:
                 args["provider_id"] = provider
             try:
-                _analysis_results[key] = client.call(tool, args, any_tool=True, timeout=1800)
+                record = client.call(tool, args, any_tool=True, timeout=1800, envelope=True)
+                _analysis_records[key] = record
+                _analysis_results[key] = unwrap(record)
             except BaseException:
                 client.close()
                 raise
@@ -442,6 +446,35 @@ def analysis_result(target: dict, provider: str = "") -> object:
     return open_analysis(target, provider)[1]
 
 
+def analysis_evidence(target: dict, provider: str = "") -> object | None:
+    """The evidence record the target was opened with (what REA's graph tools take as their input)."""
+    return _analysis_records.get(_target_key(target, provider))
+
+
+def trace_feature(target: dict, provider: str, seed: dict, direction: str = "both", timeout: float = 1800) -> object:
+    """Trace one literal seed through the JavaScript application graph the project was opened with.
+
+    REA keeps the opening evidence in the session, so the trace usually references it by id; a server that
+    doesn't retain it gets the complete record instead. The answer is the whole evidence record.
+    """
+    client = analysis_client(target, provider)
+    record = analysis_evidence(target, provider)
+    if not isinstance(record, dict) or not record:
+        raise ReaError("REA has no application graph for this project; reopen the target with "
+                       "analyze_javascript_application first")
+    args: dict = {"seed": seed, "direction": direction}
+    if record.get("evidence_id"):
+        args["application"] = {"kind": "retained-evidence", "evidence_id": record["evidence_id"]}
+        try:
+            return client.call("trace_application_feature", args, any_tool=True, envelope=True, timeout=timeout)
+        except ReaError as e:
+            # Some servers don't retain opening evidence across calls; them, and only them, get the record inline.
+            if not any(word in str(e).lower() for word in ("evidence", "retain", "missing")):
+                raise
+    args["application"] = record
+    return client.call("trace_application_feature", args, any_tool=True, envelope=True, timeout=timeout)
+
+
 def close_all() -> None:
     with _lock:
         for client in _clients.values():
@@ -453,3 +486,4 @@ def close_all() -> None:
             client.close()
         _analysis_clients.clear()
         _analysis_results.clear()
+        _analysis_records.clear()

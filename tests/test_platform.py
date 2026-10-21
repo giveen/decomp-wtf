@@ -1,6 +1,7 @@
 """decomp.wtf on Windows as on Linux: agents started through npm's .cmd launchers, stopping an agent with everything it
 started, UTF-8 output and files, HTTPS, startup apps, dtk's build paths."""
 
+import contextlib
 import json
 import os
 import shutil
@@ -150,10 +151,8 @@ def test_running_at_log_on_needs_no_administrator(monkeypatch):
         assert not service.installed()
     finally:
         for k in (key, r"Software\decomp.wtf-tests"):
-            try:
+            with contextlib.suppress(OSError):
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, k)
-            except OSError:
-                pass
 
 
 def test_builds_find_decomp_wtfs_own_ninja(tmp_path, monkeypatch):

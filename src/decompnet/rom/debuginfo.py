@@ -12,6 +12,7 @@ Exports are deliberately simple and portable: `symbol_addrs.txt` (splat's format
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -81,7 +82,7 @@ def read(path: str | Path, *, data: bytes | None = None, image=None) -> DebugInf
         if suffix == ".map" or _looks_like_map(text):
             return _read_map(text, image)
         return _read_symbol_addrs(text, path.name)
-    if suffix in (".json",):
+    if suffix == ".json":
         return _read_json(data, path.name)
     if data[:4] == b"\x7fELF":
         return _read_dwarf(data, path.name, image)
@@ -140,8 +141,8 @@ def find_pdb(exe: str | Path, data: bytes) -> Path | None:
 # ------------------------------------------------------------------ symbol_addrs.txt
 
 _EQ = re.compile(r"^\s*([A-Za-z_]\w*)\s*=\s*(0x[0-9A-Fa-f]+|\d+)\s*;?\s*(?://\s*(.*))?$")
-_KIND = re.compile(r"type\s*:\s*(func|function|data|string|jtbl|bss)", re.I)
-_SIZE = re.compile(r"size\s*:\s*(0x[0-9A-Fa-f]+|\d+)", re.I)
+_KIND = re.compile(r"type\s*:\s*(func|function|data|string|jtbl|bss)", re.IGNORECASE)
+_SIZE = re.compile(r"size\s*:\s*(0x[0-9A-Fa-f]+|\d+)", re.IGNORECASE)
 
 
 def _read_symbol_addrs(text: str, source: str = "symbol_addrs.txt") -> DebugInfo:
@@ -165,7 +166,7 @@ def _read_symbol_addrs(text: str, source: str = "symbol_addrs.txt") -> DebugInfo
 
 
 def _looks_like_map(text: str) -> bool:
-    return bool(re.search(r"^\s*(?:0x[0-9A-Fa-f]+\s+\w+|[0-9A-Fa-f]{4}:[0-9A-Fa-f]{8}\s+\S+)", text, re.M))
+    return bool(re.search(r"^\s*(?:0x[0-9A-Fa-f]+\s+\w+|[0-9A-Fa-f]{4}:[0-9A-Fa-f]{8}\s+\S+)", text, re.MULTILINE))
 
 
 # ------------------------------------------------------------------ MAP files
@@ -182,8 +183,8 @@ def _read_map(text: str, image=None) -> DebugInfo:
     for line in text.splitlines():
         m = _MSVC_MAP.match(line)
         if m:
-            name, addr, obj = m.group(1), int(m.group(2), 16), m.group(3)
-            if name in seen or name.startswith("??") and not IDENT.match(name.lstrip("?")):
+            name, addr, _obj = m.group(1), int(m.group(2), 16), m.group(3)
+            if name in seen or (name.startswith("??") and not IDENT.match(name.lstrip("?"))):
                 continue
             seen.add(name)
             kind = "func" if addr in functions else "data"
@@ -496,10 +497,9 @@ def _pdb_type_name(index: int, types: dict[int, dict], names: dict[int, str], se
         return "void"
     rec = types[index]
     kind, lines = rec["kind"], rec["lines"]
-    if kind in ("LF_STRUCTURE", "LF_CLASS", "LF_INTERFACE", "LF_UNION", "LF_ENUM", "LF_TYPEDEF"):
-        if rec["name"]:
-            return ("union " if kind == "LF_UNION" else "enum " if kind == "LF_ENUM" else
-                    "struct " if kind != "LF_TYPEDEF" else "") + rec["name"]
+    if kind in ("LF_STRUCTURE", "LF_CLASS", "LF_INTERFACE", "LF_UNION", "LF_ENUM", "LF_TYPEDEF") and rec["name"]:
+        return ("union " if kind == "LF_UNION" else "enum " if kind == "LF_ENUM" else
+                "struct " if kind != "LF_TYPEDEF" else "") + rec["name"]
     if kind == "LF_POINTER":
         ref = next((int(m.group(1), 16) for line in lines if (m := re.search(r"referent = 0x([0-9A-Fa-f]+)", line))), 0)
         return _pdb_type_name(ref, types, names, seen | {index}) + " *"
@@ -560,10 +560,8 @@ def _pdb_header(types: dict[int, dict], names: dict[int, str] | None = None, fun
             sizeof = 0
             for line in lines:
                 if "sizeof" in line:
-                    try:
+                    with contextlib.suppress(AttributeError, ValueError):
                         sizeof = int(re.search(r"sizeof (\d+)", line).group(1))
-                    except (AttributeError, ValueError):
-                        pass
             fields = []
             field_id = next((int(m.group(1), 16) for line in lines if (m := re.search(r"field list: 0x([0-9A-Fa-f]+)", line))), None)
             field_lines = types[field_id]["lines"] if field_id in types else lines
@@ -574,7 +572,7 @@ def _pdb_header(types: dict[int, dict], names: dict[int, str] | None = None, fun
                     fields.append("    " + _field_decl(ftype, m.group(1)))
             word = "union" if kind == "LF_UNION" else "struct"
             if fields:
-                decls.append(f"{word} {name} {{\n" + "\n".join(fields) + f"\n}};")
+                decls.append(f"{word} {name} {{\n" + "\n".join(fields) + "\n};")
                 seen.add(name)
             elif sizeof:
                 decls.append(f"{word} {name} {{ unsigned char _[{sizeof}]; }};")
@@ -620,7 +618,7 @@ def _has_debug_info(data: bytes) -> bool:
         from elftools.elf.elffile import ELFFile
         elf = ELFFile(BytesIO(data))
         return elf.get_section_by_name(".debug_info") is not None
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -663,7 +661,7 @@ def _read_dwarf(data: bytes, source: str, image=None) -> DebugInfo:
                     _dwarf_enum(die, dwarf, cu, die_cache, types)
                 elif tag == "DW_TAG_typedef":
                     _dwarf_typedef(die, dwarf, cu, die_cache, types)
-        except Exception:
+        except Exception:  # noqa: BLE001
             continue
     header = _dwarf_header(types, list(functions.values()))
     return DebugInfo(source, symbols=list(symbols.values()), functions=list(functions.values()),
@@ -728,7 +726,7 @@ def _dwarf_type(die, dwarf, cu, cache: dict[int, object], seen: set[int] | None 
                     elif isinstance(upper, int):
                         count = str(upper + 1)
                     break
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
         return f"{elem}[{count}]"
     if tag == "DW_TAG_subroutine_type":
@@ -749,7 +747,7 @@ def _dwarf_ref(die, dwarf, cu, cache: dict[int, object]):
         found = dwarf.get_DIE_from_refaddr(ref, cu)
         cache[ref] = found
         return found
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -765,7 +763,7 @@ def _dwarf_signature(die, dwarf, cu, cache: dict[int, object]) -> str:
                 args.append(_dwarf_type(_dwarf_ref(child, dwarf, cu, cache), dwarf, cu, cache))
             elif child.tag == "DW_TAG_unspecified_parameters":
                 args.append("...")
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
     return f"{ret} {name}({', '.join(args)})"
 
@@ -784,7 +782,7 @@ def _dwarf_struct(die, dwarf, cu, cache: dict[int, object], types: dict[str, Deb
                 continue
             ftype = _dwarf_type(_dwarf_ref(child, dwarf, cu, cache), dwarf, cu, cache)
             fields.append("    " + _field_decl(ftype, fname))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return
     word = "union" if die.tag == "DW_TAG_union_type" else "struct"
     if fields:
@@ -804,7 +802,7 @@ def _dwarf_enum(die, dwarf, cu, cache: dict[int, object], types: dict[str, Debug
                 value = _attr(child, "DW_AT_const_value")
                 if ename is not None and value is not None:
                     vals.append(f"    {ename} = {value},")
-    except Exception:
+    except Exception:  # noqa: BLE001
         return
     if vals:
         types.setdefault(name, DebugType(name, "enum", 0, f"enum {name} {{\n" + "\n".join(vals) + "\n};"))

@@ -7,7 +7,6 @@ has no 32-bit loader (/lib/ld-linux.so.2): EE-GCC can only work through the pinn
 import os
 import shutil
 import sys
-from pathlib import Path
 
 import pytest
 

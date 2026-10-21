@@ -133,7 +133,7 @@ def _reloc_name(side: dict | None, row: dict) -> str | None:
 
 def _renamed(left: dict | None, right: dict | None, lrows: list[dict], rrows: list[dict]) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
-    for lr, rr in zip(lrows, rrows):
+    for lr, rr in zip(lrows, rrows, strict=False):
         a, b = _reloc_name(left, lr), _reloc_name(right, rr)
         if a and b and a != b and not _GENERATED.match(a) and not _GENERATED.match(b) and (a, b) not in out:
             out.append((a, b))

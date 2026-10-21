@@ -3,6 +3,7 @@
 import shutil
 import subprocess
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -115,7 +116,7 @@ def test_pdb_uses_the_image_sections_when_the_dump_has_none():
         size = 0x100
     class Image:
         image_base = 0x140000000
-        sections = [Section()]
+        sections: ClassVar[list] = [Section()]
     info = debuginfo._parse_pdb(text, image=Image())
     assert info.functions and info.functions[0].address == 0x140001010 and info.functions[0].name == "add"
 

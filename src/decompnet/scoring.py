@@ -38,7 +38,7 @@ _REG = re.compile(
     r"|zero|at|v[01]|a[0-3]|t\d|s[0-8]|k[01]|gp|fp|ra|f\d+"  # mips
     r"|cr\d|lr|pc|ip|sb|sl|d\d+|s\d+)$"  # ppc / arm
 )
-_NUM = re.compile(r"^-?(0x[0-9a-f]+|\d+)$", re.I)
+_NUM = re.compile(r"^-?(0x[0-9a-f]+|\d+)$", re.IGNORECASE)
 _STACK = re.compile(r"\b(rsp|rbp|esp|ebp|\$?sp|\$?fp|r1)\b")
 _TOKEN = re.compile(r"[\w.$<>+@-]+|\S")
 
@@ -147,7 +147,7 @@ def _classify(a: Insn, b: Insn) -> tuple[int, str]:
         return 0, " "
     ta, tb = _TOKEN.findall(a.operands), _TOKEN.findall(b.operands)
     if len(ta) == len(tb):
-        diffs = [(x, y) for x, y in zip(ta, tb) if x != y]
+        diffs = [(x, y) for x, y in zip(ta, tb, strict=False) if x != y]
         if all(_REG.match(x) and _REG.match(y) for x, y in diffs):
             return PENALTY_REGALLOC, "r"
         if all(_NUM.match(x) and _NUM.match(y) for x, y in diffs) and _STACK.search(a.operands):
@@ -252,7 +252,7 @@ def diff(target: FunctionObj, candidate: FunctionObj) -> DiffResult:
     extra: Counter[str] = Counter()
     for op, a0, a1, b0, b1 in sm.get_opcodes():
         if op == "equal":
-            for a, b in zip(t_ins[a0:a1], c_ins[b0:b1]):
+            for a, b in zip(t_ins[a0:a1], c_ins[b0:b1], strict=False):
                 pen, mark = _classify(a, b)
                 score += pen
                 rows.append((mark, a.text, b.text))

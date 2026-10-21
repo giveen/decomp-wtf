@@ -73,9 +73,9 @@ def read(roots: list[Path], path: str, start: int = 1, count: int = 200) -> str:
 def search(roots: list[Path], pattern: str, glob: str = "") -> str:
     """Lines matching `pattern` (a regular expression, case-insensitive) in the folders' text files."""
     try:
-        rx = re.compile(pattern, re.I)
+        rx = re.compile(pattern, re.IGNORECASE)
     except re.error:  # e.g. "func(": search for the text itself
-        rx = re.compile(re.escape(pattern), re.I)
+        rx = re.compile(re.escape(pattern), re.IGNORECASE)
     hits = []
     for root in roots:
         for d, dirs, files in os.walk(root):
@@ -96,7 +96,7 @@ def search(roots: list[Path], pattern: str, glob: str = "") -> str:
                         where = rel.as_posix() if len(roots) == 1 else f"{root.name}/{rel.as_posix()}"
                         hits.append(f"{where}:{i}: {line.strip()[:160]}")
                         if len(hits) >= 80:
-                            return "\n".join(hits + ["... (more matches; narrow the pattern or the glob)"])
+                            return "\n".join([*hits, "... (more matches; narrow the pattern or the glob)"])
     return "\n".join(hits) or "no matches"
 
 

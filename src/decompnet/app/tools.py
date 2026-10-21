@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from importlib import resources
-from typing import Callable
 
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
@@ -256,6 +256,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
         _rea_tool(net, agent, slug, tool, arguments),
     "read_artifact_entry": lambda net, agent, slug, entry, offset=0, length=256:
         net.analysis_read_entry(slug, entry, offset, length),
+    "write_source": lambda net, agent, slug, function, source: net.write_source(agent, slug, function, source),
     "release_function": lambda net, agent, slug, function, notes: net.release(agent, function, notes, slug),
     "get_context": lambda net, agent, slug, function="": net.get_context(slug, function or None),
     "edit_context": lambda net, agent, slug, old, new, message, function="":
@@ -290,11 +291,11 @@ HANDLERS: dict[str, Callable[..., str]] = {
 }
 
 ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "import_debug_info",
-            "export_debug_info", "compare_version"}
+            "export_debug_info", "compare_version", "write_source"}
 FORK_ONLY = {"edit_file", "file_status", "split_file"}
 ANALYSIS_ONLY = {"complete_function", "rea_tool", "read_artifact_entry"}
 ANALYSIS_TOOLS = {"project_info", "claim_function", "get_function", "release_function", "complete_function",
-                  "rea_tool", "read_artifact_entry", "inspect_binary", "search_binary", "read_data",
+                  "rea_tool", "read_artifact_entry", "write_source", "inspect_binary", "search_binary", "read_data",
                   "list_functions", "add_note", "search_notes", "guide", "read_file", "search_code", "search_facts"}
 
 
@@ -415,6 +416,21 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         if not isinstance(args, dict):
             raise ToolError("arguments must be a JSON object")
         return await run(ctx, "rea_tool", tool=tool, arguments=args)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def write_source(ctx: Context, function: str, source: str) -> str:
+        """Save code you reconstructed for a work item that can't be verified byte for byte.
+
+        The code is written into the project's `recovered/` tree and labelled reconstructed: not original source,
+        and in a matching project never counted as a match (compile_and_diff is still the test, and a byte-exact
+        match replaces it). Claim the work item first. The item is a whole module in an app or archive project, a
+        procedure or task in an analyzed binary, and one function in a matching project.
+
+        Args:
+            function: the work item, exactly as claim_function showed it (src/main.js, or a function name)
+            source: the complete module, or the function's source
+        """
+        return await run(ctx, "write_source", function=function, source=source)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def read_artifact_entry(ctx: Context, entry: str, offset: int = 0, length: int = 256) -> str:

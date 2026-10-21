@@ -29,7 +29,8 @@ def test_wsl_compiler_error_does_not_repeat_that_it_is_linux(monkeypatch):
 
     monkeypatch.setattr(toolchains, "current_platform", lambda: "windows-x86_64")
     monkeypatch.setattr(toolchains.wsl, "wanted", lambda: True)
-    monkeypatch.setattr(toolchains.wsl, "status", lambda: (False, "WSL 2 isn't installed. In PowerShell as administrator, run: wsl --install."))
+    msg = "WSL 2 isn't installed. In PowerShell as administrator, run: wsl --install."
+    monkeypatch.setattr(toolchains.wsl, "status", lambda: (False, msg))
     with pytest.raises(toolchains.ToolchainError) as e:
         toolchains.install("gcc-2.7.2-kmc", log=lambda *_: None)
     msg = str(e.value)

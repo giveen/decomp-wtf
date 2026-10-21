@@ -155,6 +155,7 @@ def test_export(net, agents, tmp_path):
 
 def test_projects_need_a_lawful_basis(tmp_path):
     import shutil
+
     from decompnet.project import ProjectRejected
     proj = tmp_path / "game"
     shutil.copytree(DEMO, proj)

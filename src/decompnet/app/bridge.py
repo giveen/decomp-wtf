@@ -15,6 +15,7 @@ stdout is the MCP channel: everything else goes to stderr.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import subprocess
@@ -150,7 +151,7 @@ async def proxy(info: dict, token: str, name: str, helper: bool = False) -> None
                     if conn["gen"] == gen:  # the first call to notice: ask for a new session
                         conn["remote"] = None
                         want_new.set()
-                    await changed.wait_for(lambda: conn["gen"] > gen)
+                    await changed.wait_for(lambda g=gen: conn["gen"] > g)
 
     async with anyio.create_task_group() as tg:
         tg.start_soon(keep_connected)
@@ -181,8 +182,6 @@ def main(name: str = "chat") -> int:
         return 1
     if session:
         _log("connected as the helper session decomp.wtf started")
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(proxy(info, token, name, helper=bool(session)))
-    except KeyboardInterrupt:
-        pass
     return 0

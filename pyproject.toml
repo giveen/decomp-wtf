@@ -38,6 +38,33 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "ruff>=0.17.1",
+]
+
+[tool.ruff]
+# The codebase is written to ~140 columns; E501 enforces that, not 88.
+line-length = 140
+target-version = "py312"
+# The demo projects are self-contained build scripts (their own style, their own tools); CI lints the app.
+extend-exclude = ["projects"]
+
+[tool.ruff.lint]
+# Curated explicitly so a ruff upgrade cannot silently turn new rules on (or off) in CI.
+select = [
+    "E",      # pycodestyle errors, including E501 at the line length above
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes: undefined names (it found a real one), unused imports and variables
+    "B",       # bugbear: mutable defaults, loop-variable capture, zip() without strict, ...
+    "UP",     # pyupgrade: modern typing and string formatting
+    "I",      # import sorting
+    "SIM",    # simplifications
+    "RUF",    # ruff's own rules: unused noqa, collection and pytest patterns
+    "C4",     # comprehension mistakes
+    "PIE",    # misc lint
+    "FURB",   # refurbished: regex flag aliases and the like
+    "ASYNC",  # blocking calls in async functions
+    "EXE",    # shebang without the executable bit
+    "BLE",    # blind except; the project already documents its deliberate ones with # noqa
 ]
 
 [tool.pytest.ini_options]

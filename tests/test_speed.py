@@ -45,7 +45,8 @@ def game(tmp_path_factory):
     net.on_match = lambda *a: None  # the tests run the twins themselves
     slug = net.import_rom(rom, confirmed=True, log=lambda *_: None)
     agent, _ = net.local_agent("agent")
-    syms = {s.name: s["st_value"] for s in ELFFile(open(elf, "rb")).get_section_by_name(".symtab").iter_symbols()}
+    with open(elf, "rb") as fh:
+        syms = {s.name: s["st_value"] for s in ELFFile(fh).get_section_by_name(".symtab").iter_symbols()}
     pid = net.project_row(slug)["id"]
     for name in FUNCTIONS:  # as test_export does: split what the splitter merged, name what's known
         row = net.store.one("SELECT name, vram FROM functions WHERE project_id=? AND vram<=? AND vram+size>?",
@@ -56,7 +57,7 @@ def game(tmp_path_factory):
                        and not re.match(r"typedef \w+( \w+)? [su]\d+;|typedef \w+ f\d+;", line))
     assert net.edit_context(agent, slug, "", header, "the game's types").startswith("✅")
     table = net.symbols(pid)
-    for name in FUNCTIONS + ["g_player", "g_entities", "g_score", "g_frame_count", "g_rng_state"]:
+    for name in [*FUNCTIONS, "g_player", "g_entities", "g_score", "g_frame_count", "g_rng_state"]:
         current, offset = table.name_at(syms[name])
         if not offset and current != name:
             net.rename_symbol(agent, slug, current, name)

@@ -39,7 +39,7 @@ def exe() -> str | None:
     found = shutil.which("wsl")
     if found:
         return found
-    system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "wsl.exe"
+    system = Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32" / "wsl.exe"
     return str(system) if system.exists() else None
 
 
@@ -82,7 +82,7 @@ def _check() -> tuple[bool, str]:
         low = out.lower()
         if "not installed" in low or "optional component" in low:
             return False, f"WSL 2 isn't installed. {INSTALL}"
-        if "no installed distribution" in low or "no distribution" in low or "distribution" in low and "not found" in low:
+        if "no installed distribution" in low or "no distribution" in low or ("distribution" in low and "not found" in low):
             return False, f"WSL 2 has no Linux distribution installed. {INSTALL}"
         return False, f"WSL 2 didn't start. {INSTALL}"
     if "microsoft" in out.lower() and "wsl2" not in out.lower() and "standard" not in out.lower():

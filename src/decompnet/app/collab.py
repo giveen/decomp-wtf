@@ -231,7 +231,7 @@ class Room:
                                "ON a.id=e.agent_id WHERE e.project_id=? AND e.id>? ORDER BY e.id LIMIT 500", pid, e)
         max_e = events[-1]["id"] if events else e
         kinds = {ev["kind"] for ev in events}
-        names = {ev["detail"] for ev in events if ev["kind"] in ("match",)}
+        names = {ev["detail"] for ev in events if ev["kind"] == "match"}
         out: dict = {"e": max_e, "events": [dict(ev) for ev in events]}
         first = e == 0
         if first or names:
@@ -466,7 +466,8 @@ class Tunnel:
     def start(self, log=print, timeout: float = 45) -> str:
         if toolchains.installed("cloudflared") is None:
             toolchains.install("cloudflared", log=log)
-        exe = toolchains.path("cloudflared") / ("cloudflared.exe" if (toolchains.path("cloudflared") / "cloudflared.exe").exists() else "cloudflared")
+        exe_dir = toolchains.path("cloudflared")
+        exe = exe_dir / ("cloudflared.exe" if (exe_dir / "cloudflared.exe").exists() else "cloudflared")
         self.proc = subprocess.Popen([str(exe), "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{self.port}"],
                                      stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8",
                                      errors="replace")
@@ -515,6 +516,7 @@ class Link:
         self.members: list[dict] = []
         self.error = ""
         self.last_ok = 0.0
+        self.syncing = False  # a sync is being applied: the room answered, so it isn't offline
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self.fork = bool(net.fork_slug(slug))  # a git source tree: follows the host's commits (forkroom.py)
@@ -534,7 +536,8 @@ class Link:
             raise NetworkError(f"the room's host isn't reachable right now: {self.error}") from None
         out = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
         if r.status_code != 200:
-            raise NetworkError(out.get("error") or f"host answered {r.status_code}")
+            self.error = out.get("error") or f"host answered {r.status_code}"
+            raise NetworkError(self.error)
         self.error, self.last_ok = "", time.time()
         return out
 
@@ -569,8 +572,14 @@ class Link:
 
     def sync(self) -> None:
         with self._lock:
-            st = self._req("GET", "/collab/state", self.cursor)
-            self.apply(st)
+            self.syncing = True
+            try:
+                st = self._req("GET", "/collab/state", self.cursor)
+                # the room answered: applying the work (a big room's first sync) is not a lost connection
+                self.last_ok = time.time()
+                self.apply(st)
+            finally:
+                self.syncing = False
 
     def apply(self, st: dict) -> None:
         if self.fork:
@@ -591,7 +600,8 @@ class Link:
         for n in st.get("notes") or []:
             net.apply_remote_note(slug, n["id"], n["vram"], n["text"], n["agent"] or "host", n["created_at"])
         for ev in st.get("events") or []:
-            if ev["kind"] in ("match", "claim", "release", "context", "rename", "split", "collab") and not (ev["agent"] or "").startswith(mine):
+            kinds = ("match", "claim", "release", "context", "rename", "split", "collab")
+            if ev["kind"] in kinds and not (ev["agent"] or "").startswith(mine):
                 net.remote_event(pid, ev["kind"], ev["detail"], ev["agent"] or "host", ev["created_at"])
         self.claims = [c for c in st.get("claims") or [] if not (c["agent"] or "").startswith(mine)]
         self.members = st.get("members") or []
@@ -641,7 +651,7 @@ class Link:
                     self.sync()
                 except NetworkError:
                     pass
-                except Exception as e:  # keep syncing; show the problem in the GUI
+                except Exception as e:  # noqa: BLE001 keep syncing; show the problem in the GUI
                     self.error = f"{type(e).__name__}: {e}"
                 self._stop.wait(every)
         threading.Thread(target=loop, daemon=True, name=f"link-{self.slug}").start()
@@ -664,6 +674,21 @@ def _hello(http: httpx.Client, link: str) -> tuple[str, str, dict]:
     return url, code, hello
 
 
+def _hosting(net, room: str, sha1: str | None) -> str | None:
+    """The project on this computer that is a room host for the game being joined, if any: either the room in the
+    link (same slug), or the same game's project shared as a host. Joining with it would make the host project a
+    member of its own room, and the room would show as offline (and stop being hosted) from then on."""
+    if room in net.rooms:
+        return room
+    if not sha1:
+        return None
+    for p in net.store.all("SELECT slug, config FROM projects"):
+        cfg = json.loads(p["config"])
+        if (cfg.get("collab") or {}).get("open") and forkroom.project_identity(cfg) == sha1:
+            return p["slug"]
+    return None
+
+
 def _linked_project(net, sha1: str | None, room: str):
     for p in net.store.all("SELECT slug, config FROM projects"):
         cfg = json.loads(p["config"])
@@ -679,6 +704,9 @@ def reconnect(net, slug: str, link: str, log=print, client: httpx.Client | None 
     url, code, hello = _hello(http, link)
     proj = net.project_row(slug)
     cfg = json.loads(proj["config"])
+    if (cfg.get("collab") or {}).get("open"):
+        raise NetworkError(f"{slug} is set up to host a room: stop sharing it before joining another room, so the "
+                           "two rooms don't mix.")
     if forkroom.project_identity(cfg) != hello.get("sha1"):
         raise NetworkError(f"that link is for {hello['title']}, a different game than this project")
     info = dict(cfg.get("link") or {})
@@ -716,6 +744,11 @@ def join_room(net, link: str, name: str, rom: bytes | Path, log=print, client: h
 
     http = client or httpx.Client(timeout=httpx.Timeout(60, connect=15))
     url, code, hello = _hello(http, link)
+    hosted = _hosting(net, hello["room"], hello.get("sha1"))
+    if hosted:
+        raise NetworkError("this computer is hosting a room for this game: a host can't join a room for it from the "
+                           "same project. Send the invite to a friend, test it from another computer, or stop sharing "
+                           "this room before joining another.")
     slug, _info = _linked_project(net, hello["sha1"], hello["room"])
     if slug:
         return reconnect(net, slug, link, log=log, client=client, start=start)
@@ -752,10 +785,10 @@ def _join_fork(net, http: httpx.Client, url: str, code: str, hello: dict, name: 
 
     tmp = None
     if not isinstance(game, Path):
-        tmp = tempfile.NamedTemporaryFile(prefix="decomp-join-", suffix=".game", delete=False)
-        tmp.write(game)
-        tmp.close()
-        game = Path(tmp.name)
+        with tempfile.NamedTemporaryFile(prefix="decomp-join-", suffix=".game", delete=False) as fh:
+            fh.write(game)  # closed here; delete=False keeps the bytes for the join, the cleanup unlinks it
+        tmp = fh.name
+        game = Path(tmp)
     try:
         if hello.get("sha1") and forkroom.game_identity(game) != hello["sha1"]:
             raise NetworkError(f"this isn't the same game as the host's: the room is for {hello['title']} "
@@ -798,7 +831,7 @@ def _join_fork(net, http: httpx.Client, url: str, code: str, hello: dict, name: 
         return slug
     finally:
         if tmp is not None:
-            Path(tmp.name).unlink(missing_ok=True)
+            Path(tmp).unlink(missing_ok=True)
 
 
 def cloudflared_available() -> bool:

@@ -60,7 +60,7 @@ def _ref(name: str) -> str:
 
 @needs_tools
 def test_fork_state_after_setup(fork):
-    net, slug, agent = fork
+    net, slug, _agent = fork
     ov = net.overview(slug)
     assert ov["kind"] == "fork" and ov["ready"] and ov["functions"] == 13
     assert ov["matched"] == 4  # clamp_s32, abs_s32, rng_next, add_score
@@ -152,7 +152,7 @@ def test_guards(fork):
 
 @needs_tools
 def test_read_and_search(fork):
-    net, slug, agent = fork
+    net, slug, _agent = fork
     assert "clamp_s32" in net.forks.read_file(slug, "src/game.c")
     assert "game.h" in net.forks.search(slug, r"MAX_ENTITIES")
     with pytest.raises(NetworkError):
@@ -164,7 +164,7 @@ def test_read_and_search(fork):
 
 @needs_tools
 def test_function_detail(fork):
-    net, slug, agent = fork
+    net, slug, _agent = fork
     d = net.function_detail(slug, "clamp_s32")
     assert d["status"] == "matched" and "slt" in d["asm"] and "clamp_s32" in d["source"]
 
@@ -198,7 +198,7 @@ def test_clone_rejects_odd_sources(tmp_path):
 
 @needs_tools
 def test_find_similar(fork):
-    net, slug, agent = fork
+    net, slug, _agent = fork
     out = net.find_similar(slug, "entity_spawn")
     assert "index covers" in out or "Functions that look like" in out
 
@@ -207,7 +207,7 @@ def test_similarity_ranks_copies_first():
     from decompnet import similarity
 
     a = ["addiu", "sw", "lw", "addu", "slt", "bnez", "nop", "jr", "addiu"]
-    cands = {"copy": list(a), "tweaked": a[:4] + ["sltu"] + a[5:], "other": ["lui", "ori", "jal", "nop"] * 3}
+    cands = {"copy": list(a), "tweaked": [*a[:4], "sltu", *a[5:]], "other": ["lui", "ori", "jal", "nop"] * 3}
     ranked = similarity.rank(a, cands, top=3)
     assert [n for n, _ in ranked][:2] == ["copy", "tweaked"] and ranked[0][1] == 1.0
 
@@ -240,7 +240,7 @@ def test_ghidra_drafts_for_a_unit(fork):
 
     if not ghidra.available():
         pytest.skip("needs Ghidra and Java 21+")
-    net, slug, agent = fork
+    net, slug, _agent = fork
     root = Path(net.project_row(slug)["root"])
     out = ghidra.decompile_object(root / "build" / "expected" / "game.o", root / ".decomp-wtf" / "ghidra")
     assert "clamp_s32" in out and "return" in out["clamp_s32"]
@@ -310,7 +310,7 @@ def test_a_disc_of_another_version_switches_the_project_or_is_refused(tmp_path, 
     net.forks._match_version(proj, fp, cfg, disc, log=lambda *_: None)
     assert net.forks.get("mp6")[2]["version"] == "GP6P01"
     monkeypatch.setattr(scratch_dtk, "disc_id", lambda p: "GP6J01")
-    with pytest.raises(NetworkError, match="GP6J01.*GP6E01, GP6P01"):
+    with pytest.raises(NetworkError, match=r"GP6J01.*GP6E01, GP6P01"):
         net.forks._match_version(*net.forks.get("mp6"), disc, log=lambda *_: None)
 
 
@@ -356,8 +356,9 @@ def test_two_functions_of_the_same_name_in_one_unit_both_get_a_row(tmp_path, mon
     root.mkdir(parents=True)
     (root / "objdiff.json").write_text(json.dumps({"units": []}))
     net.forks._register("p", "P", "fork", root, {"kind": "fork", "version": "X", "fork_kind": "objdiff", "ready": False}, "x")
-    fn = lambda name, addr, pct=None: {"name": name, "size": "12", "metadata": {"virtual_address": str(addr)},
-                                       **({"fuzzy_match_percent": pct} if pct is not None else {})}
+    def fn(name, addr, pct=None):
+        return {"name": name, "size": "12", "metadata": {"virtual_address": str(addr)},
+                **({"fuzzy_match_percent": pct} if pct is not None else {})}
     report = {"measures": {}, "units": [
         {"name": "main/lang", "functions": [fn("_lang", 1, 100.0), fn("_lang", 2), fn("init", 3)]},
         {"name": "main/other", "functions": [fn("init", 4)]}]}
@@ -465,7 +466,8 @@ def test_c_code_going_into_a_cpp_file_gets_c_linkage(tmp_path, monkeypatch):
     units = {"a": SimpleNamespace(source="src/a.c"), "b": SimpleNamespace(source="src/b.cpp"),
              "c": SimpleNamespace(source="src/c.cpp")}
     monkeypatch.setattr(forkengine, "ForkProject", lambda root: SimpleNamespace(unit=lambda name: units[name]))
-    row = lambda name, unit: {"name": name, "unit": unit, "meta": json.dumps({"symbol": name})}
+    def row(name, unit):
+        return {"name": name, "unit": unit, "meta": json.dumps({"symbol": name})}
     source = "extern void __dl__FPv(void *ptr);\nint fn_1_BB34(int p) {\n    __dl__FPv((void *)p);\n    return p;\n}\n"
     got = net.forks.c_linkage({"root": str(tmp_path)}, row("fn_1_1EE74", "a"), row("fn_1_BB34", "b"), source)
     assert got == 'extern "C" void __dl__FPv(void *ptr);\nextern "C" int fn_1_BB34(int p) {\n    __dl__FPv((void *)p);\n    return p;\n}\n'

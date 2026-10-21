@@ -261,6 +261,25 @@
       </div>
     </section>
 
+    <section class="panel" id="featuresPanel" hidden>
+      <header class="panel-head"><h2>Features</h2><span class="muted small" id="featuresCount"></span><span class="grow"></span>
+        <button class="ghost small-btn" id="addFeature" type="button">Trace a feature</button></header>
+      <div class="pad">
+        <p class="muted small">A feature is a route, string, IPC channel or module traced through a JavaScript or Electron app. Every part the trace reaches becomes a work item; its findings roll into the summary.</p>
+        <div class="feature-list" id="featureList"></div>
+        <div class="feature-detail" id="featureDetail" hidden></div>
+      </div>
+    </section>
+
+    <section class="panel" id="sourcesPanel" hidden>
+      <header class="panel-head"><h2>Sources</h2><span class="muted small" id="sourcesCount"></span><span class="grow"></span>
+        <button class="ghost small-btn" id="exportSources" type="button">Export sources</button></header>
+      <div class="pad">
+        <p class="muted small" id="sourcesNote">The code this project has recovered: files from source maps, archives, or functions matched byte for byte, and the code agents reconstruct where none of that exists. Verified code is proved against the original; reconstructed code is kept apart, never counted as a match.</p>
+        <div class="source-list" id="sourceList"></div>
+      </div>
+    </section>
+
     <section class="panel map-panel">
       <header class="panel-head">
         <h2 id="mapTitle">Function map</h2>

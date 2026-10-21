@@ -107,7 +107,7 @@ def compare(target: Path, base: Path | None) -> list[Section]:
         sm = difflib.SequenceMatcher(a=[i.key() for i in a], b=[i.key() for i in b], autojunk=False)
         for op, a0, a1, b0, b1 in sm.get_opcodes():
             if op == "equal":
-                rows += [(" ", x, y) for x, y in zip(a[a0:a1], b[b0:b1])]
+                rows += [(" ", x, y) for x, y in zip(a[a0:a1], b[b0:b1], strict=False)]
                 continue
             for k in range(max(a1 - a0, b1 - b0)):
                 x = a[a0 + k] if a0 + k < a1 else None

@@ -179,7 +179,7 @@ def _windows_dirs() -> list[Path]:
     if sys.platform != "win32":
         return []
     home = Path.home()
-    drive = Path(os.environ.get("SystemDrive", "C:") + "\\")
+    drive = Path(os.environ.get("SYSTEMDRIVE", "C:") + "\\")
     dirs: list[Path] = []
 
     def add(p: Path) -> None:
@@ -287,9 +287,8 @@ def _deb_data(deb: Path, out: Path) -> Path:
 def _extract(archive: Path, dest: Path, subdir: str | None) -> None:
     with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
         if archive.name.endswith(".deb"):
-            with tempfile.TemporaryDirectory(dir=dest.parent) as raw:
-                with tarfile.open(_deb_data(archive, Path(raw))) as t:
-                    t.extractall(tmp, filter="data")
+            with tempfile.TemporaryDirectory(dir=dest.parent) as raw, tarfile.open(_deb_data(archive, Path(raw))) as t:
+                t.extractall(tmp, filter="data")
         elif archive.name.endswith(".zip"):
             import zipfile
 

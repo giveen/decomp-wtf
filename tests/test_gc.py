@@ -54,7 +54,8 @@ def test_project_rebuilds_the_program(gc):
 
 def test_agents_match_functions(gc):
     net, slug = gc
-    syms = {s.name: s["st_value"] for s in ELFFile(open(ELF, "rb")).get_section_by_name(".symtab").iter_symbols()}
+    with open(ELF, "rb") as fh:
+        syms = {s.name: s["st_value"] for s in ELFFile(fh).get_section_by_name(".symtab").iter_symbols()}
     agent, _ = net.local_agent("gc-agent")
     source = GAME.read_text()
     for name in ("clamp_s32", "abs_s32", "lerp"):
@@ -73,7 +74,8 @@ def test_a_file_is_split_and_its_match_moves_along(gc):
     """split_file: the matched function and what follows it go to a new file; the game still builds identically
     and the match still counts (it runs after test_agents_match_functions)."""
     net, slug = gc
-    syms = {s.name: s["st_value"] for s in ELFFile(open(ELF, "rb")).get_section_by_name(".symtab").iter_symbols()}
+    with open(ELF, "rb") as fh:
+        syms = {s.name: s["st_value"] for s in ELFFile(fh).get_section_by_name(".symtab").iter_symbols()}
     fp = net.forks.get(slug)[1]
     at = syms["clamp_s32"]
     name = f"fn_{at:08X}"

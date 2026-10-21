@@ -335,7 +335,11 @@ class Network:
             lines += ["", "### Target assembly", "```asm", scoring.compact_asm(self._asm_text(fn, proj)), "```"]
         lines += self._extra_brief(fn, proj)
         if fn["status"] != "matched":
-            if fn["best_source"]:
+            if fn["status"] == "reconstructed" and fn["best_source"]:
+                lines += ["", "### Reconstructed code (unverified, saved in recovered/): not original source and not a "
+                              "match — a byte-exact compile_and_diff replaces it", "```c",
+                          fn["best_source"].strip(), "```"]
+            elif fn["best_source"]:
                 lines += ["", f"### Best attempt so far: score {fn['best_score']} by "
                               f"{self._agent_name(fn['best_agent_id'])} ({fn['attempts']} attempts total) — "
                               f"start from this", "```c", fn["best_source"].strip(), "```"]
@@ -546,7 +550,9 @@ class Network:
                 raise NetworkError(f"`{old}` does not occur in any header")
             matched = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
             rewritten = {r["id"]: word.sub(new, r["matched_source"]) for r in matched}
-            header_for = lambda fn: changed.get(self._effective_unit(fn, units), current[self._effective_unit(fn, units)]["header"])
+            def header_for(fn, changed=changed, units=units, current=current):
+                # bound as defaults: this attempt's contexts, not whatever the next pass of the loop binds
+                return changed.get(self._effective_unit(fn, units), current[self._effective_unit(fn, units)]["header"])
             broken = self.regression_test(proj, None, sources=rewritten, only=matched, header_for=header_for)
             if broken:
                 listing = "\n".join(f"- {name}: {why}" for name, why in broken[:10])

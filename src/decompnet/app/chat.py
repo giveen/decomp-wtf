@@ -5,8 +5,7 @@ starts itself only get the work tools (a helper can't start more helpers)."""
 
 from __future__ import annotations
 
-import time
-from pathlib import Path
+import contextlib
 
 import anyio
 from mcp.server.mcpserver import Context
@@ -122,10 +121,8 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
         def work(log):
             slug = net.import_rom(game, toolchain=compiler or None, confirmed=True, name=game.name, log=log)
             if settings.data.get("autopilot", True):  # free matches first (a public decomp says no)
-                try:
+                with contextlib.suppress(NetworkError):
                     net.start_autopilot(slug)
-                except NetworkError:
-                    pass
             opened(agent, slug)
             return {"slug": slug}
 
@@ -133,9 +130,9 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
 
     async def _follow(jid: str, wait: float = 55) -> str:
         job = jobs.jobs[jid]
-        t0 = time.time()
-        while job["state"] == "running" and time.time() - t0 < wait:
-            await anyio.sleep(0.5)
+        done = jobs.done[jid]
+        if not done.is_set():  # the job's own thread sets it when it ends: no polling the dict
+            await anyio.to_thread.run_sync(done.wait, wait)
         if job["state"] == "running":
             tail = job["log"][-1] if job["log"] else "working"
             return f"Still importing ({tail}). Call import_status(job=\"{jid}\") to keep waiting."

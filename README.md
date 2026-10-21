@@ -192,6 +192,13 @@ claude mcp add decomp -- decomp mcp
 
 Score 0 means the bytes match. There is no approximate success.
 
+**When a match isn't possible, the code is still recovered.** A function that can't be built byte-exactly — the
+original compiler is proprietary or gone, or the target was patched past what the split describes — can be
+reconstructed by an agent with `write_source`. The code goes into the project's `recovered/` tree, is labelled
+reconstructed and unverified, and never counts as a match: **Overview → Sources** keeps verified matches and
+reconstructions apart, and **Export sources** writes the tree with a `RECONSTRUCTION.md` that names every verified,
+reconstructed and still-missing function. A later byte-exact match replaces the reconstruction.
+
 <p align="center">
   <img alt="decomp.anything at work: agents claim functions, attempts drop to score 0, and the map turns green." src=".github/assets/demo.webp" width="900">
   <br>
@@ -240,11 +247,14 @@ picker falls back to REA, its procedures become work items, and agents claim the
 The project dashboard shows analyzed items, findings, agent output and the live map; **Add task** covers areas that
 have no procedure of their own.
 
-An **archive** is a project too (ZIP, TAR and their common variants). REA inventories it, every regular file becomes
-a work item, and the **Contents** panel shows the tree with a preview of each file. Analyze a binary or a nested
-archive from Contents to extract only that entry and open it as a linked child project; child targets appear under
-their parent in the sidebar, and their findings roll into the parent's `SUMMARY.md`. Text and assets stay readable
-in place. The extraction limits are deliberately generous for your own files: 2 GiB archive input, 20,000 entries,
+An **archive** is a project too (ZIP, TAR and their common variants). REA inventories it and the **Contents**
+panel shows the tree with a preview of each file. Code that shipped as text — JavaScript, Python, C, Java, HTML,
+CSS, shell and the rest — is extracted byte for byte into the project's `recovered/` tree (verified, never
+reconstructed), so a ZIP of sources opens as code rather than as prose to write about. Compiled entries whose source
+didn't ship (`.pyc`, `.class`, `.luac`, …) become reconstruction work items, as does any text source the archive
+can't decode; everything else stays a regular work item. Analyze a binary or a nested archive from Contents to
+extract only that entry and open it as a linked child project; child targets appear under their parent in the
+sidebar, and their findings roll into the parent's `SUMMARY.md`. Text and assets stay readable in place. The extraction limits are deliberately generous for your own files: 2 GiB archive input, 20,000 entries,
 1 GiB uncompressed, 1000:1 per-entry compression, 256 MiB per entry and 512 MiB extracted per project.
 
 **RE console** is the deep viewer behind a project, not a separate mode: click a procedure work item in an analysis
@@ -265,6 +275,25 @@ nothing has to match.
   `tools WORD`, or any tool as `TOOL key=value` or `TOOL {json}`, with Tab completion and history.
 - **Two ways into matching:** **Decompile it** turns an open Windows or Linux program into a byte-matching project;
   in a PC project, a function's **RE console** button opens that function here.
+
+**Feature traces.** In a JavaScript or Electron project, **Trace a feature** takes one literal seed — a route,
+string, API, IPC channel, module or node id — and asks REA to walk the application graph from it. Every module,
+channel and endpoint the trace reaches becomes a work item grouped under `feature:<name>`, unless it already has
+one. Each agent's brief says how the trace reached its node and that static reachability is not proof it runs.
+Findings roll into `SUMMARY.md` under **Features**; **Remove** drops the feature and the work items nobody has
+analyzed yet, keeping finished findings.
+
+**Recovered and reconstructed code.** An app that shipped source maps starts with its original files in
+`recovered/`; modules no map covers become items agents reconstruct. In app, game and archive projects, **Overview →
+Sources** shows what is verified, what an agent reconstructed and what is still without code, and **Export sources**
+writes the tree plus a `RECONSTRUCTION.md` report. Verified and reconstructed code are never mixed up.
+
+**A binary can end in code too.** In a project opened with REA (a `.exe`, `.so`, firmware image, APK or .NET
+assembly), an agent can save the code it reconstructed for a procedure or task: claim the item, then
+`write_source`. Files land in `recovered/functions/`, `recovered/tasks/` or `recovered/features/`, the work item is
+marked analyzed, and any finding it already had is kept. There is no byte-exact tier for an analyzed target —
+the Sources panel and `RECONSTRUCTION.md` say so instead of implying verification — and reconstructed code never
+replaces a finding.
 
 **Setup.** The console finds REA by itself when it can, in this order:
 
@@ -533,6 +562,7 @@ projects folder (`~/Decomp`).
 | **Agent toolkit** | Data inspector, call graph, function splitting, and guides for MIPS, PowerPC, ARM, x86, AArch64, IDO, GCC, Metrowerks, agbcc, PSY-Q, C++ and objdiff. |
 | **Every binary is a project** | The normal picker accepts games and programs; unsupported formats fall back to REA automatically. Procedures become work items, tasks cover the rest, and the same dashboard, agents, notes and activity feed apply. |
 | **RE console** | REA's tools in the app: functions, pseudocode beside assembly, control-flow and call graphs, strings, memory map, a form for every tool and a terminal. |
+| **Feature traces** | Seed one route, string, IPC channel or module in a JavaScript/Electron app; REA walks the graph and the nodes it reaches become work items with their own report. |
 | **REA install** | Download and install REA from **Compilers & tools**; the console and agents pick it up automatically. |
 | **Debug symbols** | PDB, DWARF, MAP and `symbol_addrs.txt` names and types; export them again for other tools. |
 | **Version compare** | Patch/demo/port triage: same, moved, changed, added and removed functions, matched by normalized instructions. |

@@ -22,12 +22,13 @@ use Python.
 import re
 import textwrap
 from io import TextIOWrapper
-from typing import Dict, List, Match, Optional, Tuple, Union
+from re import Match
+
 
 def escape_path(word: str) -> str:
     return word.replace('$ ', '$$ ').replace(' ', '$ ').replace(':', '$:')
 
-class Writer(object):
+class Writer:
     def __init__(self, output: TextIOWrapper, width: int = 78) -> None:
         self.output = output
         self.width = width
@@ -43,33 +44,33 @@ class Writer(object):
     def variable(
         self,
         key: str,
-        value: Optional[Union[bool, int, float, str, List[str]]],
+        value: bool | int | float | str | list[str] | None,
         indent: int = 0,
     ) -> None:
         if value is None:
             return
         if isinstance(value, list):
             value = ' '.join(filter(None, value))  # Filter out empty strings.
-        self._line('%s = %s' % (key, value), indent)
+        self._line(f'{key} = {value}', indent)
 
     def pool(self, name: str, depth: int) -> None:
-        self._line('pool %s' % name)
+        self._line(f'pool {name}')
         self.variable('depth', depth, indent=1)
 
     def rule(
         self,
         name: str,
         command: str,
-        description: Optional[str] = None,
-        depfile: Optional[str] = None,
+        description: str | None = None,
+        depfile: str | None = None,
         generator: bool = False,
-        pool: Optional[str] = None,
+        pool: str | None = None,
         restat: bool = False,
-        rspfile: Optional[str] = None,
-        rspfile_content: Optional[str] = None,
-        deps: Optional[Union[str, List[str]]] = None,
+        rspfile: str | None = None,
+        rspfile_content: str | None = None,
+        deps: str | list[str] | None = None,
     ) -> None:
-        self._line('rule %s' % name)
+        self._line(f'rule {name}')
         self.variable('command', command, indent=1)
         if description:
             self.variable('description', description, indent=1)
@@ -90,21 +91,16 @@ class Writer(object):
 
     def build(
         self,
-        outputs: Union[str, List[str]],
+        outputs: str | list[str],
         rule: str,
-        inputs: Optional[Union[str, List[str]]] = None,
-        implicit: Optional[Union[str, List[str]]] = None,
-        order_only: Optional[Union[str, List[str]]] = None,
-        variables: Optional[
-            Union[
-                List[Tuple[str, Optional[Union[str, List[str]]]]],
-                Dict[str, Optional[Union[str, List[str]]]],
-            ]
-        ] = None,
-        implicit_outputs: Optional[Union[str, List[str]]] = None,
-        pool: Optional[str] = None,
-        dyndep: Optional[str] = None,
-    ) -> List[str]:
+        inputs: str | list[str] | None = None,
+        implicit: str | list[str] | None = None,
+        order_only: str | list[str] | None = None,
+        variables: list[tuple[str, str | list[str] | None]] | dict[str, str | list[str] | None] | None = None,
+        implicit_outputs: str | list[str] | None = None,
+        pool: str | None = None,
+        dyndep: str | None = None,
+    ) -> list[str]:
         outputs = as_list(outputs)
         out_outputs = [escape_path(x) for x in outputs]
         all_inputs = [escape_path(x) for x in as_list(inputs)]
@@ -123,18 +119,15 @@ class Writer(object):
             out_outputs.append('|')
             out_outputs.extend(implicit_outputs)
 
-        self._line('build %s: %s' % (' '.join(out_outputs),
-                                     ' '.join([rule] + all_inputs)))
+        self._line('build {}: {}'.format(' '.join(out_outputs),
+                                     ' '.join([rule, *all_inputs])))
         if pool is not None:
-            self._line('  pool = %s' % pool)
+            self._line(f'  pool = {pool}')
         if dyndep is not None:
-            self._line('  dyndep = %s' % dyndep)
+            self._line(f'  dyndep = {dyndep}')
 
         if variables:
-            if isinstance(variables, dict):
-                iterator = iter(variables.items())
-            else:
-                iterator = iter(variables)
+            iterator = iter(variables.items()) if isinstance(variables, dict) else iter(variables)
 
             for key, val in iterator:
                 self.variable(key, val, indent=1)
@@ -142,13 +135,13 @@ class Writer(object):
         return outputs
 
     def include(self, path: str) -> None:
-        self._line('include %s' % path)
+        self._line(f'include {path}')
 
     def subninja(self, path: str) -> None:
-        self._line('subninja %s' % path)
+        self._line(f'subninja {path}')
 
-    def default(self, paths: Union[str, List[str]]) -> None:
-        self._line('default %s' % ' '.join(as_list(paths)))
+    def default(self, paths: str | list[str]) -> None:
+        self._line('default {}'.format(' '.join(as_list(paths))))
 
     def _count_dollars_before_index(self, s: str, i: int) -> int:
         """Returns the number of '$' characters right in front of s[i]."""
@@ -199,7 +192,7 @@ class Writer(object):
         self.output.close()
 
 
-def as_list(input: Optional[Union[str, List[str]]]) -> List[str]:
+def as_list(input: str | list[str] | None) -> list[str]:
     if input is None:
         return []
     if isinstance(input, list):
@@ -215,12 +208,13 @@ def escape(string: str) -> str:
     return string.replace('$', '$$')
 
 
-def expand(string: str, vars: Dict[str, str], local_vars: Dict[str, str] = {}) -> str:
+def expand(string: str, vars: dict[str, str], local_vars: dict[str, str] | None = None) -> str:
     """Expand a string containing $vars as Ninja would.
 
     Note: doesn't handle the full Ninja variable syntax, but it's enough
     to make configure.py's use of it work.
     """
+    local_vars = {} if local_vars is None else local_vars
     def exp(m: Match[str]) -> str:
         var = m.group(1)
         if var == '$':

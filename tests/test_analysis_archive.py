@@ -63,7 +63,8 @@ def test_entries_are_classified_from_magic_before_extension():
     assert (elf["entry_type"], elf["entry_format"], elf["tool"]) == ("binary", "ELF", "open_binary")
     assert analysis.classify_entry("notes.txt")["entry_type"] == "text"
     assert analysis.classify_entry("bundle.apk")["entry_type"] == "android"
-    assert analysis.classify_entry("app.asar")["tool"] == "open_binary"
+    assert analysis.classify_entry("app.asar")["tool"] == "analyze_javascript_application"
+    assert analysis.classify_entry("bundle.js")["tool"] == "open_binary"  # one script is not an application
 
 
 def test_one_entry_is_extracted_to_a_new_file(tmp_path):

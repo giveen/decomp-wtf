@@ -36,7 +36,7 @@ def thumb_mnemonics(code: bytes, vram: int = 0) -> list[str]:
 
 def mnemonics(lines: list[str]) -> list[str]:
     """Mnemonics from formatted instructions ("lwz r3, 0x10(r31)" -> "lwz")."""
-    return [l.split(None, 1)[0].lower() for l in lines if l.strip()]
+    return [ln.split(None, 1)[0].lower() for ln in lines if ln.strip()]
 
 
 def _cosine(a: Counter, b: Counter) -> float:

@@ -95,7 +95,7 @@ class Permuter:
                     self._turns[fn["id"]] = self._turns.get(fn["id"], 0) + 1
                     try:
                         self._permute(agent, proj, fn, st)
-                    except Exception as e:  # one odd function must not stop the rest
+                    except Exception as e:  # noqa: BLE001 one odd function must not stop the rest
                         log.info("permuter: %s: %s", fn["name"], e)
         finally:
             st.state = "stopped" if st.stop.is_set() else "done"

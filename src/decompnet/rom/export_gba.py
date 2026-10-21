@@ -17,7 +17,6 @@ from pathlib import Path
 
 from ..limits import capped
 from . import match_arm
-from .export import ExportError
 from .gba import BASE
 from .symbols import AUTO_NAME
 

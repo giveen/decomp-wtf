@@ -16,7 +16,6 @@ import shutil
 from pathlib import Path
 
 from .. import toolchains
-from ..compiler import compile_source
 from ..project import compiler_config
 from . import elfexe, pe
 from .symbols import IDENT
@@ -66,7 +65,7 @@ def export_pc(net, slug: str, out: Path, log=print) -> dict:
 
     if out.exists():
         for child in out.iterdir():
-            if child.name not in (".git",):
+            if child.name != ".git":
                 shutil.rmtree(child) if child.is_dir() else child.unlink()
     out.mkdir(parents=True, exist_ok=True)
     (out / "src").mkdir(exist_ok=True)
@@ -128,7 +127,7 @@ target_compile_options(decomp PRIVATE {cmake_flags})
                     for a in cc.cmd]
             commands.append({"directory": str(out), "file": f["source"], "arguments": args})
         (out / "compile_commands.json").write_text(json.dumps(commands, indent=1), encoding="utf-8")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         log(f"could not write compile_commands.json: {e}")
 
     shutil.copyfile(Path(__file__).with_name("export_pc_judge.py"), out / "judge.py")

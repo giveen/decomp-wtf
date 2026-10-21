@@ -107,10 +107,7 @@ def analyze(data: bytes, *, comment: bytes = b"", buildinfo: bytes = b"", symbol
             version = linker
     release = _msvc_release(version) if compiler == "MSVC" else ""
     detail = " ".join(x for x in (release or compiler, "" if release else version) if x)
-    if language in ("Go", "Rust"):
-        label = f"{language} {version}".strip()
-    else:
-        label = f"{language} ({detail})" if detail else language
+    label = f"{language} {version}".strip() if language in ("Go", "Rust") else f"{language} ({detail})" if detail else language
     return {"language": language, "compiler": compiler or "unknown", "version": version,
             "release": release, "label": label, "matchable": language in ("C", "C++")}
 

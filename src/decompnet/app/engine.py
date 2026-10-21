@@ -14,25 +14,28 @@ Everything stays on this computer.
 from __future__ import annotations
 
 import base64
+import bisect
+import contextlib
 import hashlib
 import hmac
 import json
 import logging
+import posixpath
 import re
 import secrets
 import shutil
 import struct
 import threading
 import time
+import zipfile
 from pathlib import Path
 
-from .. import rea, scoring, seeds, similarity, toolchains
+from .. import rea, scoring, seeds, similarity, toolchains, tracefile
 from ..elfobj import FunctionObj
 from ..network import Agent, Network, NetworkError, _ago, _hash_token
 from ..rom import bincompare, buildinfo, debuginfo, detect, library, match, pe, split
-from .. import tracefile
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
-from . import analysis
+from . import analysis, sources
 
 DEFAULT_TOOLCHAIN = {"KMC": "gcc-2.7.2-kmc", "IDO": "ido-7.1", "PSYQ": "gcc-2.7.2-psx", "EEGCC": "ee-gcc-2.96",
                      "AGBCC": "agbcc"}
@@ -244,6 +247,7 @@ class RomNetwork(Network):
         self._sym_override: dict[int, SymbolTable] = {}
         self._roms: dict[int, tuple[bytes, list[split.Segment]]] = {}
         self._xrefs: dict[int, dict] = {}
+        self._binary_tier_seen: set[int] = set()  # analysis projects whose Sources tier was worked out in this process
         self._seed_lock = threading.Lock()
         # ponytail: one archive extraction/import at a time. It is user-triggered and rare; this closes the
         # same-entry race between two tabs without a per-entry lock map.
@@ -292,12 +296,19 @@ class RomNetwork(Network):
         if not confirmed:
             raise NetworkError("confirm that you are authorized to analyze this target")
         target_path = Path(path).expanduser().resolve()
-        if not target_path.is_file():
-            raise NetworkError(f"no file at {target_path}")
+        tool = tool or "open_binary"
+        if not target_path.exists():
+            raise NetworkError(f"nothing at {target_path}")
+        if target_path.is_dir() and tool != "analyze_javascript_application":
+            raise NetworkError("a folder can only be opened as a JavaScript or Electron application")
+        if target_path.is_dir() and copy_target:
+            raise NetworkError("a folder is analyzed where it is; it isn't copied into the project")
+        if not target_path.is_file() and not target_path.is_dir():
+            raise NetworkError(f"{target_path} is not a file or a folder")
         if analysis.is_archive(target_path) and target_path.stat().st_size > analysis.MAX_ARCHIVE_INPUT:
             raise NetworkError(f"that archive is larger than {analysis.MAX_ARCHIVE_INPUT // (1024 ** 3)} GiB; "
                                "extract the part you need and analyze that instead")
-        target = {"path": str(target_path), "tool": tool or "open_binary", "arguments": arguments or {}}
+        target = {"path": str(target_path), "tool": tool, "arguments": arguments or {}}
         for row in self.store.all("SELECT slug, config FROM projects"):
             cfg = json.loads(row["config"])
             old = cfg.get("target") or {}
@@ -305,7 +316,7 @@ class RomNetwork(Network):
                 log(f"already imported as {row['slug']}")
                 return row["slug"]
 
-        log(f"opening {target_path.name} with REA ({target['tool']})…")
+        log(f"opening {target_path.name} with REA…")
         base = _slugify(target_path.stem or "analysis")
         slug, n = base, 2
         while self.store.one("SELECT 1 FROM projects WHERE slug=?", slug) or (self.workspace / slug).exists():
@@ -319,15 +330,17 @@ class RomNetwork(Network):
             target["path"] = str(target_path)
         try:
             attempts = [target["tool"]]
-            if target["tool"] == "open_binary":
+            if target["tool"] == "open_binary" and target_path.is_file():
                 suffix = target_path.suffix.lower()
-                extra = ({"inspect_firmware_regions" if suffix in (".bin", ".img", ".fw", ".rom")
-                          else "analyze_javascript_application" if suffix in (".js", ".asar")
-                          else "inspect_android_package" if suffix == ".apk"
-                          else "inspect_managed_artifact" if suffix in (".dll", ".exe")
-                          else None})
+                # REA opens most of these with open_binary too (an .asar is an archive, an .apk is a ZIP), so the
+                # inspector that actually reads the format has to come first; open_binary is the fallback.
+                extra = ("inspect_firmware_regions" if suffix in (".bin", ".img", ".fw", ".rom")
+                         else "analyze_javascript_application" if suffix == ".asar"  # REA reads an .asar, not one .js file
+                         else "inspect_android_package" if suffix == ".apk"
+                         else "inspect_managed_artifact" if suffix in (".dll", ".exe")
+                         else None)
                 if extra:
-                    attempts.append(extra)
+                    attempts = [extra, "open_binary"]
             error = None
             for tool in attempts:
                 try:
@@ -339,6 +352,11 @@ class RomNetwork(Network):
             else:
                 raise error or rea.ReaError("REA couldn't open this target")
             info = analysis.opened_target(opened, str(target_path))
+            recovered = {"files": {}, "maps": 0, "skipped": 0, "truncated": False}
+            source_plan: list[dict] = []
+            if target["tool"] == "analyze_javascript_application":
+                recovered = sources.recover(target_path)
+                source_plan = sources.plan(sources.application_modules(opened), recovered["files"])
             inventory = None
             if analysis.is_archive(target_path):
                 try:
@@ -362,6 +380,7 @@ class RomNetwork(Network):
             except rea.ReaError:
                 items = []
             entries = analysis.artifact_entries(inventory) if inventory is not None else []
+            file_count = len(entries)
             for item in entries:
                 if item.get("entry_type") == "unknown":
                     try:
@@ -369,8 +388,37 @@ class RomNetwork(Network):
                         item.update(analysis.classify_entry(item["path"], head))
                     except (OSError, ValueError):
                         pass
-            if entries:
-                items = entries
+            archive_sources: list[dict] = []
+            if entries and analysis.is_archive(target_path):
+                entries, archive_sources = self._archive_sources(target_path, entries, log)
+            if entries or archive_sources:
+                items = [*entries, *archive_sources]
+            if source_plan or recovered["files"]:
+                seen_paths: set[str] = set()
+                source_items: list[dict] = []
+                for row in source_plan:
+                    path = str(row["path"])
+                    if not path or path in seen_paths:
+                        continue
+                    seen_paths.add(path)
+                    source_items.append({
+                        "name": path, "path": path, "unit": posixpath.dirname(path),
+                        "kind": "recovered-source" if row.get("source") is not None else "reconstruction",
+                        "size": len(row["source"].encode("utf-8")) if row.get("source") is not None else 0,
+                        "code": row.get("source"), "map": row.get("map") or "",
+                        "node_id": row.get("node_id") or "", "module_kind": row.get("kind") or ""})
+                for path, rec in sorted(recovered["files"].items()):
+                    if path in seen_paths:
+                        continue
+                    seen_paths.add(path)
+                    source_items.append({"name": path, "path": path, "unit": posixpath.dirname(path),
+                                         "kind": "recovered-source", "size": len(rec["source"].encode("utf-8")),
+                                         "code": rec["source"], "map": rec.get("map") or "",
+                                         "node_id": "", "module_kind": ""})
+                items = source_items
+                done = sum(1 for i in items if i["kind"] == "recovered-source")
+                log(f"{done} source files recovered from {recovered['maps']} source map(s); "
+                    f"{len(items) - done} module(s) to reconstruct")
         except BaseException:
             shutil.rmtree(workdir, ignore_errors=True)
             raise
@@ -380,15 +428,32 @@ class RomNetwork(Network):
         if inventory is not None:
             occurrences = inventory.get("occurrences") or []
             counts["entries"] = len(occurrences)
-            counts["files"] = len(entries)
+            counts["files"] = file_count
             counts["directories"] = sum(1 for o in occurrences if isinstance(o, dict) and o.get("entry_kind") == "directory")
-        if counts.get("procedures") is None or entries:
+        recovered_count = sum(1 for item in items if item.get("kind") == "recovered-source")
+        pending_count = sum(1 for item in items if item.get("kind") == "reconstruction")
+        if recovered_count or pending_count:
+            counts["sources"] = recovered_count + pending_count
+            counts["recovered"] = recovered_count
+            counts["reconstruction"] = pending_count
+        if counts.get("procedures") is None or inventory is not None:
             counts["procedures"] = len(items)
         if not items:  # anything without a procedure inventory still gets one survey item
             items = [{"name": "survey", "address": 0, "size": 0, "unit": ""}]
             log("no procedures listed: the project starts with one survey task; add more tasks in the project")
-        if entries:
-            log(f"{info.get('format') or 'archive'}: {len(entries)} files from {counts.get('entries', len(entries))} entries")
+        # Every target gets a Sources tier. A binary has no recovered files at all: its tier starts empty and its
+        # pending count is the work items still without reconstructed code.
+        tier = ("source-map" if target["tool"] == "analyze_javascript_application"
+                else "archive" if inventory is not None else "binary")
+        reconstruction = ({"folder": "recovered", "files": recovered_count + pending_count,
+                           "recovered": recovered_count, "reconstructed": 0, "pending": pending_count,
+                           "maps": recovered["maps"], "truncated": recovered["truncated"], "tier": tier}
+                          if recovered_count or pending_count or tier == "binary" else None)
+        if reconstruction is not None and tier == "binary":
+            reconstruction.update({"files": 0, "total": len(items), "pending": max(0, len(items) - recovered_count)})
+        if inventory is not None:
+            log(f"{info.get('format') or 'archive'}: {file_count} files from "
+                f"{counts.get('entries', file_count)} entries")
         else:
             log(f"{info.get('format') or 'target'} {info.get('architecture') or ''}: {len(items)} work items")
 
@@ -404,10 +469,16 @@ class RomNetwork(Network):
                       "statement": "opened by the user, who confirmed they are authorized to analyze it",
                       "confirmed_at": time.time()},
             "context": {"file": None},
+            "reconstruction": reconstruction,
         }
         work_items = f"{len(items)} work item" + ("" if len(items) == 1 else "s")
-        description = (f"{info.get('format') or 'target'} · {counts.get('entries')} entries · {work_items}"
+        description = (f"{info.get('format') or 'archive'} · {counts.get('entries')} entries · "
+                       f"{recovered_count} recovered · {pending_count} to reconstruct"
+                       if inventory is not None and (recovered_count or pending_count) else
+                       f"{info.get('format') or 'target'} · {counts.get('entries')} entries · {work_items}"
                        if inventory is not None and entries else
+                       f"{info.get('format') or 'target'} · {recovered_count} recovered · {pending_count} to reconstruct"
+                       if recovered_count or pending_count else
                        f"{info.get('format') or 'target'} · {info.get('architecture') or 'unknown'} · {work_items}")
         now = time.time()
         names: set[str] = set()
@@ -427,30 +498,595 @@ class RomNetwork(Network):
                     meta = {"kind": "artifact-entry", "address": 0, **{k: item.get(k) for k in (
                         "path", "entry_kind", "artifact_kind", "artifact_format", "sha256", "compressed_size",
                         "executable", "encrypted", "entry_type", "entry_format", "tool", "analyzable")}}
+                elif item.get("kind") in ("recovered-source", "reconstruction"):
+                    meta = {"kind": item["kind"], "path": item["path"], "address": 0,
+                            "origin": item.get("origin") or
+                            ("source-map" if item["kind"] == "recovered-source" else "bundle"),
+                            "verified": item["kind"] == "recovered-source", "map": item.get("map") or "",
+                            "node_id": item.get("node_id") or "", "module_kind": item.get("module_kind") or ""}
+                    if item.get("entry_type"):  # an archive entry: keep its facts for Contents and child targets
+                        meta.update({"entry_type": item["entry_type"], "entry_format": item.get("entry_format") or "",
+                                     "entry_kind": "file", "sha256": item.get("sha256") or "",
+                                     "tool": item.get("tool") or "", "analyzable": bool(item.get("analyzable"))})
                 else:
                     meta = {"kind": "survey" if name == "survey" and not item.get("address") else "procedure",
                             "address": item.get("address") or 0}
+                status = "matched" if item.get("kind") == "recovered-source" else "open"
                 db.execute(
                     "INSERT INTO functions(project_id,name,size,n_insns,unit,vram,meta,status) VALUES(?,?,?,?,?,?,?,?)",
                     (pid, name, item.get("size") or 0, 0, item.get("unit") or "", item.get("address") or 0,
-                     json.dumps(meta), "open"))
+                     json.dumps(meta), status))
+                if item.get("kind") == "recovered-source" and item.get("code"):
+                    db.execute("UPDATE functions SET matched_source=?, best_source=?, best_score=0, matched_at=? "
+                               "WHERE project_id=? AND name=?", (item["code"], item["code"], now, pid, name))
             db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
                        "VALUES(?,?,?,?,?,?,?)", (pid, 1, f"// REA analysis target: {target_path}\n", None,
                                                   "analysis target", now, ""))
             self._event(db, pid, None, "import", f"{len(items)} work items from {target_path.name}")
+        if recovered_count:
+            folder = workdir / "recovered"
+            written = 0
+            for item in items:
+                code, path = item.get("code"), str(item.get("path") or "")
+                if not code or not path:
+                    continue
+                out = folder / path
+                try:
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    out.write_text(code, encoding="utf-8")
+                    written += 1
+                except OSError as e:
+                    log(f"couldn't write recovered/{path}: {e}")
+            log(f"{written} recovered source files in {folder}")
         return slug
 
+    @staticmethod
+    def _archive_sources(target_path: Path, entries: list[dict], log=print) -> tuple[list[dict], list[dict]]:
+        """Split an archive's regular files into code that comes back exactly (text source, verified) and code whose
+        source didn't ship (compiled entries to reconstruct). Everything else stays a plain work item."""
+        kept: list[dict] = []
+        sources: list[dict] = []
+        budget = analysis.MAX_RECOVERED_BYTES
+        for item in entries:
+            path = str(item.get("path") or "")
+            if item.get("encrypted"):  # locked entry: it stays a work item, its code can't be recovered here
+                kept.append(item)
+                continue
+            language, compiled = analysis.source_language(path), analysis.compiled_language(path)
+            if language:
+                if int(item.get("size") or 0) > min(budget, analysis.MAX_SOURCE_BYTES):
+                    kept.append(item)  # too large to recover here: it stays a work item in the archive
+                    continue
+                text = analysis.decode_source(analysis.read_entry_bytes(target_path, path))
+                if text is not None and len(text.encode("utf-8")) <= budget:
+                    budget -= len(text.encode("utf-8"))
+                    sources.append({**item, "kind": "recovered-source", "code": text, "origin": "archive",
+                                    "module_kind": language, "entry_type": "source",
+                                    "entry_format": language, "map": f"archive entry {path}"})
+                elif text is not None or item.get("tool"):
+                    kept.append(item)  # over the budget, or a program this app can open as its own target
+                else:  # not readable as text: the source has to be reconstructed
+                    sources.append({**item, "kind": "reconstruction", "origin": "archive", "module_kind": language,
+                                    "entry_type": "source", "entry_format": language})
+                continue
+            if compiled:
+                sources.append({**item, "kind": "reconstruction", "origin": "archive", "module_kind": compiled,
+                                "entry_type": "compiled", "entry_format": compiled})
+                continue
+            kept.append(item)
+        if sources:
+            done = sum(1 for source in sources if source["kind"] == "recovered-source")
+            log(f"{done} source file(s) recovered from the archive, {len(sources) - done} to reconstruct")
+        return kept, sources
+
     def add_analysis_task(self, agent: Agent | None, slug: str, name: str, brief: str = "") -> str:
-        proj, cfg = self.analysis_cfg(slug)
+        proj, _cfg = self.analysis_cfg(slug)
         name = analysis.safe_name(name)
         if self.store.one("SELECT 1 FROM functions WHERE project_id=? AND name=?", proj["id"], name):
             raise NetworkError(f"{name!r} is already a work item")
-        now = time.time()
         with self.store.tx() as db:
             db.execute("INSERT INTO functions(project_id,name,size,n_insns,unit,vram,meta,status) VALUES(?,?,?,?,?,?,?,?)",
                        (proj["id"], name, 0, 0, "", 0, json.dumps({"kind": "task", "brief": brief.strip()}), "open"))
             self._event(db, proj["id"], agent.id if agent else None, "task", name)
         return name
+
+    def add_feature(self, slug: str, kind: str, value: str, *, name: str = "", direction: str = "both",
+                    match: str | None = None, case_sensitive: bool = False, log=print) -> dict:
+        """Trace one literal seed through a JavaScript/Electron application graph and make the feature a group of
+        work items: every module, channel or endpoint the trace reaches gets one, unless it already has one."""
+        proj, cfg = self.analysis_cfg(slug)
+        target = cfg.get("target") or {}
+        if target.get("tool") != "analyze_javascript_application":
+            raise NetworkError("feature tracing needs a JavaScript or Electron application project: this target "
+                               "was opened with REA's " + (target.get("tool") or "binary analysis"))
+        seed = analysis.feature_seed(kind, value, match, case_sensitive)
+        direction = str(direction or "both").strip()
+        if direction not in analysis.FEATURE_DIRECTIONS:
+            raise NetworkError(f"direction must be one of {', '.join(analysis.FEATURE_DIRECTIONS)}")
+        features = [f for f in cfg.get("features") or [] if isinstance(f, dict)]
+        if len(features) >= analysis.MAX_FEATURES:
+            raise NetworkError(f"this project already has {len(features)} features; remove one first")
+        taken = {str(f.get("name") or "").casefold() for f in features}
+        base = analysis.safe_name(name or str(seed["value"]))
+        label, n = base, 2
+        while label.casefold() in taken:
+            label, n = f"{base}~{n}", n + 1
+
+        log(f"tracing {analysis.feature_seed_text(seed)} through {Path(str(target.get('path'))).name} ({direction})…")
+        try:
+            record = rea.trace_feature(target, cfg.get("provider") or "", seed, direction)
+        except rea.ReaError as e:
+            raise NetworkError(str(e)) from e
+        trace = rea.unwrap(record)
+        graph = analysis.feature_graph(trace if isinstance(trace, dict) else {})
+        matches = trace.get("seed_matches") if isinstance(trace, dict) else None
+        coverage = trace.get("coverage") if isinstance(trace, dict) else None
+        if not graph["nodes"] or not matches:
+            why = " ".join(str(x) for x in ((trace or {}).get("limitations") or [])) if isinstance(trace, dict) else ""
+            raise NetworkError(f"REA traced {analysis.feature_seed_text(seed)} to nothing in this application"
+                               + (f": {why}" if why else "; try a shorter string or another seed"))
+        log(f"{len(graph['nodes'])} nodes, {len(graph['edges'])} edges, {graph['paths']} paths")
+
+        candidates = [node for node in graph["nodes"] if node.get("kind") in analysis.FEATURE_WORK_KINDS
+                      and not analysis.feature_external(node)]
+        if not candidates:
+            candidates = [node for node in graph["nodes"] if node.get("name") and not analysis.feature_external(node)]
+        priority = {kind: i for i, kind in enumerate(analysis.FEATURE_WORK_PRIORITY)}
+        candidates.sort(key=lambda node: (priority.get(node["kind"], len(priority)), node.get("name") or ""))
+        created = linked = grouped = 0
+        now = time.time()
+        unit = f"feature:{label}"
+        with self.store.tx() as db:
+            rows = db.execute("SELECT id, name, meta FROM functions WHERE project_id=?", (proj["id"],)).fetchall()
+            names = {row["name"] for row in rows}
+            by_name = {row["name"]: row for row in rows}
+            by_path: dict[str, object] = {}
+            for row in rows:
+                meta = json.loads(row["meta"] or "{}")
+                if meta.get("path"):
+                    by_path.setdefault(str(meta["path"]), row)
+            key_items: dict[str, str] = {}
+            for node in candidates:
+                key = str(node.get("path") or node.get("name") or "").casefold()
+                if key and key in key_items:  # another graph role of the same file or channel
+                    node["work_item"] = key_items[key]
+                    grouped += 1
+                    continue
+                row = (by_path.get(node["path"]) if node.get("path") else None) or \
+                    by_name.get(node.get("label") or "") or by_name.get(node.get("name") or "")
+                if row is not None:  # an existing procedure or archive entry: the feature points at it
+                    node["work_item"] = row["name"]
+                    if key:
+                        key_items[key] = row["name"]
+                    linked += 1
+                    continue
+                if created >= analysis.MAX_FEATURE_ITEMS:
+                    node["work_item"] = ""
+                    continue
+                item = analysis.safe_name(node["name"])
+                if item in names and node.get("kind"):
+                    qualified = analysis.safe_name(f"{node['name']} ({node['kind']})")
+                    if qualified not in names:
+                        item = qualified
+                stem, k = item, 2
+                while item in names:
+                    item, k = f"{stem}~{k}", k + 1
+                names.add(item)
+                meta = {"kind": "feature-node", "feature": label, "node_id": node["node_id"],
+                        "node_kind": node["kind"], "path": node["path"], "seed": analysis.feature_seed_text(seed),
+                        "state": node["state"], "authority": node["authority"]}
+                db.execute(
+                    "INSERT INTO functions(project_id,name,size,n_insns,unit,vram,meta,status) VALUES(?,?,?,?,?,?,?,?)",
+                    (proj["id"], item, 0, 0, unit, 0, json.dumps(meta), "open"))
+                node["work_item"] = item
+                if key:
+                    key_items[key] = item
+                created += 1
+            feature = {"name": label, "seed": seed, "direction": direction,
+                       "trace_id": str(trace.get("trace_id") or "") if isinstance(trace, dict) else "",
+                       "evidence_id": str(record.get("evidence_id") or "") if isinstance(record, dict) else "",
+                       "coverage": coverage or {}, "summary": (trace.get("summary") or {}) if isinstance(trace, dict) else {},
+                       "limitations": [str(x) for x in ((trace or {}).get("limitations") or [])][:20]
+                       if isinstance(trace, dict) else [],
+                       "nodes": graph["nodes"], "edges": graph["edges"], "paths": graph["paths"],
+                       "truncated": graph["truncated"], "created_at": now,
+                       "work_items": {"created": created, "linked": linked, "grouped": grouped}}
+            cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
+            cfg["features"] = [*features, feature]
+            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+            self._event(db, proj["id"], None, "feature",
+                        f"{label}: {len(graph['nodes'])} nodes, {created} new work items")
+        return self._feature_summary(feature) | {"nodes": feature["nodes"], "edges": feature["edges"],
+                                                 "limitations": feature["limitations"],
+                                                 "work_items": feature["work_items"]}
+
+    @staticmethod
+    def _feature_summary(feature: dict) -> dict:
+        nodes = feature.get("nodes") or []
+        items = [n for n in nodes if n.get("work_item")]
+        return {"name": feature.get("name") or "", "seed": feature.get("seed") or {},
+                "direction": feature.get("direction") or "both", "trace_id": feature.get("trace_id") or "",
+                "coverage": feature.get("coverage") or {}, "summary": feature.get("summary") or {},
+                "created_at": feature.get("created_at"), "node_count": len(nodes),
+                "edge_count": len(feature.get("edges") or []), "item_count": len(items),
+                "truncated": bool(feature.get("truncated"))}
+
+    def features(self, slug: str) -> dict:
+        """The features traced in an analysis project, without their graphs (the page asks for one at a time)."""
+        _proj, cfg = self.analysis_cfg(slug)
+        return {"slug": slug, "traceable": (cfg.get("target") or {}).get("tool") == "analyze_javascript_application",
+                "features": [self._feature_summary(f) for f in cfg.get("features") or [] if isinstance(f, dict)]}
+
+    def feature(self, slug: str, name: str) -> dict:
+        """One traced feature with its nodes and edges, and how each work item it points at is doing."""
+        proj, cfg = self.analysis_cfg(slug)
+        for feature in cfg.get("features") or []:
+            if isinstance(feature, dict) and feature.get("name") == name:
+                rows = {row["name"]: row for row in self.store.all(
+                    "SELECT name, status, matched_source FROM functions WHERE project_id=?", proj["id"])}
+                nodes = []
+                for node in feature.get("nodes") or []:
+                    row = rows.get(str(node.get("work_item") or ""))
+                    nodes.append(node | {"status": row["status"] if row is not None else "",
+                                         "reached_by": analysis.reached_by(feature.get("edges") or [],
+                                                                          feature.get("nodes") or [],
+                                                                          node.get("node_id") or "")})
+                return self._feature_summary(feature) | {"nodes": nodes, "edges": feature.get("edges") or [],
+                                                        "limitations": feature.get("limitations") or []}
+        raise NetworkError(f"no feature named {name!r} in {slug}")
+
+    def remove_feature(self, slug: str, name: str) -> dict:
+        """Forget a feature and the work items it created that nobody has analyzed yet."""
+        proj, cfg = self.analysis_cfg(slug)
+        features = [f for f in cfg.get("features") or [] if isinstance(f, dict)]
+        if not any(f.get("name") == name for f in features):
+            raise NetworkError(f"no feature named {name!r} in {slug}")
+        with self.store.tx() as db:
+            rows = db.execute("SELECT id, name, meta, status FROM functions WHERE project_id=?", (proj["id"],)).fetchall()
+            removed = 0
+            for row in rows:
+                meta = json.loads(row["meta"] or "{}")
+                if meta.get("kind") == "feature-node" and meta.get("feature") == name and row["status"] != "matched":
+                    db.execute("DELETE FROM claims WHERE function_id=?", (row["id"],))
+                    db.execute("DELETE FROM notes WHERE function_id=?", (row["id"],))
+                    db.execute("DELETE FROM functions WHERE id=?", (row["id"],))
+                    removed += 1
+            cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
+            cfg["features"] = [f for f in features if f.get("name") != name]
+            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+            self._event(db, proj["id"], None, "feature", f"removed {name} ({removed} open items)")
+        return {"removed": name, "work_items": removed}
+
+    # ------------------------------------------------------------------ reconstructed source
+
+    def _source_rows(self, proj) -> list[tuple]:
+        """Rows that carry code: a reconstruction project's recovered/reconstructed files, and any work item an
+        agent wrote code for with write_source (a matching project reconstructs one function at a time)."""
+        rows = []
+        for row in self.store.all("SELECT * FROM functions WHERE project_id=? ORDER BY name", proj["id"]):
+            meta = json.loads(row["meta"] or "{}")
+            if meta.get("kind") in ("recovered-source", "reconstruction") or meta.get("reconstructed"):
+                rows.append((row, meta))
+        return rows
+
+    @staticmethod
+    def _source_state(row, meta, *, analysis: bool) -> str:
+        """verified, reconstructed or pending: what this row's code is worth in this kind of project.
+
+        In a reconstruction project a source map is the proof; in a matching project the proof is byte-exact
+        equality with its own copy of the target."""
+        if analysis:
+            if meta.get("verified"):
+                return "verified"
+            return "reconstructed" if row["status"] == "matched" else "pending"
+        if row["status"] == "matched":
+            return "verified"
+        return "reconstructed" if meta.get("reconstructed") else "pending"
+
+    @staticmethod
+    def _reconstruction_tier(cfg) -> str:
+        """Where an analysis project's code comes from: source maps, an archive, or REA's analysis of a binary."""
+        target = cfg.get("target") or {}
+        if target.get("tool") == "analyze_javascript_application":
+            return "source-map"
+        if cfg.get("artifact"):
+            return "archive"
+        return "binary"
+
+    def _analysis_source_files(self, proj) -> tuple[list[dict], dict]:
+        """An analysis project's source rows, each with the tier its code is worth (verified/reconstructed/pending)."""
+        files: list[dict] = []
+        counts = {"recovered": 0, "reconstructed": 0, "pending": 0}
+        for row, meta in self._source_rows(proj):
+            state = self._source_state(row, meta, analysis=True)
+            counts["recovered" if state == "verified" else state] += 1
+            files.append({"path": str(meta.get("path") or row["name"]), "name": row["name"],
+                          "status": row["status"], "size": row["size"],
+                          "verified": bool(meta.get("verified")), "state": state,
+                          "origin": str(meta.get("origin") or ""), "map": str(meta.get("map") or ""),
+                          "agent": str(meta.get("agent") or ""),
+                          "module_kind": str(meta.get("module_kind") or "")})
+        return files, counts
+
+    def _reconstruction_state(self, proj) -> dict:
+        """The project config's reconstruction summary, tier-aware: a binary has no byte-exact tier, so its
+        pending count is the work items still without recovered code."""
+        cfg = self.cfg(proj)
+        tier = self._reconstruction_tier(cfg)
+        files, counts = self._analysis_source_files(proj)
+        total, pending = len(files), counts["pending"]
+        if tier == "binary":
+            total = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=?", proj["id"])["n"]
+            pending = max(0, total - counts["reconstructed"])
+        return {"folder": "recovered", "tier": tier, "files": len(files), "recovered": counts["recovered"],
+                "reconstructed": counts["reconstructed"], "pending": pending, "total": total}
+
+    def _adopt_binary_tier(self, proj, cfg) -> dict | None:
+        """A binary imported before binaries had a Sources tier has no summary in its config: work it out once,
+        keep it, and the page shows the tier from then on."""
+        if cfg.get("reconstruction") or self._reconstruction_tier(cfg) != "binary":
+            return None
+        if proj["id"] in self._binary_tier_seen:
+            return None
+        self._binary_tier_seen.add(proj["id"])
+        state = self._reconstruction_state(proj)
+        with self.store.tx() as db:
+            row = db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()
+            fresh = json.loads(row["config"]) if row is not None else cfg
+            if not fresh.get("reconstruction"):
+                fresh["reconstruction"] = state
+                db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(fresh), proj["id"]))
+        return state
+
+    def sources(self, slug: str) -> dict:
+        """The code a project has: what is verified, what agents reconstructed, and what is still without code."""
+        proj = self._project(slug)
+        if not self.is_analysis(proj):
+            return self._rom_sources(proj)
+        cfg = self.cfg(proj)
+        tier = self._reconstruction_tier(cfg)
+        files, counts = self._analysis_source_files(proj)
+        rec = cfg.get("reconstruction") or {}
+        counts.update({"files": len(files), "total": len(files), "maps": rec.get("maps") or 0,
+                       "truncated": bool(rec.get("truncated"))})
+        if tier == "binary":  # nothing is byte-exact here: a work item either has reconstructed code or doesn't
+            total = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=?", proj["id"])["n"]
+            counts.update({"total": total, "pending": max(0, total - counts["reconstructed"])})
+        return {"slug": slug, "kind": "analysis", "tier": tier,
+                "folder": str(Path(proj["root"]) / "recovered"), "files": files, "counts": counts}
+
+    def _rom_sources(self, proj) -> dict:
+        """A matching project's code: functions matched byte for byte, and the ones agents reconstructed."""
+        counts = self._rom_source_counts(proj["id"])
+        files = []
+        for row, meta in self._source_rows(proj):
+            if row["status"] == "matched" or not meta.get("reconstructed"):
+                continue  # verified code lives in the project's own source tree, not in recovered/
+            files.append({"path": str(meta.get("path") or row["name"]), "name": row["name"],
+                          "status": row["status"], "size": row["size"], "verified": False,
+                          "state": "reconstructed", "origin": str(meta.get("origin") or ""), "map": "",
+                          "agent": str(meta.get("agent") or ""),
+                          "module_kind": str(meta.get("module_kind") or "")})
+        return {"slug": proj["slug"], "kind": "rom", "tier": "match",
+                "folder": str(Path(proj["root"]) / "recovered"), "files": files,
+                "counts": {**counts, "files": len(files), "reconstructed": len(files),
+                           "maps": 0, "truncated": False}}
+
+    def source_file(self, slug: str, path: str) -> dict:
+        """One recovered or reconstructed source file, as it stands."""
+        proj = self._project(slug)
+        analysis = self.is_analysis(proj)
+        wanted = sources.clean_path(path)
+        for row, meta in self._source_rows(proj):
+            if row["name"] == path or sources.clean_path(str(meta.get("path") or "")) == wanted:
+                code = (row["best_source"] if meta.get("reconstructed") else None) or \
+                    row["matched_source"] or row["best_source"] or ""
+                return {"path": str(meta.get("path") or row["name"]), "name": row["name"],
+                        "status": row["status"], "source": code,
+                        "verified": bool(meta.get("verified")) or (not analysis and row["status"] == "matched"),
+                        "state": self._source_state(row, meta, analysis=analysis),
+                        "origin": str(meta.get("origin") or ""), "map": str(meta.get("map") or ""),
+                        "agent": str(meta.get("agent") or ""), "size": row["size"]}
+        raise NetworkError(f"no source file named {path!r} in {slug}")
+
+    def write_source(self, agent: Agent, project: str | None, function: str, source: str) -> str:
+        """Save code an agent reconstructed: written into recovered/, labelled unverified, never counted as a match.
+
+        A reconstruction project's item is a whole module. In a matching project it is one function: the code is
+        kept as an unverified reconstruction, and a later byte-exact compile_and_diff match replaces it."""
+        fn = self._function(function, project)
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        if self.fork_slug(proj["slug"]):
+            raise NetworkError("this project has its own source tree: write the function into its files and run "
+                               "compile_and_diff, so the result is verified")
+        reconstruction_project = self.is_analysis(proj)
+        meta = json.loads(fn["meta"] or "{}")
+        if reconstruction_project and meta.get("kind") not in (
+                "recovered-source", "reconstruction", "procedure", "task", "feature-node"):
+            raise NetworkError(f"{fn['name']} is not a work item this project can reconstruct")
+        if not reconstruction_project and fn["status"] == "matched":
+            raise NetworkError(f"{fn['name']} already matches the original byte for byte: there is nothing to reconstruct")
+        if reconstruction_project:
+            path = sources.clean_path(str(meta.get("path") or ""))
+            if path and meta.get("entry_type"):  # a compiled archive entry: the source file sits beside it
+                stem, ext = posixpath.splitext(path)
+                recovered_ext = analysis.COMPILED_SOURCE_EXTS.get(ext.lower())
+                if recovered_ext:
+                    path = sources.clean_path(stem + recovered_ext)
+            if not path:  # a procedure or task of an analyzed binary: one file per work item
+                folder = {"task": "tasks", "feature-node": "features"}.get(meta.get("kind"), "functions")
+                ext = analysis.recovered_ext(self.cfg(proj).get("target") or {})
+                path = sources.clean_path(posixpath.join(folder, f"{fn['name']}{ext}"))
+            meta["path"] = path
+        else:
+            path = sources.clean_path(str(meta.get("path") or ""))
+            if not path:
+                cfg = self.cfg(proj)
+                unit = sources.clean_path(str(fn["unit"] or "")) or "unmatched"
+                ext = source_ext(str((cfg.get("compiler") or {}).get("toolchain") or ""))
+                path = sources.clean_path(posixpath.join(unit, f"{fn['name']}{ext}"))
+        if not path:
+            raise NetworkError(f"{fn['name']} has no safe path in the recovered tree")
+        source = source.strip("\n") + "\n"
+        if not source.strip():
+            raise NetworkError("write the code first")
+        if len(source.encode("utf-8")) > sources.MAX_SOURCE_BYTES:
+            raise NetworkError(f"that source is larger than {sources.MAX_SOURCE_BYTES // (1024 * 1024)} MiB")
+        claim = self.store.one("SELECT agent_id FROM claims WHERE function_id=?", fn["id"])
+        if claim is None or claim["agent_id"] != agent.id:
+            raise NetworkError(f"you don't hold a claim on {fn['name']}")
+        folder = Path(proj["root"]) / "recovered"
+        out = folder / path
+        if folder.resolve() not in out.resolve().parents:
+            raise NetworkError("that path would leave the recovered folder")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_name(out.name + ".part")
+        tmp.write_text(source, encoding="utf-8")
+        tmp.replace(out)
+        now = time.time()
+        module = reconstruction_project and meta.get("kind") in ("recovered-source", "reconstruction")
+        with self.store.tx() as db:
+            meta.update({"origin": "agent", "verified": False, "agent": agent.name})
+            if module:  # a whole module: the code is the item's result (and its finding)
+                db.execute("UPDATE functions SET status='matched', matched_source=?, best_source=?, best_score=0, "
+                           "matched_agent_id=?, matched_at=?, attempts=attempts+1, meta=? WHERE id=?",
+                           (source, source, agent.id, now, json.dumps(meta), fn["id"]))
+            elif reconstruction_project:  # a procedure or task of an analyzed binary: keep any finding it already has
+                meta["reconstructed"] = True
+                db.execute("UPDATE functions SET status='matched', best_source=?, best_score=0, "
+                           "matched_agent_id=COALESCE(matched_agent_id, ?), matched_at=COALESCE(matched_at, ?), "
+                           "attempts=attempts+1, meta=? WHERE id=?",
+                           (source, agent.id, now, json.dumps(meta), fn["id"]))
+            else:
+                meta.update({"path": path, "reconstructed": True})
+                db.execute("UPDATE functions SET status='reconstructed', best_source=?, meta=?, attempts=attempts+1 "
+                           "WHERE id=?", (source, json.dumps(meta), fn["id"]))
+            db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
+            cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
+            if reconstruction_project:
+                rec = cfg.setdefault("reconstruction", {"folder": "recovered", "maps": 0, "truncated": False})
+                rec.update(self._reconstruction_state(proj))
+            else:
+                counts = self._rom_source_counts(proj["id"])
+                cfg["reconstruction"] = {"folder": "recovered", **counts}
+            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+            self._event(db, proj["id"], agent.id, "reconstruct", f"{path} ({len(source)} bytes, unverified)")
+        if reconstruction_project:
+            return (f"✅ {path} is saved in recovered/ and the work item is marked analyzed. It is reconstructed, not "
+                    "verified against the original: cite what you based it on in a note, and say so in any summary. "
+                    "Claim the next item, or export the tree.")
+        return (f"✅ {path} is saved in recovered/. It is reconstructed, not verified: compile_and_diff is the test, "
+                "and a byte-exact match replaces it. Say so wherever you report on it.")
+
+    def _rom_source_counts(self, project_id: int) -> dict:
+        """A matching project's code, counted the way its Sources panel shows it."""
+        agg = self.store.one(
+            "SELECT COUNT(*) AS total, COALESCE(SUM(status='matched'), 0) AS matched, "
+            "COALESCE(SUM(status='reconstructed'), 0) AS reconstructed FROM functions "
+            "WHERE project_id=? AND status!='library'", project_id)
+        total, matched = agg["total"] or 0, agg["matched"] or 0
+        return {"files": agg["reconstructed"], "recovered": matched, "reconstructed": agg["reconstructed"],
+                "pending": max(0, total - matched - agg["reconstructed"]), "total": total, "matches": matched}
+
+    def export_sources(self, slug: str, log=print) -> dict:
+        """Write every reconstructed file into recovered/ (and a zip of it) with an explicit verification report:
+        what is verified, what is reconstructed, and what is still without code."""
+        proj = self._project(slug)
+        if self.fork_slug(slug):
+            raise NetworkError("this project has its own source tree: its code is committed there, not recovered "
+                               "into recovered/")
+        analysis = self.is_analysis(proj)
+        rows = [(row, meta) for row, meta in self._source_rows(proj)]
+        if not analysis:
+            rows = [(row, meta) for row, meta in rows if row["status"] != "matched" and meta.get("reconstructed")]
+        if not rows:
+            raise NetworkError("this project has no recovered or reconstructed code yet: claim a work item and save "
+                               "its source with write_source first")
+        folder = Path(proj["root"]) / "recovered"
+        folder.mkdir(parents=True, exist_ok=True)
+        total = 0
+        entries: list[tuple[str, str]] = []
+        for row, meta in rows:
+            code = row["matched_source"] or row["best_source"]
+            if not code:
+                continue
+            path = sources.clean_path(str(meta.get("path") or row["name"]))
+            if not path:
+                continue
+            total += len(code.encode("utf-8"))
+            if total > 256 * 1024 * 1024:
+                raise NetworkError("the recovered tree is larger than 256 MiB; export it in parts")
+            out = folder / path
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(code, encoding="utf-8")
+            entries.append((path, code))
+        tier = self._reconstruction_tier(self.cfg(proj))
+        if analysis:
+            verified = sum(1 for _row, meta in rows if meta.get("verified"))
+            unverified = sum(1 for row, meta in rows if row["status"] == "matched" and not meta.get("verified"))
+            pending = sum(1 for row, _meta in rows if row["status"] != "matched")
+            if tier == "binary":
+                total = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=?", proj["id"])["n"]
+                pending = max(0, total - unverified)  # every work item without reconstructed code
+                report = [f"# Recovered sources: {proj['name']}", "",
+                          "- verified: none (this target was analyzed, not matched: reconstructed code is unverified)",
+                          f"- reconstructed by agents (unverified): {unverified}",
+                          f"- still without code: {pending}", ""]
+            else:
+                archive = any(meta.get("origin") == "archive" for _row, meta in rows)
+                report = [f"# Recovered sources: {proj['name']}", "",
+                          f"- verified ({'extracted from the archive, byte for byte' if archive else 'from source maps'}): "
+                          f"{verified}",
+                          f"- reconstructed by agents (unverified): {unverified}",
+                          f"- still to reconstruct: {pending}", ""]
+        else:
+            counts = self._rom_source_counts(proj["id"])
+            verified, unverified, pending = counts["recovered"], len(entries), counts["pending"]
+            report = [f"# Recovered sources: {proj['name']}", "",
+                      f"- verified (matched byte for byte, in the project's own source tree): {verified}",
+                      f"- reconstructed by agents (unverified, in this tree): {unverified}",
+                      f"- still without code: {pending}", ""]
+        for row, meta in rows:
+            path = sources.clean_path(str(meta.get("path") or row["name"]))
+            if not path:
+                continue
+            if analysis:
+                if meta.get("verified"):
+                    state = ("extracted from the archive, byte for byte" if meta.get("origin") == "archive"
+                             else "recovered from a source map")
+                else:
+                    state = ("reconstructed by an agent (unverified)" if row["status"] == "matched"
+                             else "still to reconstruct")
+            else:
+                state = "reconstructed by an agent (unverified)"
+            who = f" by {meta['agent']}" if meta.get("agent") else ""
+            report.append(f"- `{path}` — {state}{who}")
+        if analysis and tier == "binary":
+            # A binary has no source map to be complete against: name the work items still without code.
+            have = {row["id"] for row, _meta in rows}
+            missing = [(row, json.loads(row["meta"] or "{}")) for row in self.store.all(
+                "SELECT id, name, meta FROM functions WHERE project_id=? ORDER BY name LIMIT 500", proj["id"])
+                if row["id"] not in have][:200]
+            if missing:
+                report += ["", "## Still without code (first 200)", ""]
+                report += [f"- `{row['name']}`" + (f" at 0x{int(meta['address']):X}" if meta.get("address") else "")
+                           for row, meta in missing]
+        if not analysis:
+            missing = self.store.all("SELECT name, vram FROM functions WHERE project_id=? AND status='open' "
+                                     "ORDER BY vram, name LIMIT 200", proj["id"])
+            if missing:
+                report += ["", "## Still without code (first 200)", ""]
+                report += [f"- `{m['name']}`" + (f" at 0x{m['vram']:08X}" if m["vram"] else "") for m in missing]
+        report_md = "\n".join(report) + "\n"
+        (folder / "RECONSTRUCTION.md").write_text(report_md, encoding="utf-8")
+        zip_path = Path(proj["root"]) / f"{proj['slug']}-sources.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for path, code in entries:
+                zf.writestr(path, code)
+            zf.writestr("RECONSTRUCTION.md", report_md)
+        log(f"{len(entries)} source files in {folder} and {zip_path}")
+        return {"files": len(entries), "verified": verified, "unverified": unverified, "pending": pending,
+                "folder": str(folder), "zip": str(zip_path)}
 
     def analysis_tool(self, slug: str, tool: str, arguments: dict | None = None) -> str:
         """Run one read-only REA tool on an analysis project's target."""
@@ -526,12 +1162,79 @@ class RomNetwork(Network):
             dirs, files = artifact.get("directories") or 0, artifact.get("files") or 0
             lines.append(f"- archive: {artifact.get('entries')} entries · {files} file{'' if files == 1 else 's'} · "
                          f"{dirs} director{'y' if dirs == 1 else 'ies'}")
+        source_rows = [(row, json.loads(row["meta"] or "{}")) for row in rows
+                       if json.loads(row["meta"] or "{}").get("kind") in ("recovered-source", "reconstruction")
+                       or json.loads(row["meta"] or "{}").get("reconstructed")]
+        if source_rows:
+            tier = self._reconstruction_tier(cfg)
+            verified = sum(1 for _row, meta in source_rows if meta.get("verified"))
+            reconstructed = sum(1 for row, meta in source_rows if row["status"] == "matched" and not meta.get("verified"))
+            to_go = sum(1 for row, _meta in source_rows if row["status"] != "matched")
+            lines += ["", "## Sources", f"- folder: `{Path(proj['root']) / 'recovered'}`"]
+            if tier == "binary":
+                lines += [f"- {reconstructed} reconstructed by agents (unverified): this target was analyzed, not "
+                          "matched, so nothing here is byte-exact",
+                          f"- {max(0, len(rows) - reconstructed)} work items without recovered code"]
+            else:
+                lines += [f"- {verified} "
+                          f"{'extracted from the archive' if tier == 'archive' else 'recovered from source maps'} · "
+                          f"{reconstructed} reconstructed by agents (unverified) · {to_go} still to reconstruct"]
+            for row, meta in source_rows:
+                path = meta.get("path") or row["name"]
+                if meta.get("verified"):
+                    state = ("extracted from the archive, byte for byte" if meta.get("origin") == "archive"
+                             else "recovered from its source map")
+                else:
+                    state = ("reconstructed by an agent (unverified)" if row["status"] == "matched"
+                             else "still to reconstruct")
+                lines.append(f"- `{path}` — {state}")
+            lines.append("")
+        features = [f for f in cfg.get("features") or [] if isinstance(f, dict)]
+        if features:
+            by_name = {row["name"]: row for row in rows}
+            lines += ["", "## Features"]
+            for feature in features:
+                coverage = feature.get("coverage") or {}
+                traced = feature.get("summary") or {}
+                lines += [f"### {feature.get('name')}",
+                          f"- seed: {analysis.feature_seed_text(feature.get('seed'))} "
+                          f"({feature.get('direction') or 'both'})",
+                          f"- coverage: {coverage.get('status') or 'unknown'} · "
+                          f"{traced.get('traced_nodes', len(feature.get('nodes') or []))} nodes · "
+                          f"{traced.get('terminal_paths', feature.get('paths') or 0)} paths"]
+                if feature.get("truncated"):
+                    lines.append("- the trace was larger than this project stores; the work items below are the first "
+                                 "ones reached")
+                seen_items: set[str] = set()  # several graph roles share one work item
+                for node in feature.get("nodes") or []:
+                    item = str(node.get("work_item") or "")
+                    if not item or item in seen_items:
+                        continue
+                    seen_items.add(item)
+                    row = by_name.get(item)
+                    if row is None:
+                        continue
+                    label = node.get("path") or node.get("label") or node.get("name")
+                    if row["status"] == "matched":
+                        finding = " ".join((row["matched_source"] or "").split())
+                        lines.append(f"- `{label}` ({node.get('kind')}): {finding[:400]}"
+                                     + ("…" if len(finding) > 400 else ""))
+                    else:
+                        lines.append(f"- `{label}` ({node.get('kind')}): {row['status']}")
+                for limit in (feature.get("limitations") or [])[:6]:
+                    lines.append(f"- limit: {limit}")
+                lines.append("")
         lines += ["", "## Findings"]
         if not analyzed:
             lines += ["Nothing has been analyzed yet.", ""]
         for row in analyzed:
             meta = json.loads(row["meta"] or "{}")
             path = meta.get("path") or row["name"]
+            if meta.get("kind") in ("recovered-source", "reconstruction"):
+                state = "recovered from its source map (verified)" if meta.get("verified") else \
+                    "reconstructed by an agent (unverified)"
+                lines += [f"### `{path}`", f"- {row['size']} bytes · {state}", ""]
+                continue
             lines += [f"### `{path}`"]
             facts = [f"{row['size']} bytes"]
             if meta.get("artifact_format"):
@@ -541,7 +1244,10 @@ class RomNetwork(Network):
             lines.append("- " + " · ".join(facts))
             when = _ago(row["matched_at"]) if row["matched_at"] else "earlier"
             lines.append(f"- analyzed by {row['agent'] or 'an agent'} {when}")
-            lines += ["", (row["matched_source"] or "").strip() or "(no finding text)", ""]
+            body = (row["matched_source"] or "").strip()
+            if not body and meta.get("reconstructed"):
+                body = f"reconstructed code: `{meta.get('path')}` (unverified)"
+            lines += ["", body or "(no finding text)", ""]
         if pending:
             lines += ["## Still open"]
             for row in pending:
@@ -594,9 +1300,10 @@ class RomNetwork(Network):
                 "markdown": markdown, "path": str(path)}
 
     def _artifact_entry_row(self, proj, entry: str):
+        """The work item for one archive entry: an artifact entry, or the source item recovered from it."""
         for row in self.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"]):
             meta = json.loads(row["meta"] or "{}")
-            if meta.get("kind") == "artifact-entry" and meta.get("path") == entry:
+            if meta.get("path") == entry and (meta.get("kind") == "artifact-entry" or meta.get("entry_type")):
                 return row, meta
         return None, None
 
@@ -610,8 +1317,8 @@ class RomNetwork(Network):
         root = {"name": proj["name"], "path": "", "kind": "directory", "children": {}}
         for row in self.store.all("SELECT name, size, meta FROM functions WHERE project_id=?", proj["id"]):
             meta = json.loads(row["meta"] or "{}")
-            if meta.get("kind") != "artifact-entry":
-                continue
+            if meta.get("kind") != "artifact-entry" and not meta.get("entry_type"):
+                continue  # recovered/reconstructed entries keep their facts and stay in the tree
             path = str(meta.get("path") or row["name"])
             parts = [p for p in path.split("/") if p not in ("", ".")]
             if not parts:
@@ -729,10 +1436,8 @@ class RomNetwork(Network):
         self._update_cfg(slug, remember)
         with self.store.tx() as db:
             self._event(db, proj["id"], None, "entry", f"{entry} → {child}")
-        try:
+        with contextlib.suppress(Exception):
             self.analysis_summary(slug)
-        except Exception:
-            pass
         log(f"{entry} opened as {child}")
         return {"slug": child, "entry": entry, "existing": False, "tool": tool}
 
@@ -766,9 +1471,28 @@ class RomNetwork(Network):
         if claim:
             who = "you" if agent and claim["agent_id"] == agent.id else self._agent_name(claim["agent_id"])
             lines.append(f"claimed by {who}, lease expires in {int(claim['expires_at'] - time.time()) // 60} min")
+        if meta.get("kind") == "feature-node":
+            feature = next((f for f in cfg.get("features") or []
+                            if isinstance(f, dict) and f.get("name") == meta.get("feature")), None)
+            if feature:
+                nodes = feature.get("nodes") or []
+                node = next((n for n in nodes if n.get("node_id") == meta.get("node_id")), {})
+                lines += ["", f"feature {feature['name']}: {analysis.feature_seed_text(feature.get('seed'))} "
+                              f"({feature.get('direction') or 'both'})",
+                          f"this node: {node.get('kind') or meta.get('node_kind') or 'application node'}"
+                          + (f" at {node['path']}" if node.get("path") else "")]
+                reached = analysis.reached_by(feature.get("edges") or [], nodes, str(meta.get("node_id") or ""))
+                if reached:
+                    lines.append(f"reached from: {reached}")
+                if feature.get("limitations"):
+                    lines.append("trace limits: " + "; ".join(str(x) for x in feature["limitations"][:4]))
+                lines += ["", "Report what this node contributes to the feature: what it does, what it exchanges "
+                              "with its neighbours, and anything the trace leaves open. Static reachability is not "
+                              "proof it runs."]
         if fn["status"] == "matched":
+            finding = (fn["matched_source"] or "").strip()
             lines += [f"ANALYZED by {self._agent_name(fn['matched_agent_id'])} {_ago(fn['matched_at'])}:",
-                      fn["matched_source"].strip()]
+                      finding or "(no finding text: the reconstructed code is in recovered/)"]
         if meta.get("kind") == "task" and meta.get("brief"):
             lines += ["", "The user's task:", meta["brief"]]
         if meta.get("kind") == "artifact-entry":
@@ -784,6 +1508,38 @@ class RomNetwork(Network):
             lines += ["", "entry preview (bounded):", "```", analysis.preview_bytes(data), "```"]
             lines += ["", "Read more with read_artifact_entry(entry, offset, length); the archive inventory is "
                           "available through rea_tool(\"inspect_artifact\", {})."]
+        elif meta.get("kind") in ("recovered-source", "reconstruction"):
+            path = str(meta.get("path") or fn["name"])
+            archive = meta.get("origin") == "archive" or bool(meta.get("entry_type"))
+            if meta.get("kind") == "recovered-source":
+                source = ("source: extracted byte for byte from the archive "
+                          f"({meta.get('entry_format') or 'original file'})" if archive
+                          else f"source map: {meta.get('map') or 'inline'}")
+                lines += ["", f"recovered file: {path}", f"size: {fn['size']} bytes", source,
+                          "This is the original file, not a reconstruction: it does not need writing. Read it, "
+                          "name what it does in a note, and complete it as a finding."]
+            elif archive:
+                lines += ["", f"archive entry to reconstruct: {path}",
+                          f"entry format: {meta.get('entry_format') or meta.get('module_kind') or 'binary'}",
+                          f"size: {fn['size']} bytes"]
+                data = analysis.read_archive_entry(target.get("path") or "", path, 0, 4096)
+                lines += ["", "entry preview (bounded):", "```", analysis.preview_bytes(data), "```",
+                          "", "Its source did not ship as text. Read more with read_artifact_entry(entry, offset, "
+                          "length), check the archive inventory with rea_tool(\"inspect_artifact\", {}), then save "
+                          f"the recovered source with write_source(\"{fn['name']}\", <source>). It is labelled "
+                          "reconstructed and unverified; never call it original source."]
+            else:
+                lines += ["", f"module to reconstruct: {path}",
+                          f"module kind: {meta.get('module_kind') or 'javascript module'}",
+                          f"No source map covers this module. Reconstruct it as JavaScript from the graph, the "
+                          f"bundle and its neighbours, then save it with write_source(\"{fn['name']}\", <source>). "
+                          "It will be marked reconstructed and unverified; never call it original source."]
+        elif meta.get("kind") == "feature-node":
+            # The feature block above is this item's brief; a JavaScript application has no binary provider to ask.
+            pass
+        elif target.get("tool") == "analyze_javascript_application":
+            # A JavaScript graph has no binary provider to ask for an overview or a function dossier.
+            pass
         else:
             try:
                 client = rea.analysis_client(target, cfg.get("provider") or "")
@@ -798,6 +1554,14 @@ class RomNetwork(Network):
                         lines += ["", "segments:", analysis.pretty(segs)]
             except rea.ReaError as e:
                 lines += ["", f"REA couldn't read this item: {e}", "Try another view with rea_tool."]
+            if meta.get("reconstructed") and fn["best_source"]:
+                lines += ["", f"### Reconstructed code (unverified, saved in {meta.get('path') or 'recovered/'}): "
+                              "not original source", "```", fn["best_source"].strip(), "```"]
+            elif meta.get("kind") in ("procedure", "task"):
+                lines += ["", "No byte-exact reference exists for this target. Once the evidence supports it, "
+                              f"write_source(\"{fn['name']}\", <source>) saves the recovered implementation in "
+                              "recovered/: labelled reconstructed and unverified, never original source. Say what "
+                              "you based it on in a note."]
         notes = self.store.all(
             "SELECT n.text, n.created_at, a.name FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
             "WHERE n.function_id=? ORDER BY n.id DESC LIMIT 8", fn["id"])
@@ -810,7 +1574,11 @@ class RomNetwork(Network):
         if pnotes:
             lines += ["", "### Project-wide notes"] + [f"- ({n['name']}) {n['text']}" for n in pnotes]
         if header == "CLAIMED":
-            if meta.get("kind") == "artifact-entry":
+            if meta.get("kind") == "reconstruction":
+                lines += ["", f"Next: reconstruct {meta.get('path') or fn['name']} as JavaScript and save it with "
+                              f"write_source(\"{fn['name']}\", source). That writes the file, marks it analyzed and "
+                              "labels it unverified. Release it with notes if it needs someone else."]
+            elif meta.get("kind") == "artifact-entry":
                 lines += ["", "Next: read_artifact_entry(entry, offset, length) for more of this file, write what "
                               "matters with add_note, then complete_function(function, summary). Release it with "
                               "notes if it needs someone else."]
@@ -831,6 +1599,9 @@ class RomNetwork(Network):
             raise NetworkError("write the finding first: what this item does, what it calls, what matters")
         if fn["status"] == "matched":
             raise NetworkError(f"{fn['name']} is already analyzed")
+        if json.loads(fn["meta"] or "{}").get("kind") == "reconstruction":
+            raise NetworkError(f"{fn['name']} is a source module: write it with write_source(name, source) so the "
+                               "reconstructed file is saved with the finding")
         now = time.time()
         with self.store.tx() as db:
             claim = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
@@ -845,16 +1616,12 @@ class RomNetwork(Network):
         done = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status!='matched'",
                               proj["id"])["n"] == 0
         if done:
-            try:
+            with contextlib.suppress(Exception):
                 self.analysis_summary(proj["slug"])
-            except Exception:
-                pass
         parent = (cfg.get("source") or {}).get("parent")
         if parent:
-            try:
+            with contextlib.suppress(Exception):
                 self.analysis_summary(parent)
-            except Exception:
-                pass
         return (f"✅ {fn['name']} is analyzed and saved. Your finding is on it and in the project's notes. "
                 "Call claim_function for the next item, or add_note about the target as a whole."
                 + (" The project summary is in SUMMARY.md." if done else ""))
@@ -1040,7 +1807,7 @@ class RomNetwork(Network):
         """For a brief: the matched function with the same code, and its C with this one's names."""
         try:
             twin_id = self.twins.twin_of(proj, fn["id"])
-        except Exception:
+        except Exception:  # noqa: BLE001
             return []
         if twin_id is None:
             return []
@@ -1340,7 +2107,7 @@ class RomNetwork(Network):
                     log("debug types don't compile with this project's compiler: keeping them out of the shared header")
                 else:
                     header = debug_header
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 log(f"debug types not added to the shared header: {e}")
         with self.store.tx() as db:
             pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
@@ -1377,7 +2144,6 @@ class RomNetwork(Network):
         """Apply the optional starting context from the import screen. A bad optional file is reported, never
         allowed to fail the import itself."""
         proj = self._project(slug)
-        cfg = self.cfg(proj)
         analysis = self.is_analysis(proj)
         warnings: list[str] = []
         applied: dict[str, object] = {}
@@ -1392,7 +2158,7 @@ class RomNetwork(Network):
         if symbols.strip() and not analysis:
             try:
                 applied["symbols"] = self.import_debug_info(slug, symbols.strip(), log=log)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 warnings.append(f"symbols: {e}")
         if types.strip() and not analysis:
             try:
@@ -1410,12 +2176,12 @@ class RomNetwork(Network):
                     applied["types"] = True
                 else:
                     warnings.append("types: " + res)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 warnings.append(f"types: {e}")
         if trace.strip() and not analysis:
             try:
                 applied["trace"] = self.import_trace(slug, trace.strip(), log=log)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 warnings.append(f"trace: {e}")
         if libraries.strip() and not analysis:
             names = [n.strip() for n in re.split(r"[,;\s]+", libraries) if n.strip()]
@@ -1503,7 +2269,8 @@ class RomNetwork(Network):
         if tc and not toolchains.installed(tc.id):
             issues.append(f"{tc.name} is not installed, so nothing can be compiled yet (Compilers & tools)")
         if kind == "rom" and cfg.get("platform") in X86_PLATFORMS and not debug:
-            issues.append("no debug information was shipped: names start as sub_/FUNC_ and types are recovered from code, strings, imports and agents")
+            issues.append("no debug information was shipped: names start as sub_/FUNC_ and types are recovered "
+                          "from code, strings, imports and agents")
         if cfg.get("packed"):
             issues.append("the program looks packed (UPX): unpack it before trusting function boundaries")
         if rom.get("matchable") is False:
@@ -1549,7 +2316,7 @@ class RomNetwork(Network):
             pid, low, low, limit)
         try:
             graph = self.xrefs(proj)
-        except Exception:
+        except Exception:  # noqa: BLE001
             graph = {"called_by": {}, "calls": {}, "used_by": {}, "uses": {}}
         by_addr = {int(f["vram"]): f["name"] for f in self.store.all(
             "SELECT name, vram FROM functions WHERE project_id=? AND vram IS NOT NULL", pid)}
@@ -1606,7 +2373,7 @@ class RomNetwork(Network):
             sym_at[int(s["address"] or 0)] = s
         try:
             graph = self.xrefs(proj)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return {}, set()
         scores = {}
         def hint(label):
@@ -1694,7 +2461,7 @@ class RomNetwork(Network):
         each imported API, string and data object."""
         try:
             graph = self.xrefs(proj)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return ""
         by_addr = {int(f["vram"]): f["name"] for f in funcs if f["vram"] is not None}
         def labels(addrs, n=6):
@@ -1895,6 +2662,14 @@ class RomNetwork(Network):
         by_addr = {int(r["vram"]): r for r in rows if r["vram"]}
         symbols = self.store.all("SELECT * FROM symbols WHERE project_id=?", proj["id"])
         taken = {s["name"] for s in symbols} | {r["name"] for r in rows}
+        splits = 0
+        if self.is_rom(proj) and self.cfg(proj).get("platform") not in X86_PLATFORMS:
+            splits = self._split_missed_boundaries(proj, info, log=log)
+            if splits:
+                rows = self.store.all("SELECT * FROM functions WHERE project_id=? AND vram IS NOT NULL", proj["id"])
+                by_addr = {int(r["vram"]): r for r in rows if r["vram"]}
+                taken = {s["name"] for s in self.store.all("SELECT name FROM symbols WHERE project_id=?", proj["id"])} \
+                    | {r["name"] for r in rows}
         # PDB/DWARF have explicit functions; a MAP or symbol_addrs.txt only has names. A name at a split
         # function's address is a function name there, whatever the file called it.
         candidates: dict[tuple[int, str], object] = {}
@@ -1974,8 +2749,35 @@ class RomNetwork(Network):
             "header": info.header, "imported_at": now}))
         log(f"{info.source}: {len(renames)} functions renamed, {added} symbols added, "
             f"{len(info.types)} types{' imported' if types_added else ''}")
-        return {"source": info.source, "renamed": len(renames), "symbols": added, "types": len(info.types),
-                "types_added": types_added, "warning": warning}
+        return {"source": info.source, "renamed": len(renames), "split": splits, "symbols": added,
+                "types": len(info.types), "types_added": types_added, "warning": warning}
+
+    def _split_missed_boundaries(self, proj, info, log=print) -> int:
+        """Cut an automatic function where a debug-symbol function starts inside it.
+
+        A function that never returns runs into the next one in the split (exit() into clamp_s32, a thunk into its
+        target). The symbol file knows the real boundary, so the merged function is split there and its name is
+        imported after, instead of being dropped because no work item starts at that address."""
+        agent, _ = self.local_agent("debuginfo")
+        starts = sorted({int(f.address) for f in info.functions if f.name and IDENT.match(f.name)}
+                        | {int(s.address) for s in info.symbols if s.kind == "func" and IDENT.match(s.name)})
+        splits = 0
+        for address in starts:
+            row = self.store.one(
+                "SELECT * FROM functions WHERE project_id=? AND vram < ? AND COALESCE(vram, 0) + COALESCE(size, 0) > ? "
+                "AND status='open' ORDER BY vram LIMIT 1", proj["id"], address, address)
+            if row is None or not AUTO_NAME.match(row["name"]):
+                continue
+            try:
+                text = self.split_function(agent, proj["slug"], row["name"], f"0x{address:08X}")
+            except NetworkError as e:
+                log(f"couldn't split {row['name']} at 0x{address:08X}: {e}")
+                continue
+            if text.startswith("✅"):
+                splits += 1
+        if splits:
+            log(f"{info.source}: split {splits} merged function(s) at symbol boundaries")
+        return splits
 
     def export_debug_info(self, slug: str) -> dict:
         """Write portable symbol and type files into the project folder."""
@@ -2047,7 +2849,11 @@ class RomNetwork(Network):
         (dtk-template), or a DS ROM (ds-decomp). Bytes are saved to a file first."""
         from ..forks import scratch_dsd, scratch_dtk
 
-        head = Path(data).open("rb").read(0x440) if isinstance(data, (str, Path)) else bytes(data[:0x440])
+        if isinstance(data, (str, Path)):
+            with Path(data).open("rb") as fh:
+                head = fh.read(0x440)
+        else:
+            head = bytes(data[:0x440])
         small = Path(data).read_bytes() if isinstance(data, (str, Path)) and Path(data).stat().st_size < 64 << 20 else data
         nds = scratch_dsd.is_nds(head)
         if not nds and scratch_dtk.disc_kind(head) is None and not (isinstance(small, (bytes, bytearray))
@@ -2146,7 +2952,12 @@ class RomNetwork(Network):
             with self._seed_lock:
                 self._seed_for(self._function(fn["name"], proj["slug"]), proj)
             fn = self._function(fn["name"], proj["slug"])
-        return super()._brief(fn, agent, header)
+        text = super()._brief(fn, agent, header)
+        if header == "CLAIMED" and fn["status"] == "open" and not self.is_analysis(proj):
+            text += ("\n\nIf it can't be made byte-exact — the toolchain can't build this code, or the compiler it was "
+                     "built with is gone — write_source(function, source) keeps a reconstructed implementation in "
+                     "recovered/. It is labelled unverified and is never counted as a match.")
+        return text
 
     # ------------------------------------------------------------------ cross references
 
@@ -2162,7 +2973,7 @@ class RomNetwork(Network):
         not_data = () if self.cfg(proj).get("platform") in X86_PLATFORMS else (match.R_MIPS_26, 10)
         for f in funcs:
             for row in json.loads(f["relocs"]):
-                off, rtype, addr = row[0], row[1], row[2]
+                _, rtype, addr = row[0], row[1], row[2]
                 if f["vram"] <= addr < f["vram"] + f["size"]:
                     continue
                 if addr in starts:
@@ -2195,7 +3006,7 @@ class RomNetwork(Network):
             lines += ["", "### Data it uses (declare what you need as extern in your source, or in context.h)"]
             prev = {r["name"]: r for r in self.store.all("SELECT name, kind, size, preview FROM symbols WHERE project_id=?", proj["id"])}
             for a in used[:40]:
-                name, off = syms.name_at(a)
+                name, _off = syms.name_at(a)
                 r = prev.get(name)
                 desc = f"{r['kind']}, {r['size']} bytes" if r else "unknown size"
                 if r and r["preview"]:
@@ -2326,7 +3137,7 @@ class RomNetwork(Network):
             from .. import rea
 
             text = rea.inspect(binary, fn, syms, what)
-        except Exception as e:  # REA is optional: never turn a missing analyzer into a failed claim
+        except Exception as e:  # noqa: BLE001 REA is optional: never turn a missing analyzer into a failed claim
             text = f"(REA is not available: {e})"
         x = self.xrefs(proj)
         lines = [text, "", "### decomp.wtf's view", self._asm_text(fn, proj)]
@@ -2351,7 +3162,7 @@ class RomNetwork(Network):
             from .. import rea
 
             return rea.search(Path(proj["root"]) / cfg["rom"]["program"], query, self.symbols(proj["id"]))
-        except Exception as e:  # REA is optional
+        except Exception as e:  # noqa: BLE001 REA is optional
             syms = self.symbols(proj["id"])
             rows = [f"- symbol {s.name} at 0x{s.address:08X}" for s in syms.by_name.values() if query.lower() in s.name.lower()]
             funcs = self.store.all("SELECT name, vram FROM functions WHERE project_id=? AND name LIKE ? LIMIT 40",
@@ -2455,7 +3266,7 @@ class RomNetwork(Network):
         if off <= 0 or off >= fn["size"] or off % 2:
             raise NetworkError(f"0x{addr:08X} isn't inside {fn['name']} (0x{fn['vram']:08X}, {fn['size']} bytes)")
         head, tail = fn["target"][:off], fn["target"][off:]
-        cut = re.search(rf"^(?:_|\.L){addr:08X}:|^\t(?:thumb|arm)_func_start \w*{addr:08X}\b", fn["asm"], re.M)
+        cut = re.search(rf"^(?:_|\.L){addr:08X}:|^\t(?:thumb|arm)_func_start \w*{addr:08X}\b", fn["asm"], re.MULTILINE)
         asm_head, asm_tail = ((fn["asm"][:cut.start()], fn["asm"][cut.start():]) if cut else
                               (fn["asm"], f"\tthumb_func_start {new_name}\n@ split from {fn['name']}: see its assembly\n"))
         refs = json.loads(fn["relocs"])
@@ -2544,8 +3355,9 @@ class RomNetwork(Network):
         matched = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
         rewritten = {r["id"]: word.sub(new, r["matched_source"]) for r in matched}
         renamed_rows = [dict(r) | {"name": new if r["name"] == old else r["name"]} for r in matched]
-        header_for = lambda fn: changed.get(self._effective_unit(fn, units),
-                                            current_ctx[self._effective_unit(fn, units)]["header"])
+        def header_for(fn):
+            return changed.get(self._effective_unit(fn, units),
+                               current_ctx[self._effective_unit(fn, units)]["header"])
         self._sym_override[proj["id"]] = trial
         try:
             broken = self.regression_test(proj, None, sources=rewritten, only=renamed_rows, header_for=header_for)
@@ -2584,6 +3396,11 @@ class RomNetwork(Network):
 
         proj = self._project(slug)
         cfg = self.cfg(proj)
+        # A host's project is the room's truth: making it a member of a room (a host testing its own invite with its
+        # own copy of the game) takes the room down. A member joins with its own project.
+        if slug in self.rooms or (cfg.get("collab") or {}).get("open"):
+            raise NetworkError(f"{slug} is set up as a room host on this computer: a host project doesn't join a room "
+                               "as a member. Share it and let someone else join, or stop sharing it first.")
         cfg["link"] = info
         with self.store.tx() as db:
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
@@ -2595,18 +3412,26 @@ class RomNetwork(Network):
 
     def restore_links(self) -> None:
         for p in self.store.all("SELECT slug, config FROM projects"):
-            info = json.loads(p["config"]).get("link")
-            if info and p["slug"] not in self.links:
+            cfg = json.loads(p["config"])
+            info = cfg.get("link")
+            if not info:
+                continue
+            if (cfg.get("collab") or {}).get("open"):
+                # An older build let a host join its own room; that membership is not one. The project stays the
+                # room's host and the room can be shared again.
+                cfg.pop("link", None)
+                with self.store.tx() as db:
+                    db.execute("UPDATE projects SET config=? WHERE slug=?", (json.dumps(cfg), p["slug"]))
+                continue
+            if p["slug"] not in self.links:
                 self.link_project(p["slug"], info)
 
     def unlink(self, slug: str) -> None:
         link = self.links.pop(slug, None)
         if link is not None:
             link.stop()
-            try:
+            with contextlib.suppress(NetworkError):
                 link._req("POST", "/collab/leave", {})
-            except NetworkError:
-                pass
         proj = self._project(slug)
         cfg = self.cfg(proj)
         cfg.pop("link", None)
@@ -2749,10 +3574,8 @@ class RomNetwork(Network):
 
     @staticmethod
     def _report(link, agent, name, source, score) -> None:
-        try:
+        with contextlib.suppress(NetworkError):
             link.call("/collab/best", agent, function=name, source=source, score=score)
-        except NetworkError:
-            pass
 
     def apply_reported_best(self, slug: str, name: str, score: int, source: str, agent: Agent) -> None:
         """Host side: a room member's better attempt, as they report it (their own compile scored it)."""
@@ -2875,23 +3698,38 @@ class RomNetwork(Network):
                                                   time.time(), ""))
 
     def apply_remote_layout(self, slug: str, functions: list[dict], symbols: list[dict]) -> None:
-        """Mirror the room's splits and names. The host already regression-tested them on the same ROM."""
+        """Mirror the room's splits and names. The host already regression-tested them on the same ROM.
+
+        A big room sends every function and symbol on its first sync (and after a rename or split): tens of thousands
+        of each, most unchanged. The lookups below are indexed and the writes batched, so the first sync of a
+        70,000-function room lands in seconds instead of grinding through a scan per row."""
         proj = self._project(slug)
         pid = proj["id"]
-        local = {r["vram"]: r for r in self.store.all("SELECT * FROM functions WHERE project_id=?", pid)}
+        local = {r["vram"]: {"id": r["id"], "name": r["name"], "size": r["size"], "status": r["status"],
+                             "unit": r["unit"], "vram": r["vram"]}
+                 for r in self.store.all("SELECT id,name,size,status,unit,vram FROM functions "
+                                         "WHERE project_id=? AND vram IS NOT NULL", pid)}
+        starts = sorted(local)
         for f in sorted(functions, key=lambda f: f["vram"]):
-            if f["vram"] in local:
+            vram = int(f["vram"])
+            if vram in local:
                 continue
-            owner = next((r for r in local.values() if r["vram"] < f["vram"] < r["vram"] + r["size"]), None)
-            if owner is None or owner["status"] == "matched":
+            i = bisect.bisect_right(starts, vram) - 1
+            owner = local.get(starts[i]) if i >= 0 else None
+            if owner is None or not (owner["vram"] < vram < owner["vram"] + owner["size"]):
+                continue  # no function of the guest's split contains this boundary: nothing to split
+            if owner["status"] == "matched":
                 continue
-            rf = self._parse_asm(owner["name"], owner["asm"], owner["unit"])
+            row = self.store.one("SELECT * FROM functions WHERE id=?", owner["id"])
+            if row is None:
+                continue
+            rf = self._parse_asm(row["name"], row["asm"], row["unit"])
             try:
-                head, tail = split.split_function(rf, f["vram"], f["name"])
+                head, tail = split.split_function(rf, vram, f["name"])
             except ValueError:
                 continue
             syms = self.symbols(pid)
-            syms.add(Symbol(f["name"], f["vram"], tail.size, "func"))
+            syms.add(Symbol(f["name"], vram, tail.size, "func"))
             th, tt = self._make_target(proj, head, syms), self._make_target(proj, tail, syms)
             with self.store.tx() as db:
                 db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL WHERE id=?",
@@ -2899,30 +3737,52 @@ class RomNetwork(Network):
                 db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset) "
                            "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (pid, f["name"], tail.size, len(tail.lines), tt.code,
                                                             json.dumps(tt.to_json()), self._asm_source(tail), None,
-                                                            owner["unit"], f["vram"], tail.rom))
+                                                            owner["unit"], vram, tail.rom))
                 db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
-                           (pid, f["name"], f["vram"], tail.size, "func"))
-            local = {r["vram"]: r for r in self.store.all("SELECT * FROM functions WHERE project_id=?", pid)}
+                           (pid, f["name"], vram, tail.size, "func"))
+            owner["size"] = head.size
+            local[vram] = {"id": None, "name": f["name"], "size": tail.size, "status": "open",
+                           "unit": owner["unit"], "vram": vram}
+            bisect.insort(starts, vram)
         self._xrefs.pop(pid, None)
         syms = self.symbols(pid)
+        changes: list[tuple[str, dict]] = []
         for sym in symbols:
-            current, off = syms.name_at(sym["address"])
+            current, off = syms.name_at(int(sym["address"]))
             if off == 0 and current == sym["name"]:
                 continue
-            old = current if off == 0 else f"D_{sym['address']:08X}"
-            word = re.compile(rf"\b{re.escape(old)}\b")
-            with self.store.tx() as db:
+            changes.append((current if off == 0 else f"D_{int(sym['address']):08X}", sym))
+        if not changes:
+            return
+        with self.store.tx() as db:
+            for old, sym in changes:
                 db.execute("DELETE FROM symbols WHERE project_id=? AND (name=? OR name=?)", (pid, old, sym["name"]))
                 db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
-                           (pid, sym["name"], sym["address"], sym["size"], sym["kind"]))
-                db.execute("UPDATE functions SET name=? WHERE project_id=? AND vram=?", (sym["name"], pid, sym["address"]))
-                for r in db.execute("SELECT id, matched_source, best_source FROM functions WHERE project_id=? AND "
-                                    "(matched_source IS NOT NULL OR best_source IS NOT NULL)", (pid,)).fetchall():
-                    db.execute("UPDATE functions SET matched_source=?, best_source=? WHERE id=?",
-                               (word.sub(sym["name"], r["matched_source"]) if r["matched_source"] else None,
-                                word.sub(sym["name"], r["best_source"]) if r["best_source"] else None, r["id"]))
-            self._syms.pop(pid, None)
-            syms = self.symbols(pid)
+                           (pid, sym["name"], int(sym["address"]), sym["size"], sym["kind"]))
+                db.execute("UPDATE functions SET name=? WHERE project_id=? AND vram=?", (sym["name"], pid, int(sym["address"])))
+        # Renamed symbols have to read the same in the findings already written here (matched and best sources).
+        # One pass over each source, replacing every identifier the room renamed, instead of a pass per rename.
+        renamed = {old: sym["name"] for old, sym in changes if old != sym["name"]}
+        if renamed:
+            rows = self.store.all("SELECT id, matched_source, best_source FROM functions WHERE project_id=? AND "
+                                  "(matched_source IS NOT NULL OR best_source IS NOT NULL)", pid)
+            updates = []
+            for r in rows:
+                matched = self._sub_names(r["matched_source"], renamed)
+                best = self._sub_names(r["best_source"], renamed)
+                if matched != r["matched_source"] or best != r["best_source"]:
+                    updates.append((matched, best, r["id"]))
+            if updates:
+                with self.store.tx() as db:
+                    db.executemany("UPDATE functions SET matched_source=?, best_source=? WHERE id=?", updates)
+        self._syms.pop(pid, None)
+
+    @staticmethod
+    def _sub_names(text: str | None, renamed: dict[str, str]) -> str | None:
+        """`text` with every identifier the room renamed replaced (words only, so aa_b does not hit aa_bc)."""
+        if not text:
+            return text
+        return re.sub(r"[A-Za-z_][A-Za-z0-9_]*", lambda m: renamed.get(m.group(0), m.group(0)), text)
 
     # ------------------------------------------------------------------ export
 
@@ -3006,14 +3866,14 @@ class RomNetwork(Network):
             if not path.is_file() or path.stat().st_size > 256 * 1024 * 1024:
                 return rom
             picked = detect.identify(path, name)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return rom
         if picked.platform not in X86_PLATFORMS:
             return rom
         try:
             from ..rom import elfexe
             image = (elfexe if picked.platform == "linux" else pe).read(picked.data, picked.filename)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return rom
         changed = False
         for key in ("language_guess", "compiler_version", "build_label", "matchable", "compiler_guess"):
@@ -3043,7 +3903,7 @@ class RomNetwork(Network):
                 rom["suggested_flags"], rom["flag_evidence"] = suggestion["flags"], suggestion["evidence"]
                 rom["flag_style"] = suggestion["style"]
                 changed = True
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
         if changed:
             cfg["rom"] = rom
@@ -3064,7 +3924,7 @@ class RomNetwork(Network):
         agg = self.store.one(
             "SELECT COUNT(*) AS total, SUM(status='matched') AS matched, SUM(size) AS bytes, "
             "SUM(CASE WHEN status='matched' THEN size ELSE 0 END) AS matched_bytes, SUM(attempts) AS attempts, "
-            "SUM(hits>0) AS traced, SUM(hits) AS hits "
+            "SUM(hits>0) AS traced, SUM(hits) AS hits, COALESCE(SUM(status='reconstructed'), 0) AS reconstructed "
             "FROM functions WHERE project_id=? AND status!='library'", proj["id"])
         lib = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='library'",
                              proj["id"])["n"]
@@ -3109,6 +3969,11 @@ class RomNetwork(Network):
             "context_version": self._context(proj["id"])["version"],
             "folder": proj["root"],
             "export": cfg.get("export"),
+            "reconstruction": {"folder": "recovered", "files": agg["reconstructed"] or 0,
+                               "recovered": agg["matched"] or 0, "matches": agg["matched"] or 0,
+                               "reconstructed": agg["reconstructed"] or 0,
+                               "pending": max(0, (agg["total"] or 0) - (agg["matched"] or 0)
+                                              - (agg["reconstructed"] or 0))},
             "exportable": cfg.get("platform", "n64") in ("n64", "psx", "ps2", "gba", *X86_PLATFORMS),
             "debug": cfg.get("debug"),
             "binary": cfg.get("rom", {}).get("program") if cfg.get("platform") in X86_PLATFORMS else None,
@@ -3124,7 +3989,6 @@ class RomNetwork(Network):
             "SUM(attempts) AS attempts, SUM(abandons) AS releases FROM functions WHERE project_id=?", proj["id"])
         notes = self.store.one("SELECT COUNT(*) AS n FROM notes WHERE project_id=?", proj["id"])["n"]
         fmt = target.get("format") or "target"
-        arch = target.get("architecture") or "unknown"
         return {
             "slug": proj["slug"], "title": proj["name"], "description": proj["description"],
             "kind": "analysis", "platform": "rea",
@@ -3136,7 +4000,11 @@ class RomNetwork(Network):
                          "proprietary": False, "supported": True, "wsl": False, "why": None},
             "analysis": {"target": target, "counts": cfg.get("counts") or {}, "segments": cfg.get("segments") or [],
                          "provider": cfg.get("provider") or "", "notes": notes,
-                         "artifact": cfg.get("artifact") or {}, "children": cfg.get("children") or []},
+                         "artifact": cfg.get("artifact") or {}, "children": cfg.get("children") or [],
+                         "features": [self._feature_summary(f) for f in cfg.get("features") or []
+                                      if isinstance(f, dict)],
+                         "features_traceable": target.get("tool") == "analyze_javascript_application",
+                         "reconstruction": cfg.get("reconstruction") or self._adopt_binary_tier(proj, cfg)},
             "entries": (cfg.get("artifact") or {}).get("entries"),
             "files": (cfg.get("artifact") or {}).get("files"),
             "source": cfg.get("source") or None,
@@ -3154,7 +4022,8 @@ class RomNetwork(Network):
         if slug in self.links:
             link = self.links[slug]
             return {"role": "guest", "host": link.url, "member": link.member, "error": link.error,
-                    "members": link.members, "connected": time.time() - link.last_ok < 15}
+                    "members": link.members, "syncing": link.syncing,
+                    "connected": link.syncing or time.time() - link.last_ok < 15}
         if slug in self.rooms:
             return {"role": "host", "members": self.rooms[slug].members()}
         return None
@@ -3330,7 +4199,7 @@ class RomNetwork(Network):
 
         def change(cfg):
             items = [n for n in cfg.get("priority", []) if n != fn["name"]]
-            cfg["priority"] = ([fn["name"]] + items) if on else items
+            cfg["priority"] = ([fn["name"], *items]) if on else items
         return self._update_cfg(slug, change)["priority"]
 
     def claim_row(self, agent: Agent, project: str | None = None, function: str | None = None, strategy: str = "easiest"):
@@ -3406,7 +4275,7 @@ class RomNetwork(Network):
                 job = self.twins.full_pass(slug)
                 state["twins"] = job.matched
                 state["matched"] += job.matched
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logging.getLogger("decomp.wtf").info("autopilot twins: %s", e)
         state["phase"] = "drafts"
         ids = [fid for fid in ids if (r := self.store.one("SELECT status FROM functions WHERE id=?", fid)) and r["status"] == "open"]
@@ -3417,7 +4286,7 @@ class RomNetwork(Network):
                 return
             try:
                 outcome = try_one(agent, proj, fid)
-            except Exception:  # one odd function must not stop the rest
+            except Exception:  # noqa: BLE001 one odd function must not stop the rest
                 outcome = "fail"
             state["tried"] += 1
             if outcome in ("match", "near"):
@@ -3560,9 +4429,15 @@ class RomNetwork(Network):
             meta = json.loads(fn["meta"] or "{}")
             return {"name": fn["name"], "vram": fn["vram"], "rom_offset": 0, "size": fn["size"],
                     "insns": 0, "status": fn["status"], "best": fn["best_score"], "asm": "",
-                    "source": fn["matched_source"] or fn["best_source"], "source_kind": "analysis" if fn["matched_source"] else None,
+                    "source": ((fn["best_source"] if meta.get("reconstructed") else None)
+                               or fn["matched_source"] or fn["best_source"]),
+                    "source_kind": ("reconstructed" if meta.get("reconstructed") else
+                                    "analysis" if fn["matched_source"] else None),
                     "scores": [], "notes": [dict(n) for n in notes], "calls": [], "called_by": [],
-                    "kind": meta.get("kind") or "procedure", "address": meta.get("address") or 0}
+                    "kind": meta.get("kind") or "procedure", "address": meta.get("address") or 0,
+                    "path": meta.get("path") or "", "origin": meta.get("origin") or "",
+                    "verified": bool(meta.get("verified")), "reconstructed": bool(meta.get("reconstructed")),
+                    "map": meta.get("map") or ""}
         attempts = self.store.all(
             "SELECT t.score, t.created_at, a.name AS agent FROM attempts t LEFT JOIN agents a ON a.id=t.agent_id "
             "WHERE t.function_id=? ORDER BY t.id", fn["id"])
@@ -3581,8 +4456,9 @@ class RomNetwork(Network):
             "insns": fn["n_insns"], "status": fn["status"], "best": fn["best_score"],
             "asm": self._asm_text(fn, proj),
             "source": fn["matched_source"] or fn["best_source"] or (latest["source"] if latest else None) or fn["seed"],
-            "source_kind": "matched" if fn["matched_source"] else "best" if fn["best_source"] else
-                           "latest" if latest else "draft" if fn["seed"] else None,
+            "source_kind": ("reconstructed" if fn["status"] == "reconstructed" and fn["best_source"] else
+                            "matched" if fn["matched_source"] else "best" if fn["best_source"] else
+                            "latest" if latest else "draft" if fn["seed"] else None),
             "scores": [{"score": a["score"], "t": a["created_at"], "agent": a["agent"]} for a in attempts],
             "notes": [dict(n) for n in notes],
             "calls": [syms.label(a) for a in sorted(x["calls"].get(fn["vram"], ()))],

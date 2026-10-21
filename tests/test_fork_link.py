@@ -8,7 +8,6 @@ link uses (the compiled one for a Matching file, the original's otherwise); buil
 """
 
 import hashlib
-import json
 import shutil
 import subprocess
 import sys
@@ -165,7 +164,7 @@ def test_a_linked_file_must_keep_building_the_same_game(fork):
 
 
 def test_nothing_unfinished_is_linked(fork):
-    net, slug, agent, fp = fork
+    net, slug, _agent, fp = fork
     res = net.forks.link(slug, log=lambda *_: None)
     assert res["linked"] == [] and fp.link_states()["src/math.c"][0] == "NonMatching"
 

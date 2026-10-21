@@ -32,7 +32,8 @@ def net(tmp_path):
 
 
 def test_names_as_agents_write_them(net):
-    find = lambda n: net._function(n, "game")["name"]
+    def find(n):
+        return net._function(n, "game")["name"]
     assert find("fn_1_17958@mdsingdll/REL/mdsingdll/mdsing") == "fn_1_17958"  # @unit on a name that doesn't repeat
     assert find("fn_1_8CE4") == "fn_1_8CE4@mdsingdll/REL/mdsingdll/mdsing"  # the other one has no source file
     assert find("fn_1_16F0@mdsing") == "fn_1_16F0@mdsingdll/REL/mdsingdll/mdsing"

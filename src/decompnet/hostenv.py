@@ -106,9 +106,8 @@ def local_path(text: str) -> Path:
     text = text.strip().strip('"').strip("'")
     if runtime() == "wsl" and (p := _from_windows(text)) is not None:
         return p
-    if runtime() == "docker" and (host_home := os.environ.get("DECOMP_HOST_HOME")):
-        if text == "~" or text.startswith("~/"):
-            return Path(host_home + text[1:])
+    if runtime() == "docker" and (host_home := os.environ.get("DECOMP_HOST_HOME")) and (text == "~" or text.startswith("~/")):
+        return Path(host_home + text[1:])
     return Path(text).expanduser()
 
 
@@ -136,7 +135,7 @@ def open_url(url: str) -> bool:
             return False
     try:
         return webbrowser.open(url)
-    except Exception:  # no browser at all (a server)
+    except Exception:  # noqa: BLE001 no browser at all (a server)
         return False
 
 
@@ -154,7 +153,7 @@ def open_folder(path: Path) -> str | None:
                          stderr=subprocess.DEVNULL, start_new_session=True)  # explorer.exe always exits with 1
         return None
     if sys.platform == "win32":
-        os.startfile(str(path))  # noqa: S606 (opening the user's own folder)
+        os.startfile(str(path))
     elif sys.platform == "darwin":
         subprocess.Popen(["open", str(path)])
     else:

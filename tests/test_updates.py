@@ -139,7 +139,7 @@ def test_update_api(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".decomp").mkdir(parents=True)
     net = RomNetwork(home / ".decomp" / "decomp.db", home)
-    mcp, manager, security = build(net, home / ".decomp", 6498, "sec")
+    mcp, _manager, security = build(net, home / ".decomp", 6498, "sec")
     client = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"),
                         base_url="http://127.0.0.1:6498")
     assert client.get("/api/update").status_code == 401  # the GUI's secret, as everywhere

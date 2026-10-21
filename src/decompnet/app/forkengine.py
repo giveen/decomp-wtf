@@ -21,7 +21,7 @@ import subprocess
 import threading
 import time
 from collections import defaultdict
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
 
 from .. import similarity, toolchains
@@ -34,16 +34,17 @@ from ..textedit import replace_once
 
 _REPO = re.compile(r"^(https://(github\.com|gitlab\.com|codeberg\.org|git\.[\w.-]+)/[\w.-]+/[\w.-]+?)(\.git)?/?$")
 # A match has to come from C/C++: no inline assembly, asm functions, asm includes or embedded binaries.
-_CHEAT = re.compile(r"\b(__asm__|__asm|asm|_asm)\b|INCLUDE_ASM|GLOBAL_ASM|INCLUDE_RODATA|\.incbin|#\s*include\s*[\"<][^\">]*\.(s|S|asm|bin|inc\.c)[\">]")
+_CHEAT = re.compile(r"\b(__asm__|__asm|asm|_asm)\b|INCLUDE_ASM|GLOBAL_ASM|INCLUDE_RODATA|\.incbin"
+                    r"|#\s*include\s*[\"<][^\">]*\.(s|S|asm|bin|inc\.c)[\">]")
 
 
 # `register int x asm("r4");` binds a variable to a register: an accepted matching technique (pret's GBA
 # projects use it), not assembly code, so it doesn't count as inline asm.
-_REGVAR = re.compile(r"\b(?:asm|__asm__|__asm)\s*\(\s*\"\$?[a-z]{1,2}\d{0,2}\"\s*\)", re.I)
+_REGVAR = re.compile(r"\b(?:asm|__asm__|__asm)\s*\(\s*\"\$?[a-z]{1,2}\d{0,2}\"\s*\)", re.IGNORECASE)
 
 
 def _strip_comments(code: str) -> str:
-    return _REGVAR.sub(" ", re.sub(r"//[^\n]*|/\*.*?\*/", " ", code, flags=re.S))
+    return _REGVAR.sub(" ", re.sub(r"//[^\n]*|/\*.*?\*/", " ", code, flags=re.DOTALL))
 
 
 def _slug(text: str) -> str:
@@ -149,7 +150,7 @@ _ASM_KEYS = ("asm_twin", "asm_code")  # meta saying a function is hand-written a
 _ASM_DEF = re.compile(r"\s*(?:(?:static|inline|extern)\s+)*asm\b")
 # a source file that includes another source file: Mario Party 6's REL runtime.c files are one line,
 # #include "src/Runtime.PPCEABI.H/runtime.c" (its asm helpers, which every module links a copy of)
-_SOURCE_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+\.(?:c|cc|cp|cpp))"', re.M)
+_SOURCE_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+\.(?:c|cc|cp|cpp))"', re.MULTILINE)
 _PRAGMA = re.compile(r"^#\s*pragma\b")
 
 
@@ -162,7 +163,7 @@ def _around(source: str, span: tuple[int, int], file_text: str, rel: str) -> tup
     clean = csource._blank(source)
 
     def lines(lo: int, hi: int) -> list[str]:
-        return [real.strip() for real, c in zip(source[lo:hi].splitlines(), clean[lo:hi].splitlines()) if c.strip()]
+        return [real.strip() for real, c in zip(source[lo:hi].splitlines(), clean[lo:hi].splitlines(), strict=False) if c.strip()]
 
     includes, before, after, other = [], [], [], []
     for ln in lines(0, span[0]):
@@ -216,10 +217,10 @@ def _type_blocks(text: str) -> list[tuple[set[str], str]]:
     """The file-scope type definitions of a C file: (the names they define, their text)."""
     clean = csource._blank(text)
     out, i = [], 0
-    pattern = re.compile(r"^[ \t]*(typedef\b|struct\s+\w+\s*\{|union\s+\w+\s*\{|enum\s*\w*\s*\{)", re.M)
+    pattern = re.compile(r"^[ \t]*(typedef\b|struct\s+\w+\s*\{|union\s+\w+\s*\{|enum\s*\w*\s*\{)", re.MULTILINE)
     depth_at = []
     depth = 0
-    for k, c in enumerate(clean):  # depth before each character
+    for _, c in enumerate(clean):  # depth before each character
         depth_at.append(depth)
         depth += (c == "{") - (c == "}")
     for m in pattern.finditer(clean):
@@ -246,7 +247,7 @@ def _type_blocks(text: str) -> list[tuple[set[str], str]]:
 def _file_scope_lines(text: str) -> list[str]:
     """The lines of a C file outside every function body and struct (brace depth 0), stripped."""
     clean, depth, out = csource._blank(text), 0, []
-    for real, c in zip(text.splitlines(), clean.splitlines()):
+    for real, c in zip(text.splitlines(), clean.splitlines(), strict=False):
         if depth == 0 and c.strip() and "{" not in c and "}" not in c:
             out.append(real.strip())
         depth = max(0, depth + c.count("{") - c.count("}"))
@@ -281,7 +282,7 @@ def _with_includes(text: str, includes: list[str], prelude: str = "") -> str:
     if not includes and not prelude:
         return text
     last = None
-    for m in re.finditer(r"^[ \t]*#\s*include\b[^\n]*\n", text, re.M):
+    for m in re.finditer(r"^[ \t]*#\s*include\b[^\n]*\n", text, re.MULTILINE):
         last = m
     block = "".join(ln + "\n" for ln in includes) + (prelude.rstrip("\n") + "\n\n" if prelude else "")
     return text[:last.end()] + block + text[last.end():] if last else block + text
@@ -546,7 +547,8 @@ class ForkEngine:
                 ok, tail = fp.verify(log=log)
                 diff = scratch_dtk._differing(fp.root, manifest["version"], tail) or []
                 result = {"identical": ok, "detail": "identical" if ok else
-                          f"{len(diff)} files differ: {', '.join(diff[:8])}" if diff else (tail.strip().splitlines() or ["the build failed"])[-1][-300:]}
+                          f"{len(diff)} files differ: {', '.join(diff[:8])}" if diff
+                          else (tail.strip().splitlines() or ["the build failed"])[-1][-300:]}
         manifest["rebuild"] = result | {"t": time.time()}
         (fp.root / ".decomp.wtf.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return result
@@ -774,7 +776,7 @@ class ForkEngine:
             return ""
         try:
             return datadiff.render(datadiff.compare(unit.target, unit.base), max_rows)
-        except Exception as e:  # an object pyelftools can't read: say so rather than fail the tool
+        except Exception as e:  # noqa: BLE001 an object pyelftools can't read: say so rather than fail the tool
             return f"(couldn't compare the data: {e})"
 
     def file_status(self, slug: str, path: str) -> str:
@@ -841,10 +843,8 @@ class ForkEngine:
 
         def run() -> None:
             while True:
-                try:
+                with suppress(Exception):  # a background tidy-up: the next match tries again
                     self.link(slug, log=lambda *_: None, agent=agent)
-                except Exception:  # a background tidy-up: the next match tries again
-                    pass
                 with self._mlock:
                     if not state["again"]:
                         state["running"] = False
@@ -894,7 +894,7 @@ class ForkEngine:
     def code_without_files(self, slug: str, rep: dict | None = None) -> dict:
         """What start_files would do: {"create": [source paths of listed files that don't exist],
         "split": [(module, source path, start, end, functions)]}."""
-        proj, fp, cfg = self.get(slug)
+        _proj, fp, cfg = self.get(slug)
         mods = self._modules(fp, cfg)
         src = fp.src_dir()
         if rep is None:
@@ -1160,7 +1160,7 @@ class ForkEngine:
     def uncovered(self, slug: str) -> dict | None:
         """{"stretches", "functions"} without a source file, from the last measurement (a project measured by an
         older decomp.wtf: from its saved report)."""
-        proj, fp, cfg = self.get(slug)
+        _proj, fp, cfg = self.get(slug)
         if "uncovered" in cfg:
             return cfg["uncovered"]
         try:
@@ -1184,10 +1184,8 @@ class ForkEngine:
     def _save_index(self, proj, fp: ForkProject) -> None:
         with self._ilock:
             snapshot = dict(self._index.get(proj["id"], {}))
-        try:
+        with suppress(OSError):
             (fp.root / STATE / "index.json").write_text(json.dumps(snapshot), encoding="utf-8")
-        except OSError:
-            pass
 
     def _remember(self, proj, fp: ForkProject, unit, d) -> None:
         if unit.target is None or not unit.target.exists():
@@ -1263,7 +1261,7 @@ class ForkEngine:
         return out[:top]
 
     def find_similar(self, slug: str, function: str, limit: int = 5) -> str:
-        proj, fp, cfg = self.get(slug)
+        proj, fp, _cfg = self.get(slug)
         fn = self._fn(slug, function)
         hits = self.similar(proj, fp, fn, top=max(1, min(int(limit), 15)))
         covered = len(self._index_of(proj, fp))
@@ -1600,7 +1598,7 @@ class ForkEngine:
                    f"{percent_text(d.match_percent)} match")
             asm = d.target_asm().splitlines()
             if len(asm) > 500:
-                asm = asm[:500] + [f"... ({len(asm) - 500} more instructions)"]
+                asm = [*asm[:500], f"... ({len(asm) - 500} more instructions)"]
             lines += [f"current state: {pct}", "", "### Target assembly", "```asm", *asm, "```"]
             if d.literals:
                 lines += ["", d.literals_note()]
@@ -1656,7 +1654,7 @@ class ForkEngine:
         one's when the names can be swapped."""
         try:
             twin_id = self.net.twins.twin_of(proj, fn["id"])
-        except Exception:
+        except Exception:  # noqa: BLE001
             return []
         if twin_id is None:
             return []
@@ -1791,21 +1789,17 @@ class ForkEngine:
 
     @staticmethod
     def _follow(link) -> None:
-        try:
+        with suppress(NetworkError):
             link.sync()
-        except NetworkError:
-            pass
 
     @staticmethod
     def _report_best(link, agent: Agent, name: str, source: str, score: int) -> None:
-        try:
+        with suppress(NetworkError):
             link.call("/collab/best", agent, function=name, source=source, score=score)
-        except NetworkError:
-            pass
 
     def _attempt(self, agent: Agent, slug: str, function: str, source: str, keep: bool = True, prelude: str = "",
                  quiet: int | None = None) -> dict:
-        proj, fp, cfg = self.get(slug)
+        proj, fp, _cfg = self.get(slug)
         fn = self._fn(slug, function)
         meta = self._meta(fn)
         if len(source) > 64 * 1024:
@@ -1853,7 +1847,7 @@ class ForkEngine:
                 protected = {n for n, pct in (self._last_scores(proj, unit) or {}).items()
                              if n != symbol and n not in held and pct is not None and pct >= 100}
                 was_matched = fn["status"] == "matched"
-            hit, old_span = self._find(before, names)
+            _hit, old_span = self._find(before, names)
             pre, post = "".join(ln + "\n" for ln in before_lines), "".join(ln + "\n" for ln in after_lines)
             if old_span:
                 lo, hi = old_span
@@ -2028,10 +2022,8 @@ class ForkEngine:
                                     fn["id"], agent.id)
         if (fn["best_source"] and fn["status"] != "matched" and latest and latest["score"] is not None
                 and fn["best_score"] is not None and latest["score"] > fn["best_score"]):
-            try:  # leave the file at its best state for the next agent
+            with suppress(NetworkError):  # leave the file at its best state for the next agent
                 self.attempt(agent, slug, function, fn["best_source"])
-            except NetworkError:
-                pass
         return Network.release(self.net, agent, function, notes, slug)
 
     def read_file(self, slug: str, path: str, start: int = 1, count: int = 200) -> str:
@@ -2138,7 +2130,7 @@ class ForkEngine:
                     for x in symtab.iter_symbols() if symtab else ():
                         if x.name and x["st_info"]["type"] in ("STT_OBJECT", "STT_NOTYPE") and isinstance(x["st_shndx"], int):
                             index[x.name].append(unit.name)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 continue
         self._data_idx = (key, dict(index))
         return self._data_idx[1]
@@ -2182,7 +2174,7 @@ class ForkEngine:
                 if rx.search(line):
                     hits.append(f"{rel.as_posix()}:{i}: {line.strip()[:160]}")
                     if len(hits) >= 80:
-                        return "\n".join(hits + ["... (more matches; narrow the pattern)"])
+                        return "\n".join([*hits, "... (more matches; narrow the pattern)"])
         return "\n".join(hits) or "no matches"
 
     def edit_file(self, agent: Agent, slug: str, path: str, old: str, new: str, message: str) -> str:
@@ -2191,7 +2183,7 @@ class ForkEngine:
             if text.startswith(("✅", "⚠️")):
                 link.sync()
             return text
-        proj, fp, cfg = self.get(slug)
+        proj, fp, _cfg = self.get(slug)
         p = fp.safe_path(path, write=True)
         if not message.strip():
             raise NetworkError("give a short message explaining the change")
@@ -2265,7 +2257,8 @@ class ForkEngine:
             with self.net.store.tx() as db:
                 self.net._event(db, proj["id"], agent.id, "context", f"{rel}: {message.strip()[:120]}")
         if any(v is None for v in after.values()):
-            return f"⚠️ {rel} updated, but it still doesn't compile (it didn't before your edit either): fix it so its functions can be measured."
+            return (f"⚠️ {rel} updated, but it still doesn't compile (it didn't before your edit either): "
+                    f"fix it so its functions can be measured.")
         done = "".join(self._file_done(proj["slug"], proj, fp, u, after[u.name] or {}, agent) for u in units[:1])
         return f"✅ {rel} updated; every matched function still matches.{done}"
 
@@ -2360,7 +2353,7 @@ class ForkEngine:
 
     def function_diff(self, slug: str, name: str) -> dict:
         """objdiff's diff of the function as it is in the source tree now."""
-        proj, fp, cfg = self.get(slug)
+        _proj, fp, _cfg = self.get(slug)
         fn = self._fn(slug, name)
         meta = self._meta(fn)
         try:
@@ -2375,7 +2368,7 @@ class ForkEngine:
                 "score": None, "percent": _floor_pct(d.match_percent, d.matched), "problems": problems}
 
     def function_detail(self, slug: str, name: str) -> dict:
-        proj, fp, cfg = self.get(slug)
+        _proj, fp, _cfg = self.get(slug)
         fn = self._fn(slug, name)
         meta = self._meta(fn)
         unit = fp.unit(fn["unit"])

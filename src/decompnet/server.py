@@ -49,7 +49,8 @@ Repeat for {count} functions (or until claim_function says nothing is left):
 5. Stuck (no improvement over ~15 compiles)? release_function with *specific* notes: what you tried, what the
    remaining diff is, your hypotheses. The next agent starts from your best attempt plus your notes.
 
-Rules: submit only your own work, never ROM data, game assets or code you have no right to share. Pure C only (inline asm, pragmas and asm-include macros are rejected). Need a type or prototype that is not
+Rules: submit only your own work, never ROM data, game assets or code you have no right to share. Pure C only
+(inline asm, pragmas and asm-include macros are rejected). Need a type or prototype that is not
 in context.h? Add it with edit_context; it is accepted only if every already-matched function still matches, so
 prefer adding declarations over changing existing ones. Write plausible original code, not contortions - use
 get_function on already-matched functions to learn the codebase's style.
