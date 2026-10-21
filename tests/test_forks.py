@@ -103,6 +103,7 @@ def test_decomp_wtfs_own_tries_leave_no_claim_behind(fork):
     assert net.store.one("SELECT abandons FROM functions WHERE id=?", fn["id"])["abandons"] == fn["abandons"]
 
 
+@needs_tools
 def test_near_miss_gets_a_diff_and_release_restores_the_best(fork):
     net, slug, agent = fork
     root = Path(net.project_row(slug)["root"])

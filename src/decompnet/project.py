@@ -131,10 +131,10 @@ def build_target(root: Path, cfg: dict, log=print) -> None:
         src_path = root / src
         cc.include_dirs = (*cc.include_dirs, str(src_path.parent))
         log(f"building {out.relative_to(root)} from {src} with {cfg['compiler'].get('toolchain', 'cmd')}")
+        out.parent.mkdir(parents=True, exist_ok=True)  # a fresh checkout has no target/ yet: gcc can't create it
         res = compile_source(cc, "", src_path.read_text(errors="replace", encoding="utf-8"), trusted=True)
         if not res.ok:
             raise ProjectRejected(f"target build failed for {src}:\n{res.log}")
-        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(res.obj)
 
 
@@ -149,6 +149,8 @@ def import_project(store: Store, root: Path, log=print) -> int:
 
     objects = target_objects(root, cfg)
     hash_only = target.get("verification", "full") == "hash"
+    for obj in objects:
+        obj.parent.mkdir(parents=True, exist_ok=True)  # a fresh checkout has no target/ dir yet
     if "build_from" in target and not all(o.exists() for o in objects):
         build_target(root, cfg, log)
     elif "build" in target and not all(o.exists() for o in objects):

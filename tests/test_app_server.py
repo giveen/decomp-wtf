@@ -303,6 +303,7 @@ def test_a_project_that_cant_be_read_is_listed_with_the_reason(app, monkeypatch)
         db.execute("DELETE FROM projects WHERE slug='odd-game'")
 
 
+@needs_demo
 def test_the_api_agent_stays_within_a_small_local_context(app, monkeypatch):
     """A local llama.cpp model with a small context: the agent learns it from /props, trims older tool output to
     fit, and when the server still says the request is too long, trims harder and sends it again."""
