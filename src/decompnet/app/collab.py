@@ -14,6 +14,7 @@ tree as the room's truth: see forkroom.py.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
@@ -39,6 +40,11 @@ from . import forkroom
 NAME = re.compile(r"^[A-Za-z0-9_-]{1,24}$")
 MAX_BODY = 256 * 1024
 TUNNEL_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+# How far back a later sync re-reads layout changes: a row written while the host was reading its state table may
+# commit with a slightly older timestamp, and applying a name or a boundary twice costs nothing.
+LAYOUT_OVERLAP = 2.0
+SYNC_EVERY = 2.0      # seconds between syncs of a room that is keeping up
+BACKOFF_MAX = 60.0    # a room that keeps failing is retried at most this often
 
 
 def _hash(code: str) -> str:
@@ -219,7 +225,7 @@ class Room:
             return Agent(aid, name, member.name, True)
         return Agent(row["id"], name, member.name, True)
 
-    def state(self, e: int, a: int, ctx_version: int, member: Agent) -> dict:
+    def state(self, e: int, a: int, ctx_version: int, member: Agent, layout_at: float = 0.0) -> dict:
         """What changed since the guest's cursors: work product only, never ROM-derived data."""
         if self.fork:
             return self._fork_state(e, member)
@@ -244,11 +250,27 @@ class Room:
         out["best"] = [{"name": r["name"], "vram": r["vram"], "score": r["best_score"], "source": r["best_source"]} for r in best]
         last = net.store.one("SELECT MAX(t.id) AS m FROM attempts t JOIN functions f ON f.id=t.function_id WHERE f.project_id=?", pid)
         out["a"] = max(a, last["m"] or 0)
-        if first or kinds & {"rename", "split"}:
+        # The split and its names: everything on a member's first sync, then only the rows that changed since it
+        # last saw them. A rename used to re-send every function and symbol of the room for one new name (17 MB in
+        # a 70,000-function room), which is what made a busy room feel like it was never synced.
+        cutoff = time.time()
+        if layout_at <= 0:
             out["symbols"] = [dict(r) for r in net.store.all(
                 "SELECT name, address, size, kind FROM symbols WHERE project_id=?", pid) if not AUTO_NAME.match(r["name"])]
             out["functions"] = [dict(r) for r in net.store.all(
                 "SELECT name, vram, size FROM functions WHERE project_id=? ORDER BY vram", pid)]
+        else:
+            since = layout_at - LAYOUT_OVERLAP
+            changed_functions = net.store.all(
+                "SELECT name, vram, size FROM functions WHERE project_id=? AND changed_at>? ORDER BY vram", pid, since)
+            changed_symbols = net.store.all(
+                "SELECT name, address, size, kind FROM symbols WHERE project_id=? AND changed_at>? ORDER BY name",
+                pid, since)
+            if changed_functions:
+                out["functions"] = [dict(r) for r in changed_functions]
+            if changed_symbols:
+                out["symbols"] = [dict(r) for r in changed_symbols]
+        out["l"] = cutoff
         ctx = net._context(pid)
         if ctx["version"] != ctx_version:
             out["context"] = {"version": ctx["version"], "header": ctx["header"]}
@@ -349,7 +371,11 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         return {"name": member.name, "room": room.slug}
 
     def state(room, member, q):
-        return room.state(int(q.get("e") or 0), int(q.get("a") or 0), int(q.get("v") or 0), member)
+        try:
+            layout_at = float(q.get("l") or 0)
+        except ValueError:
+            layout_at = 0.0
+        return room.state(int(q.get("e") or 0), int(q.get("a") or 0), int(q.get("v") or 0), member, layout_at)
 
     def claim(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
@@ -511,16 +537,28 @@ class Link:
     def __init__(self, net, slug: str, url: str, room: str, token: str, member: str, client: httpx.Client | None = None):
         self.net, self.slug, self.url, self.room, self.token, self.member = net, slug, url.rstrip("/"), room, token, member
         self.client = client or httpx.Client(timeout=httpx.Timeout(60, connect=15))
-        self.cursor = {"e": 0, "a": 0, "v": 0}
+        cfg = json.loads(net.project_row(slug)["config"])
+        info = cfg.get("link") if isinstance(cfg.get("link"), dict) else {}
+        saved = info.get("cursor") if isinstance(info.get("cursor"), dict) else {}
+        # where this member got to last time: restarting the app then syncs only what it missed, not the whole room
+        self.cursor = {"e": int(saved.get("e") or 0), "a": int(saved.get("a") or 0),
+                       "v": int(saved.get("v") or 0), "l": float(saved.get("l") or 0.0)}
         self.claims: list[dict] = []
         self.members: list[dict] = []
         self.error = ""
         self.last_ok = 0.0
         self.syncing = False  # a sync is being applied: the room answered, so it isn't offline
+        self.sync_ms = 0
+        self.failures = 0     # syncs in a row that failed (the page counts down to the next try)
+        self.last_try = 0.0
+        self.next_try = 0.0
+        self.layout: dict | None = None  # what the last layout apply could and couldn't do here (see engine)
+        self._saved_cursor = 0.0
+        self._last_saved = dict(self.cursor)  # what the project has: an idle room writes nothing
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self.fork = bool(net.fork_slug(slug))  # a git source tree: follows the host's commits (forkroom.py)
-        self.head = (json.loads(net.project_row(slug)["config"]).get("link") or {}).get("head", "")
+        self.head = info.get("head", "")
 
     # -- transport
 
@@ -578,8 +616,26 @@ class Link:
                 # the room answered: applying the work (a big room's first sync) is not a lost connection
                 self.last_ok = time.time()
                 self.apply(st)
+                with contextlib.suppress(Exception):  # the work is applied; an unsaved cursor only costs a re-sync
+                    self._save_cursor()
             finally:
                 self.syncing = False
+
+    def _save_cursor(self, force: bool = False) -> None:
+        """Remember where this member got to (throttled: a sync every 2 s shouldn't write the project each time)."""
+        now = time.time()
+        if self.cursor == self._last_saved:
+            return
+        if not force and now - self._saved_cursor < 10:
+            return
+        self._saved_cursor = now
+
+        def change(cfg):  # one transaction, so a rename or an export saving the config at the same time isn't lost
+            info = cfg.get("link") if isinstance(cfg.get("link"), dict) else {}
+            info["cursor"] = dict(self.cursor)
+            cfg["link"] = info
+        self.net._update_cfg(self.slug, change)
+        self._last_saved = dict(self.cursor)
 
     def apply(self, st: dict) -> None:
         if self.fork:
@@ -589,7 +645,8 @@ class Link:
         pid = proj["id"]
         mine = f"{self.member}."
         if st.get("symbols") is not None or st.get("functions") is not None:
-            net.apply_remote_layout(slug, st.get("functions") or [], st.get("symbols") or [])
+            report = net.apply_remote_layout(slug, st.get("functions") or [], st.get("symbols") or [])
+            self.layout = self._merge_layout(self.layout, report)
         if st.get("context"):
             net.apply_remote_context(slug, st["context"]["header"], st["context"]["version"])
             self.cursor["v"] = st["context"]["version"]
@@ -606,6 +663,15 @@ class Link:
         self.claims = [c for c in st.get("claims") or [] if not (c["agent"] or "").startswith(mine)]
         self.members = st.get("members") or []
         self.cursor["e"], self.cursor["a"] = st.get("e", self.cursor["e"]), st.get("a", self.cursor["a"])
+        self.cursor["l"] = float(st.get("l") or self.cursor["l"])
+
+    @staticmethod
+    def _merge_layout(old: dict | None, new: dict) -> dict:
+        """What to show in the page. A delta that applied nothing new doesn't prove an earlier gap is gone, so the
+        earlier gaps stay until the room sends another split (the splits only ever move closer to each other)."""
+        if old and not sum(new.get("skipped", {}).values()):
+            return old
+        return new
 
     def _apply_fork(self, st: dict) -> None:
         """A git project's room: follow the host's commits, then mirror matches, notes, events, claims."""
@@ -644,20 +710,39 @@ class Link:
             forks.sync(self.slug, log=lambda *_: None)
         return bool(data)
 
-    def run(self, every: float = 2.0) -> None:
+    def run(self, every: float = SYNC_EVERY) -> None:
         def loop():
             while not self._stop.is_set():
-                try:
-                    self.sync()
-                except NetworkError:
-                    pass
-                except Exception as e:  # noqa: BLE001 keep syncing; show the problem in the GUI
-                    self.error = f"{type(e).__name__}: {e}"
-                self._stop.wait(every)
+                self._stop.wait(self._tick(every))
         threading.Thread(target=loop, daemon=True, name=f"link-{self.slug}").start()
+
+    def _tick(self, every: float = SYNC_EVERY) -> float:
+        """One sync attempt: record how long it took and how it went, and return the wait before the next one.
+
+        A room that keeps failing is retried less and less often (up to a minute) instead of every two seconds, and
+        the page counts down to the next try with the reason the last one failed."""
+        started = time.time()
+        try:
+            self.sync()
+            self.failures = 0
+            wait = every
+        except NetworkError as e:
+            self.failures += 1
+            self.error = self.error or str(e)
+            wait = min(BACKOFF_MAX, every * 2 ** min(self.failures, 5))
+        except Exception as e:  # noqa: BLE001 keep syncing; show the problem in the GUI
+            self.failures += 1
+            self.error = f"{type(e).__name__}: {e}"
+            wait = min(BACKOFF_MAX, every * 2 ** min(self.failures, 5))
+        self.sync_ms = int((time.time() - started) * 1000)
+        self.last_try = time.time()
+        self.next_try = self.last_try + wait
+        return wait
 
     def stop(self) -> None:
         self._stop.set()
+        with contextlib.suppress(Exception):  # a project that is already gone has nowhere to save to
+            self._save_cursor(force=True)
 
 
 def _hello(http: httpx.Client, link: str) -> tuple[str, str, dict]:

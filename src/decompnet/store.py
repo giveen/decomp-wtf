@@ -64,6 +64,8 @@ MIGRATIONS = [
     ("functions", "boost", "INTEGER NOT NULL DEFAULT 0"),      # claim order: >0 matching it matches that many twins
     ("functions", "hits", "INTEGER NOT NULL DEFAULT 0"),       # runtime coverage: times this function was seen
     ("functions", "trace_at", "REAL"),                         # last trace import that touched it
+    ("functions", "changed_at", "REAL"),                       # rooms: when its name or boundary last changed
+    ("symbols", "changed_at", "REAL"),                         # rooms: when the name at this address last changed
 ]
 
 
@@ -83,6 +85,9 @@ class Store:
         # by address: a room's sync looks functions up by vram (matches, notes, renames). Without this each lookup
         # scanned every function of the project, so a big room's first sync took minutes to apply.
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_vram ON functions(project_id, vram)")
+        # a room's later syncs send only what changed since the member last saw it (see collab.Room.state)
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_changed ON functions(project_id, changed_at)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_symbols_changed ON symbols(project_id, changed_at)")
         # the progress the GUI asks for every second (totals, the map's "anything new?"), answered from this narrow
         # index instead of reading every function's assembly and sources: 31 ms -> about 2 for 36,000 functions
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_progress ON functions(project_id, status, size, "

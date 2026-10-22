@@ -1346,7 +1346,8 @@ function renderHeader(ov) {
     pill.classList.toggle("off", room.role === "guest" && !room.connected);
     pill.innerHTML = room.role === "host" ? `<span class="dot ${online ? "on" : ""}"></span>Sharing · ${online} online`
       : /waiting for the host/i.test(room.error || "") ? `<span class="dot work"></span>Waiting to be let in`
-      : `<span class="dot ${room.connected ? "on" : "err"}"></span>${room.syncing ? "Syncing the room's work…" : room.connected ? `In a room as ${esc(room.member)}` : "Room offline"}`;
+      : `<span class="dot ${room.connected ? "on" : "err"}"></span>${room.syncing ? "Syncing the room's work…" : room.connected ? `In a room as ${esc(room.member)}`
+        : room.failures ? `Room offline · retry in ${Math.ceil(room.retry_in)}s` : "Room offline"}`;
     $("teamTabCount").textContent = members.length ? members.length : "";
   } else $("teamTabCount").textContent = "";
   $("agTabCount").textContent = w.n || "";
@@ -1616,12 +1617,20 @@ function renderGuest(box, room) {
   const people = members.map((m) => `<div class="line-item"><span class="dot ${m.online ? "on" : ""}"></span><div class="txt"><b>${esc(m.name)}${m.name === room.member ? " (you)" : ""}</b>
       <span>${m.agents && m.agents.length ? esc(m.agents.join(", ")) : "no agents yet"} · ${m.matched || 0} matched${m.working && m.working.length ? ` · on ${esc(m.working.slice(0, 3).join(", "))}` : ""}</span></div></div>`).join("");
   const syncing = !!room.syncing;
+  const last = room.last_sync == null ? "never"
+    : room.last_sync < 90 ? `${Math.max(0, Math.round(room.last_sync))}s ago`
+      : `${Math.round(room.last_sync / 60)} min ago`;
+  const skipped = (room.layout && room.layout.skipped) || {};
+  const missed = (skipped.no_owner || 0) + (skipped.matched || 0) + (skipped.unsplittable || 0);
+  const sample = (room.layout && room.layout.sample) || [];
+  const missedNote = missed ? `<div class="notice"><span>${missed} room function${missed === 1 ? "" : "s"} couldn't be applied here: the two splits differ${sample.length ? ` (${sample.map((s) => esc(s)).join(", ")}${missed > sample.length ? ", …" : ""})` : ""}. The room keeps them; this copy doesn't get those matches until its split matches the host's.</span></div>` : "";
   box.innerHTML = `<h2 class="pane-title">${waiting ? "Waiting for the host to let you in" : syncing ? "Syncing the room's work…" : room.connected ? "In a team room" : "The room is offline"}</h2>
     <p class="muted">${syncing ? `The host is sending the room's work: a big room's first sync takes a moment. Your agents start as soon as it lands.`
       : waiting ? `You asked to join as <b>${esc(room.member)}</b>. Your agents start working with the room as soon as the host lets you in.`
       : room.connected ? `You're <b>${esc(room.member)}</b>. Your agents claim functions through the room, so nobody does the same one twice; matches are checked and shared by the host.`
-      : `${esc(room.error || "Waiting for the host…")} Your agents wait and carry on when it's back.`}</p>
-    <dl class="facts"><div><dt>Host</dt><dd>${esc(room.host)}</dd></div><div><dt>Members</dt><dd>${members.length}</dd></div><div><dt>Online</dt><dd>${members.filter((m) => m.online).length}</dd></div></dl>
+      : `${esc(room.error || "Waiting for the host…")} ${room.failures ? `Retrying in ${Math.ceil(room.retry_in)}s;` : ""} your agents wait and carry on when it's back.`}</p>
+    <dl class="facts"><div><dt>Host</dt><dd>${esc(room.host)}</dd></div><div><dt>Last sync</dt><dd>${last}${room.sync_ms ? ` · ${room.sync_ms} ms` : ""}</dd></div><div><dt>Members</dt><dd>${members.length}</dd></div><div><dt>Online</dt><dd>${members.filter((m) => m.online).length}</dd></div></dl>
+    ${missedNote}
     ${people ? `<div class="setup-group"><h3>In the room</h3>${people}</div>` : ""}
     <div class="row"><button class="ghost" id="roomReconnect" type="button">${room.connected ? "The host shared a new link?" : "Reconnect with a new link"}</button><button class="ghost danger" id="roomLeave" type="button">Leave room</button></div>`;
   $("roomReconnect").onclick = openReconnect;
