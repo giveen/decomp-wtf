@@ -823,7 +823,11 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/function": (lambda s, r, d: net.function_detail(s, r.query_params.get("name", "")), ["GET"]),
         "/api/diff": (lambda s, r, d: net.function_diff(s, r.query_params.get("name", ""),
                                                         r.query_params.get("which", "latest")), ["GET"]),
-        "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/open": (p_open, ["POST"]),
+        "/api/compiler": (p_compiler, ["POST"]), "/api/compiler/preview":
+            (lambda s, r, d: net.preview_compiler(s, str(d.get("toolchain", "")), d.get("flags") or None), ["POST"]),
+        "/api/project/recheck": (lambda s, r, d: net.recheck_project(s), ["POST"]),
+        "/api/boundaries/repair": (lambda s, r, d: net.repair_boundaries(s), ["POST"]),
+        "/api/export": (p_export, ["POST"]), "/api/open": (p_open, ["POST"]),
         "/api/ide": (p_ide, ["POST"]),
         "/api/delete": (p_delete, ["POST"]), "/api/agents/manual": (p_manual, ["POST"]),
         "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]),

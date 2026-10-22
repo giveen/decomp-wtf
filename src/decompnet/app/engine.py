@@ -48,7 +48,7 @@ PLATFORM_STATUS = {"gc": "recommended", "wii": "recommended", "n64": "recommende
 # PC programs: split from the executable itself (pe.py, elfexe.py) and judged by the x86 matcher.
 X86_PLATFORMS = ("windows", "linux")
 # C++ drivers: the source is compiled as C++ (see toolchains.toml), and the UI and agent prompt say C++.
-CXX_TOOLCHAINS = ("gxx-", "clangxx-", "mingwxx-", "clang-clxx-")
+CXX_TOOLCHAINS = ("gxx-", "clangxx-", "mingwxx-", "clang-clxx-", "msvcxx-")
 # What imported APIs and strings usually mean. Hints, not proof: the report says which functions use them.
 SUBSYSTEM_HINTS = (
     ("render", ("d3d", "dxgi", "opengl", "vulkan", "glbind", "glclear", "glgen", "gltex", "glvertex",
@@ -76,7 +76,7 @@ def source_ext(toolchain: str) -> str:
 
 def cxx_toolchain(toolchain: str) -> str:
     """The C++ driver for a C toolchain on the same target, when there is one."""
-    for c, cpp in (("mingw-", "mingwxx-"), ("clang-cl-", "clang-clxx-"),
+    for c, cpp in (("mingw-", "mingwxx-"), ("clang-cl-", "clang-clxx-"), ("msvc-", "msvcxx-"),
                    ("gcc-linux-", "gxx-linux-"), ("clang-linux-", "clangxx-linux-")):
         if toolchain.startswith(c):
             return cpp + toolchain[len(c):]
@@ -117,6 +117,10 @@ COMPILERS = {
     "clang-cl-x86": "Windows games (32-bit x86), with LLVM's MSVC-compatible clang-cl",
     "clang-clxx-x86_64": "Windows C++ games (x86-64), with LLVM's MSVC-compatible clang-cl",
     "clang-clxx-x86": "Windows C++ games (32-bit x86), with LLVM's MSVC-compatible clang-cl",
+    "msvc-x86_64": "Windows games (x86-64), with the cl.exe on this machine",
+    "msvc-x86": "Windows games (32-bit x86), with the cl.exe on this machine",
+    "msvcxx-x86_64": "Windows C++ games (x86-64), with the cl.exe on this machine",
+    "msvcxx-x86": "Windows C++ games (32-bit x86), with the cl.exe on this machine",
     "gcc-2.7.2-kmc": "many third-party N64 games",
     "ido-7.1": "most later first-party N64 games",
     "ido-5.3": "early N64 games (1996-97)",
@@ -131,6 +135,8 @@ SHORT_NAMES = {"gcc-2.7.2-kmc": "KMC GCC 2.7.2", "ido-7.1": "IDO 7.1", "ido-5.3"
                "mingwxx-x86_64": "MinGW-w64 G++ (x86-64)", "mingwxx-x86": "MinGW-w64 G++ (x86)",
                "clang-cl-x86_64": "clang-cl (x86-64)", "clang-cl-x86": "clang-cl (x86)",
                "clang-clxx-x86_64": "clang-cl (x86-64, C++)", "clang-clxx-x86": "clang-cl (x86, C++)",
+               "msvc-x86_64": "MSVC cl (x86-64)", "msvc-x86": "MSVC cl (x86)",
+               "msvcxx-x86_64": "MSVC cl (x86-64, C++)", "msvcxx-x86": "MSVC cl (x86, C++)",
                "llvm-tools": "LLVM tools", "upx": "UPX", "rizin": "Rizin", "detect-it-easy": "Detect It Easy",
                **{k: short for k, (short, _use) in LINUX_COMPILERS.items()}}
 # CodeWarrior versions in the `mwcc` pack (GameCube, Wii) and the `mwccarm` pack (DS), for games started from scratch.
@@ -177,7 +183,8 @@ BATCH_INSNS = 48
 PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": ["gcc-2.7.2-psx", "gcc-2.8.1-psx"],
                       "ps2": ["ee-gcc-2.96"], "gba": ["agbcc"],
                       "windows": ["mingw-x86_64", "mingw-x86", "mingwxx-x86_64", "mingwxx-x86",
-                                  "clang-cl-x86_64", "clang-cl-x86", "clang-clxx-x86_64", "clang-clxx-x86"],
+                                  "clang-cl-x86_64", "clang-cl-x86", "clang-clxx-x86_64", "clang-clxx-x86",
+                                  "msvc-x86_64", "msvc-x86", "msvcxx-x86_64", "msvcxx-x86"],
                       "linux": list(LINUX_COMPILERS)}
 
 
@@ -987,7 +994,7 @@ class RomNetwork(Network):
         agg = self.store.one(
             "SELECT COUNT(*) AS total, COALESCE(SUM(status='matched'), 0) AS matched, "
             "COALESCE(SUM(status='reconstructed'), 0) AS reconstructed FROM functions "
-            "WHERE project_id=? AND status!='library'", project_id)
+            "WHERE project_id=? AND status NOT IN ('library', 'unmatchable')", project_id)
         total, matched = agg["total"] or 0, agg["matched"] or 0
         return {"files": agg["reconstructed"], "recovered": matched, "reconstructed": agg["reconstructed"],
                 "pending": max(0, total - matched - agg["reconstructed"]), "total": total, "matches": matched}
@@ -2067,7 +2074,7 @@ class RomNetwork(Network):
         tc = toolchains.get(toolchain)
         base_flags = flags or (_linux_flags(tc.flags, info.get("pie", False)) if linux else tc.flags)
         suggestion = buildinfo.infer_flags(
-            picked.data, compiler="MSVC" if toolchain.startswith("clang-cl") else "GNU", cxx=cxx,
+            picked.data, compiler="MSVC" if toolchain.startswith(("clang-cl", "msvc")) else "GNU", cxx=cxx,
             base_flags=base_flags, symbols=image.symbols, section_names=[s.name for s in image.sections])
         info["suggested_flags"] = suggestion["flags"]
         info["flag_evidence"] = suggestion["evidence"]
@@ -3265,6 +3272,139 @@ class RomNetwork(Network):
         return (f"✅ split: {fn['name']} is now {len(head.lines)} instructions; {new_name} at 0x{addr:08X} has "
                 f"{len(tail.lines)}. Continue with {fn['name']} (get_function shows its new assembly).")
 
+    def _last_mnemonic(self, proj, fn) -> str:
+        md = pe._md(self.cfg(proj).get("arch", "x86"))
+        md.detail = True
+        md.skipdata = True
+        last = ""
+        for ins in md.disasm(fn["target"], 0):
+            if ins.id:
+                last = ins.mnemonic
+        return last
+
+    def _merge_rows(self, agent: Agent, proj, prev, frag) -> int:
+        """Make `frag` (the contiguous piece right after `prev`) part of `prev`. Returns the new byte size."""
+        cfg = self.cfg(proj)
+        code = bytes(prev["target"]) + bytes(frag["target"])
+        lo = min(s["vram"] for s in cfg["segments"])
+        hi = max(s["vram"] + s["rom_end"] - s["rom_start"] for s in cfg["segments"])
+        md = pe._md(cfg.get("arch", "x86"))
+        md.detail = True
+        md.skipdata = True
+        lines, count, refs = pe._decode(code, prev["vram"], cfg.get("arch", "x86"), lo, hi, False, md)
+        asm = "\n".join([f"glabel {prev['name']}", *lines, f"endlabel {prev['name']}"])
+        now = time.time()
+        with self.store.tx() as db:
+            # The fragment's notes are about the same bytes: keep them on the function that now owns them.
+            db.execute("UPDATE notes SET function_id=? WHERE function_id=?", (prev["id"], frag["id"]))
+            db.execute("DELETE FROM attempts WHERE function_id=?", (frag["id"],))
+            db.execute("DELETE FROM claims WHERE function_id=?", (frag["id"],))
+            db.execute("DELETE FROM functions WHERE id=?", (frag["id"],))
+            db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
+                       "best_source=NULL, best_agent_id=NULL, changed_at=? WHERE id=?",
+                       (len(code), count, code, json.dumps([[r[0], r[1], r[2], r[3]] for r in refs]), asm, now,
+                        prev["id"]))
+            db.execute("UPDATE symbols SET size=?, changed_at=? WHERE project_id=? AND address=?",
+                       (len(code), now, proj["id"], prev["vram"]))
+            db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,changed_at) "
+                       "VALUES(?,?,?,?,?,?)", (proj["id"], prev["name"], prev["vram"], len(code), "func", now))
+            db.execute("DELETE FROM symbols WHERE project_id=? AND name=?", (proj["id"], frag["name"]))
+            self._event(db, proj["id"], agent.id, "merge", f"{frag['name']} → {prev['name']}")
+        self._xrefs.pop(proj["id"], None)
+        self._ops.pop(proj["id"], None)
+        return len(code)
+
+    def merge_function(self, agent: Agent, project: str | None, function: str, into: str = "") -> str:
+        """Put a fragment back into the function it belongs to (the reverse of split_function)."""
+        self._rom_only(project, "merge_function")
+        proj = self._project(project)
+        if self.cfg(proj).get("platform") not in X86_PLATFORMS:
+            raise NetworkError("merge_function is for PC programs: their 32-bit function boundaries are found by "
+                               "following the code, and an old import could have cut one into pieces")
+        fn = self._function(function, project)
+        prev = self._function(into, project) if into else self.store.one(
+            "SELECT * FROM functions WHERE project_id=? AND unit=? AND vram<? ORDER BY vram DESC LIMIT 1",
+            (proj["id"], fn["unit"], fn["vram"]))
+        if prev is None:
+            raise NetworkError(f"there is no function before {fn['name']} to merge it into")
+        if prev["id"] == fn["id"]:
+            raise NetworkError("a function can't be merged into itself")
+        if prev["unit"] != fn["unit"] or (prev["vram"] or 0) + (prev["size"] or 0) != fn["vram"]:
+            raise NetworkError(f"{fn['name']} doesn't directly follow {prev['name']} in the same section: "
+                               f"pass into= the function it is a piece of")
+        for row in (prev, fn):
+            if row["status"] == "matched":
+                raise NetworkError(f"{row['name']} is matched; merging would move a verified boundary")
+            if row["status"] != "open":
+                raise NetworkError(f"{row['name']} is {row['status']}, not open")
+        held = self.store.one("SELECT agent_id FROM claims WHERE function_id=?", fn["id"])
+        if held is not None and held["agent_id"] != agent.id:
+            raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(held['agent_id'])}")
+        size = self._merge_rows(agent, proj, prev, fn)
+        return (f"✅ merged: {fn['name']} is now part of {prev['name']} ({len(bytes(prev['target']))} + "
+                f"{len(bytes(fn['target']))} = {size} bytes, {prev['n_insns'] or 0} + {fn['n_insns'] or 0} "
+                f"instructions). Claim {prev['name']} to decompile the whole thing.")
+
+    def retire_function(self, agent: Agent, project: str | None, function: str, reason: str) -> str:
+        """Take a function that no C can match out of the queue for good (with the evidence why)."""
+        self._rom_only(project, "retire_function")
+        fn = self._function(function, project)
+        if fn["status"] == "matched":
+            raise NetworkError(f"{fn['name']} is matched; there is nothing to retire")
+        if fn["status"] == "unmatchable":
+            return f"{fn['name']} is already retired."
+        reason = (reason or "").strip()
+        if len(reason) < 10:
+            raise NetworkError("say why in a sentence (what you tried, and what in the target can't be produced): "
+                               "the next agent reads it instead of trying again")
+        held = self.store.one("SELECT agent_id FROM claims WHERE function_id=?", fn["id"])
+        if held is not None and held["agent_id"] != agent.id:
+            raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(held['agent_id'])}")
+        meta = json.loads(fn["meta"] or "{}")
+        meta["unmatchable"] = reason
+        with self.store.tx() as db:
+            db.execute("UPDATE functions SET status='unmatchable', meta=?, changed_at=? WHERE id=?",
+                       (json.dumps(meta), time.time(), fn["id"]))
+            db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
+            db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                       (fn["project_id"], fn["id"], agent.id, f"retired as unmatchable: {reason}", time.time()))
+            self._event(db, fn["project_id"], agent.id, "retire", fn["name"])
+        return (f"✅ {fn['name']} is retired as unmatchable and won't come back to the queue. The reason is in its "
+                f"notes. Claim the next function.")
+
+    def repair_boundaries(self, slug: str) -> dict:
+        """Merge the fragments an older 32-bit split left behind: a function that doesn't end in a terminator has
+        its next contiguous open, automatically named function folded back into it. Matched code is never touched."""
+        proj = self._project(slug)
+        if self.fork_slug(slug):
+            raise NetworkError("a fork builds from its own source: its functions come from the project")
+        if self.cfg(proj).get("platform") not in X86_PLATFORMS:
+            raise NetworkError("boundary repair is for PC programs (32-bit PE images imported before the splitter "
+                               "followed branches)")
+        agent, _ = self.local_agent("boundaries")
+        merged = 0
+        while merged < 4096:
+            rows = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='open' "
+                                  "ORDER BY unit, vram", proj["id"])
+            pair = None
+            for i in range(len(rows) - 1):
+                prev, frag = rows[i], rows[i + 1]
+                if prev["unit"] != frag["unit"] or (prev["vram"] or 0) + (prev["size"] or 0) != frag["vram"]:
+                    continue
+                if not AUTO_NAME.match(frag["name"]):  # a real symbol is not a fragment
+                    continue
+                last = self._last_mnemonic(proj, prev)
+                if last and last not in pe.TERMINATORS and not last.startswith("j"):
+                    pair = (prev, frag)
+                    break
+            if pair is None:
+                break
+            self._merge_rows(agent, proj, *pair)
+            merged += 1
+        open_ = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='open'",
+                               proj["id"])["n"]
+        return {"merged": merged, "open": open_}
+
     def _split_gba(self, agent: Agent, proj, fn, addr: int, new_name: str, syms: SymbolTable) -> str:
         """Cut a GBA function's bytes and assembly in two at `addr` (Thumb: a halfword boundary)."""
         off = addr - fn["vram"]
@@ -3925,8 +4065,9 @@ class RomNetwork(Network):
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
             self._event(db, proj["id"], None, "compiler", f"{fixed} for this {cfg['arch']} target")
 
-    def _backfill_detection(self, proj, cfg) -> dict:
-        """Old PC projects stored only a rough .comment guess; read the target once and keep the details."""
+    def _backfill_detection(self, proj, cfg, force: bool = False) -> dict:
+        """Old PC projects stored only a rough .comment guess; read the target once and keep the details.
+        `force` re-reads it even when every fact is cached: the target or the detector's knowledge can change."""
         rom = cfg["rom"]
         name = rom.get("program") or rom.get("file")
         if not name:
@@ -3961,8 +4102,8 @@ class RomNetwork(Network):
         if cfg.get("arch") != image.arch:
             cfg["arch"] = image.arch
             changed = True
-        want_style = "msvc" if tc_id.startswith("clang-cl") else "gnu"
-        if not rom.get("suggested_flags") or rom.get("flag_style") != want_style:
+        want_style = "msvc" if tc_id.startswith(("clang-cl", "msvc")) else "gnu"
+        if force or not rom.get("suggested_flags") or rom.get("flag_style") != want_style:
             try:
                 tc = toolchains.get(tc_id)
                 base = cfg["compiler"].get("flags") or tc.flags
@@ -3983,6 +4124,68 @@ class RomNetwork(Network):
         self.classify_library(proj["slug"], log=lambda *_: None)
         return rom
 
+    def recheck_project(self, slug: str) -> dict:
+        """Re-read the target and refresh the facts agents work from: detected compiler/version/language,
+        inferred flags, library classification and INTAKE.md. Verified work is never touched, and the
+        compiler isn't switched silently (Check matches is how a switch is justified)."""
+        proj = self._project(slug)
+        if self.fork_slug(slug):
+            raise NetworkError("a fork builds from its own source: its facts come from the project")
+        if self.is_analysis(proj):
+            raise NetworkError("an analysis project's facts come from its REA provider, not from a build")
+        cfg = self.cfg(proj)
+        rom = cfg.get("rom") or {}
+        target = rom.get("program") or rom.get("file")
+        if cfg.get("platform") in X86_PLATFORMS and (not target or not (Path(proj["root"]) / target).is_file()):
+            raise NetworkError(f"the project's target is missing ({Path(proj['root']) / (target or '')}): "
+                               "put it back, then re-check")
+        before = self._facts(cfg)
+        lib_before = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='library'",
+                                    proj["id"])["n"]
+        if cfg.get("platform") in X86_PLATFORMS:
+            self._backfill_detection(proj, cfg, force=True)
+        else:
+            self.classify_library(slug, log=lambda *_: None)
+        cfg = self.cfg(self._project(slug))
+        lib_after = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='library'",
+                                   proj["id"])["n"]
+        rom = cfg.get("rom") or {}
+        after = self._facts(cfg)
+        changed = [f"{label}: {old} → {new}" if old else f"{label}: {new}"
+                   for (label, old), (_same, new) in zip(before, after, strict=True) if old != new]
+        if lib_after != lib_before:
+            changed.append(f"library/CRT functions: {lib_before} → {lib_after}")
+        report = self.write_intake(slug, log=lambda *_: None)
+        agent, _ = self.local_agent("recheck")
+        now = time.time()
+        with self.store.tx() as db:
+            self._event(db, proj["id"], agent.id, "recheck", "; ".join(changed) or "facts unchanged")
+            if changed:  # a note only when agents have something new to act on
+                db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                           (proj["id"], None, agent.id, f"Re-checked the target: {'; '.join(changed)}. "
+                            "The refreshed facts are in INTAKE.md.", now))
+        tc = toolchains.get(cfg["compiler"]["toolchain"])
+        return {"changed": changed, "detected": {"label": rom.get("build_label") or "",
+                                                  "compiler": rom.get("compiler_guess") or "",
+                                                  "version": rom.get("compiler_version") or "",
+                                                  "language": rom.get("language_guess") or ""},
+                "compiler": {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name)},
+                "flags": rom.get("suggested_flags") or [], "library": lib_after - lib_before,
+                "intake": report.get("path") or "", "functions": self.store.one(
+                    "SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status NOT IN ('library', 'unmatchable')",
+                    proj["id"])["n"]}
+
+    @staticmethod
+    def _facts(cfg) -> list[tuple[str, str]]:
+        """(label, value) rows a re-check compares, in a fixed order."""
+        rom, comp = cfg.get("rom") or {}, cfg.get("compiler") or {}
+        return [("compiler", comp.get("toolchain") or ""),
+                ("architecture", cfg.get("arch") or ""),
+                ("language", rom.get("language_guess") or ""),
+                ("detected build", rom.get("build_label") or rom.get("compiler_guess") or ""),
+                ("compiler version", rom.get("compiler_version") or ""),
+                ("suggested flags", " ".join(rom.get("suggested_flags") or []))]
+
     def _overview(self, slug: str, proj, backfill: bool = False) -> dict:
         if (fork := self.fork_slug(slug)):
             return self.forks.overview(fork)
@@ -3995,13 +4198,15 @@ class RomNetwork(Network):
             "SELECT COUNT(*) AS total, SUM(status='matched') AS matched, SUM(size) AS bytes, "
             "SUM(CASE WHEN status='matched' THEN size ELSE 0 END) AS matched_bytes, SUM(attempts) AS attempts, "
             "SUM(hits>0) AS traced, SUM(hits) AS hits, COALESCE(SUM(status='reconstructed'), 0) AS reconstructed "
-            "FROM functions WHERE project_id=? AND status!='library'", proj["id"])
+            "FROM functions WHERE project_id=? AND status NOT IN ('library', 'unmatchable')", proj["id"])
         lib = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='library'",
                              proj["id"])["n"]
+        retired = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='unmatchable'",
+                                 proj["id"])["n"]
         rom = cfg["rom"]
         detected = None
         if cfg.get("platform") in X86_PLATFORMS:
-            want_style = "msvc" if cfg["compiler"]["toolchain"].startswith("clang-cl") else "gnu"
+            want_style = "msvc" if cfg["compiler"]["toolchain"].startswith(("clang-cl", "msvc")) else "gnu"
             try:
                 tool_arch = toolchains.get(cfg["compiler"]["toolchain"]).arch
             except toolchains.ToolchainError:
@@ -4033,6 +4238,7 @@ class RomNetwork(Network):
             "source_language": source_language(tc.id), "source_ext": source_ext(tc.id),
             "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
             "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0, "library": lib,
+            "unmatchable": retired,
             "traced": agg["traced"] or 0, "hits": agg["hits"] or 0,
             "data": self.store.one("SELECT COUNT(*) AS n FROM symbols WHERE project_id=? AND kind!='func'",
                                     proj["id"])["n"],
@@ -4206,7 +4412,7 @@ class RomNetwork(Network):
         for r in rows:
             meta = json.loads(r["meta"] or "{}")
             status = "library" if r["status"] == "library" else (
-                r["status"] if r["status"] in ("matched", "asm") else
+                r["status"] if r["status"] in ("matched", "asm", "unmatchable") else
                 "working" if (r["agent"] or key(r) in remote) else "open")
             out.append({"name": r["name"], "vram": r["vram"], "size": r["size"], "insns": r["n_insns"],
                         "unit": r["unit"], "kind": meta.get("kind") or "", "path": meta.get("path") or "",
@@ -4224,12 +4430,14 @@ class RomNetwork(Network):
         proj = self._project(slug)
         f = self.store.one("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS hi, COALESCE(SUM(attempts), 0) AS at, "
                            "COALESCE(SUM(status='matched'), 0) AS m, COALESCE(SUM(best_score), 0) AS bs, "
-                           "COALESCE(MAX(matched_at), 0) AS ma FROM functions WHERE project_id=?", proj["id"])
+                           "COALESCE(SUM(status='unmatchable'), 0) AS u, COALESCE(MAX(matched_at), 0) AS ma "
+                           "FROM functions WHERE project_id=?", proj["id"])
         c = self.store.one("SELECT COUNT(*) AS n, COALESCE(SUM(c.function_id * 31 + c.agent_id), 0) AS k FROM claims c "
                            "JOIN functions f ON f.id=c.function_id WHERE f.project_id=?", proj["id"])
         link = self.links.get(slug)
         remote = sorted(str(x.get("vram") or x.get("name")) + x.get("agent", "") for x in (link.claims if link else []))
-        return f"{f['n']}.{f['hi']}.{f['at']}.{f['m']}.{f['bs']}.{f['ma']}.{c['n']}.{c['k']}.{hash(tuple(remote)) & 0xFFFFFF}"
+        return (f"{f['n']}.{f['hi']}.{f['at']}.{f['m']}.{f['bs']}.{f['u']}.{f['ma']}.{c['n']}.{c['k']}."
+                f"{hash(tuple(remote)) & 0xFFFFFF}")
 
     # ------------------------------------------------------------------ what agents spend, and steering them
 
@@ -4310,9 +4518,12 @@ class RomNetwork(Network):
                 ids = self.forks.autopilot_prepare(fork)
                 try_one, workers = self.forks.autopilot_one, min(workers, 2)  # each try builds a file: fewer at once
             else:
+                proj = self._project(slug)
+                if self.cfg(proj).get("platform") in X86_PLATFORMS:  # nothing to draft them from (yet)
+                    raise NetworkError("there's no machine-draft decompiler for x86 projects yet: the autopilot matches "
+                                       "identical code only")
                 if not seeds.available():
                     raise NetworkError("autopilot's drafts need m2c, the draft decompiler: install it in Setup")
-                proj = self._project(slug)
                 tc = self.cfg(proj)["compiler"]["toolchain"]
                 if not seeds.M2C_TARGETS.get(tc):
                     raise NetworkError("m2c can't read this project's code (no draft decompiler for it yet)")
@@ -4322,8 +4533,9 @@ class RomNetwork(Network):
             no_drafts = ""
         except NetworkError as e:
             ids, try_one, no_drafts = [], None, str(e)
-        state = {"state": "running", "total": len(ids), "tried": 0, "matched": 0, "near": 0, "twins": 0,
-                 "phase": "twins", "no_drafts": no_drafts, "started_at": time.time(), "stop": threading.Event()}
+        state = {"state": "running", "total": len(ids), "done": 0, "tried": 0, "matched": 0, "near": 0, "far": 0,
+                 "failed": 0, "skipped": 0, "cached": 0, "twins": 0, "reasons": [], "phase": "twins",
+                 "no_drafts": no_drafts, "started_at": time.time(), "stop": threading.Event()}
         self.autopilots[slug] = state
         threading.Thread(target=self._autopilot_run, args=(slug, ids, state, workers, try_one),
                          daemon=True, name=f"autopilot-{slug}").start()
@@ -4357,16 +4569,27 @@ class RomNetwork(Network):
         ids = [fid for fid in ids if (r := self.store.one("SELECT status FROM functions WHERE id=?", fid)) and r["status"] == "open"]
         state["total"] = len(ids)
 
+        counts = threading.Lock()  # workers count into one state: a lost increment is a wrong panel
+
         def one(fid: int) -> None:
             if state["stop"].is_set():
                 return
             try:
-                outcome = try_one(agent, proj, fid)
-            except Exception:  # noqa: BLE001 one odd function must not stop the rest
-                outcome = "fail"
-            state["tried"] += 1
-            if outcome in ("match", "near"):
-                state[{"match": "matched", "near": "near"}[outcome]] += 1
+                res = try_one(agent, proj, fid)
+            except Exception as e:  # noqa: BLE001 one odd function must not stop the rest
+                res = {"outcome": "fail", "why": f"#{fid}: {str(e)[:120]}"}
+            outcome, why = (res, "") if isinstance(res, str) else (res.get("outcome") or "fail", res.get("why") or "")
+            with counts:
+                state["done"] += 1
+                if outcome in ("match", "near", "far", "cached", "skip"):
+                    state[{"match": "matched", "skip": "skipped"}.get(outcome, outcome)] += 1
+                else:
+                    outcome = "fail"  # (anything unexpected counts as one, never as a draft tried)
+                    state["failed"] += 1
+                if outcome == "fail" and why and len(state["reasons"]) < 8:
+                    state["reasons"].append(why)
+                if outcome not in ("skip", "cached"):  # a draft was actually made and judged
+                    state["tried"] += 1
 
         try:
             with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -4376,14 +4599,15 @@ class RomNetwork(Network):
             state["finished_at"] = time.time()
             with self.store.tx() as db:
                 cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
-                cfg["autopilot"] = {k: state.get(k) for k in ("total", "tried", "matched", "near", "twins", "started_at",
-                                                              "finished_at")}
+                cfg["autopilot"] = {k: state.get(k) for k in ("total", "done", "tried", "matched", "near", "far",
+                                                              "failed", "skipped", "cached", "twins", "reasons",
+                                                              "no_drafts", "started_at", "finished_at")}
                 db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
             drafts = state["matched"] - state.get("twins", 0)
             if drafts:  # (twins announce their own)
                 with self.store.tx() as db:
                     self._event(db, proj["id"], agent.id, "autopilot",
-                                f"{drafts} of {state['tried']} functions matched from machine drafts")
+                                f"{drafts} of {state['tried']} machine drafts matched")
 
     def on_match(self, proj, function_id: int, agent: Agent | None = None) -> None:
         """Its twins get its code, at once. (Not for the full twins pass's own matches while it runs: it tries
@@ -4420,40 +4644,70 @@ class RomNetwork(Network):
             with self.store.tx() as db:
                 db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fn["id"], agent.id))
 
-    def _autopilot_one(self, agent, proj, fid: int) -> str:
-        """match | near | far | fail | skip, for one function's draft."""
+    def _compiler_key(self, proj) -> str:
+        """What a draft is built with. Switching the compiler or its flags can change the verdict, so a draft tried
+        before that is tried again (see draft_tries)."""
+        compiler = self.cfg(proj).get("compiler") or {}
+        return f"{compiler.get('toolchain') or ''} {' '.join(compiler.get('flags') or [])}".strip()
+
+    def _autopilot_one(self, agent, proj, fid: int) -> dict:
+        """One function's m2c draft through the judge: {"outcome": match | near | far | fail | skip | cached,
+        "why": a short reason for the panel}. A draft is made and compiled again only when what it's made against
+        changed (the context version, or the compiler and flags): "Run again" then costs what actually improved,
+        not every open function's draft a second time."""
+        if self.cfg(proj).get("platform") in X86_PLATFORMS:
+            return {"outcome": "skip", "why": "no machine-draft decompiler for x86"}
+        fn = self.store.one("SELECT * FROM functions WHERE id=?", fid)
+        if fn is None or fn["status"] != "open":
+            return {"outcome": "skip", "why": "no longer open"}
+        compiler = self._compiler_key(proj)
+        ctx = self._context(proj["id"], fn["unit"])
+        done = self.store.one("SELECT outcome, why FROM draft_tries WHERE function_id=? AND context_version=? "
+                              "AND compiler=?", fid, ctx["version"], compiler)
+        if done is not None:  # nothing it depends on changed since: the same draft gives the same verdict
+            return {"outcome": "cached", "why": done["why"] or done["outcome"]}
         now = time.time()
         with self.store.tx() as db:
             self._expire_claims(db)
             fn = db.execute("SELECT * FROM functions WHERE id=?", (fid,)).fetchone()
             if fn is None or fn["status"] != "open" or db.execute("SELECT 1 FROM claims WHERE function_id=?", (fid,)).fetchone():
-                return "skip"
+                return {"outcome": "skip", "why": "claimed by an agent"}
             db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fid, agent.id, now, now + 300))
-        if self.cfg(proj).get("platform") in X86_PLATFORMS:
-            return "skip"  # m2c has no x86 target; a draft comes from REA (inspect_binary) instead
+        outcome, why = "fail", f"{fn['name']}: the draft went wrong"
         try:
             self._seed_for(fn, proj)  # the readable draft, for the agents that come after
-            ctx = self._context(proj["id"], fn["unit"])
             data_asm = "\n".join(self._jtbl_asm(proj, fn)) if "jtbl_" in (fn["asm"] or "") else None
             draft = seeds.generate_from_asm(self._asm_text(fn, proj), fn["name"], self.cfg(proj)["compiler"]["toolchain"],
                                             ctx["header"], data_asm, valid=True)
             if not draft:
-                return "fail"
-            source = f"/* machine draft (m2c), tried by autopilot */\n{seeds.M2C_MACROS}\n{draft}\n"
-            result = self._compile(proj, ctx["header"], source)
-            if not result.ok:
-                return "fail"
-            cand, verdict, _ = self._evaluate(fn, proj, result.obj)
-            if cand is None:
-                return "fail"
-            d = scoring.diff(self._target_obj(fn, proj), cand)
-            if verdict is not None:
-                d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
-            self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match)
-            return "match" if d.bytes_match else "near" if d.percent >= 90 else "far"
+                why = f"{fn['name']}: m2c made no draft"
+            else:
+                source = f"/* machine draft (m2c), tried by autopilot */\n{seeds.M2C_MACROS}\n{draft}\n"
+                result = self._compile(proj, ctx["header"], source)
+                if not result.ok:
+                    why = f"{fn['name']}: the draft didn't compile"
+                else:
+                    cand, verdict, _ = self._evaluate(fn, proj, result.obj)
+                    if cand is None:
+                        why = f"{fn['name']}: the object it built has no {fn['name']}"
+                    else:
+                        d = scoring.diff(self._target_obj(fn, proj), cand)
+                        if verdict is not None:
+                            d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
+                        self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match)
+                        outcome = "match" if d.bytes_match else "near" if d.percent >= 90 else "far"
+                        why = "" if d.bytes_match else f"{fn['name']}: {d.percent:.0f}% there"
+        except Exception as e:  # noqa: BLE001 one odd function is reported, not left to stop the run
+            outcome, why = "fail", f"{fn['name']}: {str(e)[:120]}"
         finally:
             with self.store.tx() as db:
                 db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fid, agent.id))
+        if outcome == "fail":
+            logging.getLogger("decomp.wtf").info("autopilot: %s", why)
+        with self.store.tx() as db:  # what was tried, so the next run can leave an unchanged draft alone
+            db.execute("INSERT OR REPLACE INTO draft_tries(function_id,project_id,context_version,compiler,outcome,why,at) "
+                       "VALUES(?,?,?,?,?,?,?)", (fid, proj["id"], ctx["version"], compiler, outcome, why, time.time()))
+        return {"outcome": outcome, "why": why}
 
     def function_diff(self, slug: str, name: str, which: str = "latest") -> dict:
         """The target next to an attempt, instruction by instruction, for the GUI: the matched C, else the latest
@@ -4605,6 +4859,55 @@ class RomNetwork(Network):
                     claims.append(dict(row) | {"agent": "@" + c["agent"], "claimed_at": None})
         return {"events": [dict(e) for e in reversed(events)], "attempts": [dict(t) for t in reversed(attempts)],
                 "claims": claims, "overview": self.overview(slug)}
+
+    def preview_compiler(self, slug: str, toolchain: str, flags: list[str] | None = None) -> dict:
+        """What a different compiler would do to the functions already matched: how many still compile to the
+        same bytes, without changing the project. Switching compilers can be the right move (MSVC code vs GCC),
+        and this is the evidence for it, rather than finding out after the old matches stop matching."""
+        proj = self._project(slug)
+        if self.fork_slug(slug):
+            raise NetworkError("a fork builds with the project's own compilers and flags")
+        if self.is_analysis(proj):
+            raise NetworkError("an analysis project doesn't compile")
+        cfg = self.cfg(proj)
+        toolchain = arch_toolchain(toolchain, cfg.get("arch") or "")
+        try:
+            tc = toolchains.get(toolchain)
+        except toolchains.ToolchainError as e:
+            raise NetworkError(str(e)) from None
+        cand = {"toolchain": tc.id, "flags": list(flags or tc.flags), "timeout": 20}
+        preview_cfg = json.loads(proj["config"])
+        preview_cfg["compiler"] = cand
+        fake = dict(proj)
+        fake["config"] = json.dumps(preview_cfg)
+        rows = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched' "
+                              "AND matched_source IS NOT NULL ORDER BY n_insns", proj["id"])
+        installed = toolchains.installed(tc.id) is not None
+        if rows and not installed:
+            return {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name), "flags": cand["flags"],
+                    "installed": False, "total": len(rows), "checked": 0, "kept": 0, "broke": 0, "failed": 0,
+                    "sampled": False, "broke_names": [], "failed_names": []}
+        step = max(1, len(rows) // 300)
+        sample = rows[::step]
+        kept, broke, failed = [], [], []
+        for fn in sample:
+            ctx = self._context(proj["id"], fn["unit"])
+            result = self._compile(fake, ctx["header"], fn["matched_source"])
+            if not result.ok:
+                failed.append(fn["name"])
+                continue
+            candidate, verdict, _ = self._evaluate(fn, fake, result.obj)
+            if candidate is None:
+                failed.append(fn["name"])
+                continue
+            d = scoring.diff(self._target_obj(fn, fake), candidate)
+            if verdict is not None:
+                d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
+            (kept if d.bytes_match else broke).append(fn["name"])
+        return {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name), "flags": cand["flags"],
+                "installed": installed, "total": len(rows), "checked": len(sample),
+                "kept": len(kept), "broke": len(broke), "failed": len(failed), "sampled": step > 1,
+                "broke_names": broke[:8], "failed_names": failed[:5]}
 
     def set_compiler(self, slug: str, toolchain: str, flags: list[str] | None = None) -> None:
         proj = self._project(slug)

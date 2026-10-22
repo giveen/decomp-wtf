@@ -197,6 +197,15 @@ def _windows_dirs() -> list[Path]:
                 add(base / name / "mingw32" / "bin")
             add(base / "Programs" / "LLVM" / "bin")
             add(base / "Programs" / "mingw64" / "bin")
+            # Visual Studio's own cl.exe: the 32-bit-targeting one first (most old games are x86), then
+            # the x64 toolsets. The arch-specific entries below decide which one a project gets.
+            for vs in ("Microsoft Visual Studio 8", "Microsoft Visual Studio 9.0", "Microsoft Visual Studio 10.0",
+                       "Microsoft Visual Studio 11.0", "Microsoft Visual Studio 12.0", "Microsoft Visual Studio 14.0"):
+                add(base / vs / "VC" / "bin")
+                add(base / vs / "VC" / "bin" / "amd64")
+            for install in base.glob("Microsoft Visual Studio/*/*/VC/Tools/MSVC/*"):
+                add(install / "bin" / "Hostx64" / "x86")
+                add(install / "bin" / "Hostx64" / "x64")
     for name in ("mingw64", "mingw32", "clang64", "ucrt64", "TDM-GCC-64"):
         add(drive / "msys64" / name / "bin")
     for name in ("mingw64", "mingw32", "TDM-GCC-64"):

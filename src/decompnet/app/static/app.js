@@ -554,7 +554,8 @@ $("mwAccept").addEventListener("change", updateAnalyse);
 function fillCompilers(select, current, platform) {
   const tcs = (S.st?.toolchains || []).filter((t) => t.kind === "compiler" && (!platform || !t.platform || t.platform === platform));
   select.innerHTML = tcs.map((t) => {
-    const note = !t.supported ? " (not available on this computer)" : t.installed ? "" : t.license === "proprietary" ? " (install in Compilers & tools)" : " (will be installed)";
+    const note = !t.supported ? " (not available on this computer)" : t.installed ? ""
+      : t.system ? " (not found on PATH)" : t.license === "proprietary" ? " (install in Compilers & tools)" : " (will be installed)";
     return `<option value="${esc(t.id)}" ${t.id === current ? "selected" : ""} ${t.supported ? "" : "disabled"}>${esc(t.name)} · ${esc(t.use)}${note}</option>`;
   }).join("");
 }
@@ -1392,7 +1393,8 @@ function markPlatforms() {
     n64: ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"],
     psx: ["gcc-2.7.2-psx", "gcc-2.8.1-psx"], ps2: ["ee-gcc-2.96"], gba: ["agbcc"],
     windows: ["mingw-x86_64", "mingw-x86", "mingwxx-x86_64", "mingwxx-x86",
-              "clang-cl-x86_64", "clang-cl-x86", "clang-clxx-x86_64", "clang-clxx-x86"],
+              "clang-cl-x86_64", "clang-cl-x86", "clang-clxx-x86_64", "clang-clxx-x86",
+              "msvc-x86_64", "msvc-x86", "msvcxx-x86_64", "msvcxx-x86"],
     linux: ["gcc-linux-x86_64", "gxx-linux-x86_64", "clang-linux-x86_64", "clangxx-linux-x86_64",
             "gcc-linux-x86", "gxx-linux-x86", "clang-linux-x86", "clangxx-linux-x86"],
   };
@@ -1566,7 +1568,7 @@ function renderCompilerNotice(ov) {
 }
 
 function fnCounts() {
-  const c = { matched: 0, working: 0, tried: 0, recon: 0, open: 0, asm: 0, library: 0, hot: 0 };
+  const c = { matched: 0, working: 0, tried: 0, recon: 0, open: 0, asm: 0, library: 0, unmatchable: 0, hot: 0 };
   for (const f of S.map) { c[fnState(f)]++; if ((f.hits || 0) > 0) c.hot++; }
   return c;
 }
@@ -1592,10 +1594,10 @@ function renderOverview() {
   const label = analysis ? "analyzed" : "matched";
   const c = fnCounts(), total = Math.max(1, S.map.length);
   const seg = (k, cls) => (c[k] ? `<i class="${cls}" data-w="${(100 * c[k]) / total}" title="${c[k]} ${k === "open" ? "to do" : k === "matched" ? label : k}"></i>` : "");
-  $("fnStack").innerHTML = seg("matched", "s-match") + seg("recon", "s-recon") + seg("working", "s-work") + seg("tried", "s-tried") + seg("asm", "s-asm") + seg("library", "s-lib") + seg("open", "s-open");
+  $("fnStack").innerHTML = seg("matched", "s-match") + seg("recon", "s-recon") + seg("working", "s-work") + seg("tried", "s-tried") + seg("asm", "s-asm") + seg("unmatchable", "s-asm") + seg("library", "s-lib") + seg("open", "s-open");
   setWidths($("fnStack"));
   const togo = S.ov.functions - S.ov.matched;
-  $("fnSub").textContent = `${togo.toLocaleString()} to go${c.recon ? ` · ${c.recon} reconstructed` : ""}${c.tried ? ` · ${c.tried.toLocaleString()} tried` : ""}${c.working ? ` · ${c.working} in progress` : ""}${c.asm ? ` · ${c.asm} assembly` : ""}${c.library ? ` · ${c.library} library` : ""}`;
+  $("fnSub").textContent = `${togo.toLocaleString()} to go${c.recon ? ` · ${c.recon} reconstructed` : ""}${c.tried ? ` · ${c.tried.toLocaleString()} tried` : ""}${c.working ? ` · ${c.working} in progress` : ""}${c.asm ? ` · ${c.asm} assembly` : ""}${c.unmatchable ? ` · ${c.unmatchable} retired` : ""}${c.library ? ` · ${c.library} library` : ""}`;
   const st = S.stats;
   if (st) {
     const ph = st.matches_per_hour, max = Math.max(1, ...ph);
@@ -2151,7 +2153,7 @@ function applyClaims(draw = true) {
   const working = new Map(S.claims.map((c) => [c.name, c.agent]));
   let changed = false;
   for (const f of S.map) {
-    const status = ["matched", "asm", "library", "reconstructed"].includes(f.status) ? f.status : working.has(f.name) ? "working" : "open";
+    const status = ["matched", "asm", "library", "reconstructed", "unmatchable"].includes(f.status) ? f.status : working.has(f.name) ? "working" : "open";
     if (status !== f.status) { f.status = status; changed = true; }
     f.agent = working.get(f.name) || null;
   }
@@ -2173,7 +2175,7 @@ function applyAttempts(attempts) {
 function cellColor(f) {
   if (f.status === "matched") return [colors.match, 1];
   if (f.status === "reconstructed") return [colors.work, 0.7];
-  if (f.status === "asm") return [colors.tried, 0.35];
+  if (f.status === "asm" || f.status === "unmatchable") return [colors.tried, 0.35];
   if (f.status === "library") return [colors.faint || colors.open, 0.3];
   if (f.best != null) return [mix(colors.tried, colors.hi, Math.pow(pctOf(f.best, f.insns) || 0, 3)), 1];
   return [colors.open, 1];
@@ -3002,14 +3004,14 @@ $("fnNext").onclick = () => stepFn(1);
 
 /* ------------------------------------------------------------------ function list */
 const L = { q: "", filter: "all", sort: "i", dir: 1, limit: 200, rows: [] };
-const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["recon", "Reconstructed"], ["tried", "Tried"], ["matched", "Matched"], ["hot", "Coverage"], ["library", "Library"]];
-const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "reconstructed" ? "recon" : f.status === "library" ? "library" : f.status === "asm" ? "asm" : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
-const STATE_RANK = { working: 0, recon: 1, tried: 2, open: 3, matched: 4, asm: 5, library: 6 };
+const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["recon", "Reconstructed"], ["tried", "Tried"], ["matched", "Matched"], ["hot", "Coverage"], ["library", "Library"], ["unmatchable", "Retired"]];
+const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "reconstructed" ? "recon" : f.status === "library" ? "library" : f.status === "asm" ? "asm" : f.status === "unmatchable" ? "unmatchable" : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
+const STATE_RANK = { working: 0, recon: 1, tried: 2, open: 3, matched: 4, asm: 5, unmatchable: 6, library: 7 };
 
 function renderList() {
   if (!S.map.length || S.tab !== "functions") return;
   const analysis = S.ov && S.ov.kind === "analysis";
-  const counts = { all: S.map.length, open: 0, working: 0, recon: 0, tried: 0, matched: 0, asm: 0, library: 0, hot: 0 };
+  const counts = { all: S.map.length, open: 0, working: 0, recon: 0, tried: 0, matched: 0, asm: 0, library: 0, unmatchable: 0, hot: 0 };
   for (const f of S.map) { counts[fnState(f)]++; if ((f.hits || 0) > 0) counts.hot++; }
   $("fnFilter").innerHTML = FILTERS.map(([k, label]) => `<button type="button" role="radio" aria-checked="${L.filter === k}" class="${L.filter === k ? "on" : ""}" data-filter="${k}">${analysis && k === "matched" ? "Analyzed" : label}<span>${counts[k].toLocaleString()}</span></button>`).join("");
   const q = L.q.trim().toLowerCase();
@@ -3029,7 +3031,7 @@ function renderList() {
   $("fnRows").innerHTML = shown.map((f, i) => {
     const st = fnState(f), p = pctOf(f.best, f.insns);
     const best = st === "matched" ? `<span class="ok">100%</span>` : p == null ? `<span class="dim">–</span>` : pctText(p);
-    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">${analysis ? "analyzed" : "matched"}</span>` : st === "recon" ? `<span class="st recon" title="reconstructed by an agent: unverified, not a match">reconstructed</span>` : st === "library" ? `<span class="st" title="library/CRT code: not the program's own">${esc(f.library || "library")}</span>` : st === "asm" ? `<span class="st" title="hand-written assembly: no C compiles to it">assembly</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
+    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">${analysis ? "analyzed" : "matched"}</span>` : st === "recon" ? `<span class="st recon" title="reconstructed by an agent: unverified, not a match">reconstructed</span>` : st === "library" ? `<span class="st" title="library/CRT code: not the program's own">${esc(f.library || "library")}</span>` : st === "asm" ? `<span class="st" title="hand-written assembly: no C compiles to it">assembly</span>` : st === "unmatchable" ? `<span class="st" title="retired: no C can reproduce it (see its notes)">retired</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
       : st === "tried" ? `<span class="st tried">tried</span>` : `<span class="st">${analysis ? "to do" : "to do"}</span>`;
     const where = analysis ? (f.vram ? hex8(f.vram) : ["artifact-entry", "recovered-source", "reconstruction"].includes(f.kind) ? "file" : "task")
       : fork ? esc(f.unit || "") : hex8(f.vram);
@@ -3292,6 +3294,9 @@ function renderAutopilot(ov) {
   if (box.hidden) return;
   const running = ap && ap.state === "running";
   const twinsRunning = tw && tw.state === "running";
+  const done = ap ? (ap.done ?? ap.tried ?? 0) : 0;
+  const failed = (ap && ap.failed) || 0, cached = (ap && ap.cached) || 0;
+  const reasons = (ap && ap.reasons) || [];
   box.classList.toggle("on", !!(running || twinsRunning));
   $("apBar").hidden = !running || ap.phase === "twins";
   const perm = pm && (pm.tried || pm.state === "running")
@@ -3303,8 +3308,13 @@ function renderAutopilot(ov) {
     $("apBtn").textContent = "Stop";
   } else if (running) {
     $("apTitle").textContent = `Autopilot: trying each function's machine draft · ${ap.matched.toLocaleString()} matched for free`;
-    $("apSub").textContent = `${ap.tried.toLocaleString()} of ${ap.total.toLocaleString()} tried${ap.near ? ` · ${ap.near} more are 90%+ there` : ""}${ap.twins ? ` · ${ap.twins.toLocaleString()} from identical code` : ""}. Agents work alongside it.${perm}`;
-    $("apBar").firstElementChild.style.width = `${(100 * ap.tried) / Math.max(1, ap.total)}%`;
+    const bits = [`${done.toLocaleString()} of ${ap.total.toLocaleString()} done`];
+    if (failed) bits.push(`${failed.toLocaleString()} didn't build`);
+    if (cached) bits.push(`${cached.toLocaleString()} unchanged since the last run`);
+    if (ap.near) bits.push(`${ap.near} more are 90%+ there`);
+    if (ap.twins) bits.push(`${ap.twins.toLocaleString()} from identical code`);
+    $("apSub").textContent = `${bits.join(" · ")}. Agents work alongside it.${perm}`;
+    $("apBar").firstElementChild.style.width = `${(100 * done) / Math.max(1, ap.total)}%`;
     $("apBtn").textContent = "Stop";
   } else if (ap || tw) {
     const total = (ap ? ap.matched : 0) + (ap ? 0 : twinsDone);
@@ -3314,7 +3324,11 @@ function renderAutopilot(ov) {
     if (twinsDone) parts.push(`${twinsDone.toLocaleString()} from identical code`);
     if (tw && tw.asm) parts.push(`${tw.asm.toLocaleString()} copies of assembly set aside (not for agents)`);
     if (ap && ap.tried) parts.push(`${ap.tried.toLocaleString()} machine drafts tried${ap.near ? `, ${ap.near} more 90%+ there` : ""}`);
-    $("apSub").textContent = (parts.length ? parts.join(" · ") + ". " : "") + (ap && ap.no_drafts ? "" : "Run it again after agents add types and names: drafts get better.") + perm;
+    if (failed) parts.push(`${failed.toLocaleString()} didn't build`);
+    if (cached) parts.push(`${cached.toLocaleString()} unchanged, not tried again`);
+    $("apSub").textContent = (parts.length ? parts.join(" · ") + ". " : "")
+      + (reasons.length ? `Why not: ${reasons.slice(0, 3).join("; ")}. ` : "")
+      + (ap && ap.no_drafts ? `${ap.no_drafts}.` : "Run it again after agents add types and names: drafts get better.") + perm;
     $("apBtn").textContent = "Run again";
   } else {
     $("apTitle").textContent = "Free matches first";
@@ -3420,6 +3434,8 @@ async function renderProjectSettings() {
   const fork = ov.kind === "fork";
   const analysis = ov.kind === "analysis";
   $("compilerPanel").hidden = fork || analysis;
+  $("factsPanel").hidden = fork || analysis;
+  $("boundaryPanel").hidden = fork || analysis || !["windows", "linux"].includes(ov.platform);
   $("debugPanel").hidden = fork || analysis;
   $("comparePanel").hidden = fork || analysis || !["windows", "linux"].includes(ov.platform);
   $("tracePanel").hidden = analysis;
@@ -3454,6 +3470,13 @@ async function renderProjectSettings() {
     } else {
       $("flagHint").textContent = "";
     }
+    const built = (ov.detected || {}).label || "";
+    if (/MSVC/.test(built) && !/^(clang-cl|msvc)/.test(ov.compiler.toolchain || "")) {
+      $("tcCheck").textContent = `${built} built this program. GCC-compatible code can't reproduce MSVC prologues `
+        + `and register choices: “Check matches” with clang-cl or an installed cl.exe before switching.`;
+    } else {
+      $("tcCheck").textContent = "";
+    }
   }
   const t = (ov.analysis || {}).target || {};
   const native = isNativeProject(ov);
@@ -3476,7 +3499,74 @@ async function renderProjectSettings() {
     ["Functions", `${ov.functions.toLocaleString()} (${bytes(ov.bytes || 0)} of code)`], ["Folder", ov.folder]].filter(Boolean);
   $("projFacts").innerHTML = facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v || "—")}</dd></div>`).join("");
 }
+$("factsRecheck").onclick = async () => {
+  $("factsRecheck").disabled = true;
+  $("factsMsg").textContent = "Re-reading the target…";
+  try {
+    const r = await api("/api/project/recheck", { method: "POST", body: { slug: S.slug } });
+    $("factsMsg").textContent = r.changed.length
+      ? `${r.changed.join("; ")}. INTAKE.md and the agents' project notes are updated.`
+      : `No facts changed: still ${r.detected.label || r.compiler.name}. INTAKE.md was refreshed.`;
+    S.ov = await api(`/api/project?slug=${S.slug}`);
+    await refreshMap(true);
+    renderProjectSettings(S.ov);
+    renderStats(S.ov);
+    toast(r.changed.length ? `Re-checked: ${r.changed.length} fact${r.changed.length === 1 ? "" : "s"} updated.`
+      : "No facts changed.", r.changed.length ? "match" : "");
+  } catch (e) {
+    $("factsMsg").textContent = e.message;
+    toast(esc(e.message), "err");
+  } finally { $("factsRecheck").disabled = false; }
+};
+$("boundaryFix").onclick = async () => {
+  if (!confirm("Merge every open fragment into the function it belongs to? Matched functions are left alone.")) return;
+  $("boundaryFix").disabled = true;
+  $("boundaryMsg").textContent = "Merging fragments…";
+  try {
+    const r = await api("/api/boundaries/repair", { method: "POST", body: { slug: S.slug } });
+    $("boundaryMsg").textContent = r.merged
+      ? `Merged ${r.merged.toLocaleString()} fragment${r.merged === 1 ? "" : "s"}. ${r.open.toLocaleString()} open functions left.`
+      : `No false boundaries left. ${r.open.toLocaleString()} open functions.`;
+    S.ov = await api(`/api/project?slug=${S.slug}`);
+    await refreshMap(true);
+    renderProjectSettings(S.ov);
+    renderStats(S.ov);
+    toast(r.merged ? `Merged ${r.merged} fragment${r.merged === 1 ? "" : "s"}.` : "No false boundaries left.", "match");
+  } catch (e) {
+    $("boundaryMsg").textContent = e.message;
+    toast(esc(e.message), "err");
+  } finally { $("boundaryFix").disabled = false; }
+};
 $("setTcReset").onclick = () => { $("setFlags").value = ""; };
+$("setTcCheck").onclick = async () => {
+  const flags = $("setFlags").value.trim();
+  $("setTcCheck").disabled = true;
+  $("tcCheck").textContent = "Recompiling the functions that already match…";
+  try {
+    const r = await api("/api/compiler/preview", {
+      method: "POST",
+      body: { slug: S.slug, toolchain: $("setTc").value, flags: flags ? flags.split(/\s+/) : null },
+    });
+    if (!r.installed) {
+      $("tcCheck").textContent = `${r.name} isn't installed on this computer yet: install it first, then check.`;
+      return;
+    }
+    if (!r.checked) {
+      $("tcCheck").textContent = `${r.name}: there are no matched functions to compare yet.`;
+      return;
+    }
+    let text = `${r.name}: ${r.kept} of ${r.checked} matched function${r.checked === 1 ? "" : "s"} still match`;
+    if (r.broke) text += `, ${r.broke} would break`;
+    if (r.failed) text += `, ${r.failed} didn't compile`;
+    text += `.`;
+    if (r.broke_names.length) text += ` Breaking: ${r.broke_names.join(", ")}.`;
+    if (r.failed_names.length) text += ` Not compiling: ${r.failed_names.join(", ")}.`;
+    $("tcCheck").textContent = text;
+  } catch (e) {
+    $("tcCheck").textContent = e.message;
+    toast(esc(e.message), "err");
+  } finally { $("setTcCheck").disabled = false; }
+};
 $("setTcSave").onclick = async () => {
   try {
     const flags = $("setFlags").value.trim();
