@@ -3422,6 +3422,7 @@ async function renderProjectSettings() {
   const fork = ov.kind === "fork";
   const analysis = ov.kind === "analysis";
   $("compilerPanel").hidden = fork || analysis;
+  $("factsPanel").hidden = fork || analysis;
   $("boundaryPanel").hidden = fork || analysis || !["windows", "linux"].includes(ov.platform);
   $("debugPanel").hidden = fork || analysis;
   $("comparePanel").hidden = fork || analysis || !["windows", "linux"].includes(ov.platform);
@@ -3486,6 +3487,25 @@ async function renderProjectSettings() {
     ["Functions", `${ov.functions.toLocaleString()} (${bytes(ov.bytes || 0)} of code)`], ["Folder", ov.folder]].filter(Boolean);
   $("projFacts").innerHTML = facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v || "—")}</dd></div>`).join("");
 }
+$("factsRecheck").onclick = async () => {
+  $("factsRecheck").disabled = true;
+  $("factsMsg").textContent = "Re-reading the target…";
+  try {
+    const r = await api("/api/project/recheck", { method: "POST", body: { slug: S.slug } });
+    $("factsMsg").textContent = r.changed.length
+      ? `${r.changed.join("; ")}. INTAKE.md and the agents' project notes are updated.`
+      : `No facts changed: still ${r.detected.label || r.compiler.name}. INTAKE.md was refreshed.`;
+    S.ov = await api(`/api/project?slug=${S.slug}`);
+    await refreshMap(true);
+    renderProjectSettings(S.ov);
+    renderStats(S.ov);
+    toast(r.changed.length ? `Re-checked: ${r.changed.length} fact${r.changed.length === 1 ? "" : "s"} updated.`
+      : "No facts changed.", r.changed.length ? "match" : "");
+  } catch (e) {
+    $("factsMsg").textContent = e.message;
+    toast(esc(e.message), "err");
+  } finally { $("factsRecheck").disabled = false; }
+};
 $("boundaryFix").onclick = async () => {
   if (!confirm("Merge every open fragment into the function it belongs to? Matched functions are left alone.")) return;
   $("boundaryFix").disabled = true;

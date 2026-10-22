@@ -342,6 +342,32 @@ def test_compiler_preview_says_what_still_matches(built):
     assert r["installed"] and r["toolchain"] == current
 
 
+def test_recheck_refreshes_stale_facts_and_writes_a_project_note(built):
+    """Re-check re-reads the target instead of trusting cached facts, regenerates INTAKE.md, and leaves a
+    project-wide note agents see in their claim brief. A second run with nothing new changes nothing."""
+    exe, _obj = built
+    net = RomNetwork(exe.parent / "recheck.db", exe.parent)
+    slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game.exe", log=lambda *_: None)
+    proj = net.store.one("SELECT * FROM projects WHERE slug=?", slug)
+    cfg = json.loads(proj["config"])
+    cfg["rom"].update({"build_label": "stale build", "compiler_version": "0.0", "suggested_flags": ["-O0"]})
+    with net.store.tx() as db:
+        db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+    r = net.recheck_project(slug)
+    assert any(c.startswith("detected build: stale build → ") for c in r["changed"]), r["changed"]
+    assert any(c.startswith("suggested flags: -O0 → ") for c in r["changed"]), r["changed"]
+    assert r["detected"]["label"] and r["detected"]["label"] != "stale build"
+    assert r["flags"] and r["flags"] != ["-O0"]
+    intake = Path(r["intake"])
+    assert intake.is_file() and "stale build" not in intake.read_text()
+    note = net.store.one("SELECT text FROM notes WHERE project_id=? AND function_id IS NULL ORDER BY id DESC",
+                         proj["id"])
+    assert "Re-checked the target" in note["text"] and "detected build" in note["text"]
+    again = net.recheck_project(slug)
+    assert again["changed"] == [] and Path(again["intake"]).is_file()
+    assert net.overview(slug)["detected"]["label"] == r["detected"]["label"]
+
+
 def test_library_functions_are_marked_and_never_claimed(built):
     from decompnet.network import NetworkError
 

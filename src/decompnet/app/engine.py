@@ -4065,8 +4065,9 @@ class RomNetwork(Network):
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
             self._event(db, proj["id"], None, "compiler", f"{fixed} for this {cfg['arch']} target")
 
-    def _backfill_detection(self, proj, cfg) -> dict:
-        """Old PC projects stored only a rough .comment guess; read the target once and keep the details."""
+    def _backfill_detection(self, proj, cfg, force: bool = False) -> dict:
+        """Old PC projects stored only a rough .comment guess; read the target once and keep the details.
+        `force` re-reads it even when every fact is cached: the target or the detector's knowledge can change."""
         rom = cfg["rom"]
         name = rom.get("program") or rom.get("file")
         if not name:
@@ -4102,7 +4103,7 @@ class RomNetwork(Network):
             cfg["arch"] = image.arch
             changed = True
         want_style = "msvc" if tc_id.startswith(("clang-cl", "msvc")) else "gnu"
-        if not rom.get("suggested_flags") or rom.get("flag_style") != want_style:
+        if force or not rom.get("suggested_flags") or rom.get("flag_style") != want_style:
             try:
                 tc = toolchains.get(tc_id)
                 base = cfg["compiler"].get("flags") or tc.flags
@@ -4122,6 +4123,68 @@ class RomNetwork(Network):
                            (json.dumps(cfg), cfg.get("arch") or proj["arch"], proj["id"]))
         self.classify_library(proj["slug"], log=lambda *_: None)
         return rom
+
+    def recheck_project(self, slug: str) -> dict:
+        """Re-read the target and refresh the facts agents work from: detected compiler/version/language,
+        inferred flags, library classification and INTAKE.md. Verified work is never touched, and the
+        compiler isn't switched silently (Check matches is how a switch is justified)."""
+        proj = self._project(slug)
+        if self.fork_slug(slug):
+            raise NetworkError("a fork builds from its own source: its facts come from the project")
+        if self.is_analysis(proj):
+            raise NetworkError("an analysis project's facts come from its REA provider, not from a build")
+        cfg = self.cfg(proj)
+        rom = cfg.get("rom") or {}
+        target = rom.get("program") or rom.get("file")
+        if cfg.get("platform") in X86_PLATFORMS and (not target or not (Path(proj["root"]) / target).is_file()):
+            raise NetworkError(f"the project's target is missing ({Path(proj['root']) / (target or '')}): "
+                               "put it back, then re-check")
+        before = self._facts(cfg)
+        lib_before = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='library'",
+                                    proj["id"])["n"]
+        if cfg.get("platform") in X86_PLATFORMS:
+            self._backfill_detection(proj, cfg, force=True)
+        else:
+            self.classify_library(slug, log=lambda *_: None)
+        cfg = self.cfg(self._project(slug))
+        lib_after = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='library'",
+                                   proj["id"])["n"]
+        rom = cfg.get("rom") or {}
+        after = self._facts(cfg)
+        changed = [f"{label}: {old} → {new}" if old else f"{label}: {new}"
+                   for (label, old), (_same, new) in zip(before, after, strict=True) if old != new]
+        if lib_after != lib_before:
+            changed.append(f"library/CRT functions: {lib_before} → {lib_after}")
+        report = self.write_intake(slug, log=lambda *_: None)
+        agent, _ = self.local_agent("recheck")
+        now = time.time()
+        with self.store.tx() as db:
+            self._event(db, proj["id"], agent.id, "recheck", "; ".join(changed) or "facts unchanged")
+            if changed:  # a note only when agents have something new to act on
+                db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                           (proj["id"], None, agent.id, f"Re-checked the target: {'; '.join(changed)}. "
+                            "The refreshed facts are in INTAKE.md.", now))
+        tc = toolchains.get(cfg["compiler"]["toolchain"])
+        return {"changed": changed, "detected": {"label": rom.get("build_label") or "",
+                                                  "compiler": rom.get("compiler_guess") or "",
+                                                  "version": rom.get("compiler_version") or "",
+                                                  "language": rom.get("language_guess") or ""},
+                "compiler": {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name)},
+                "flags": rom.get("suggested_flags") or [], "library": lib_after - lib_before,
+                "intake": report.get("path") or "", "functions": self.store.one(
+                    "SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status NOT IN ('library', 'unmatchable')",
+                    proj["id"])["n"]}
+
+    @staticmethod
+    def _facts(cfg) -> list[tuple[str, str]]:
+        """(label, value) rows a re-check compares, in a fixed order."""
+        rom, comp = cfg.get("rom") or {}, cfg.get("compiler") or {}
+        return [("compiler", comp.get("toolchain") or ""),
+                ("architecture", cfg.get("arch") or ""),
+                ("language", rom.get("language_guess") or ""),
+                ("detected build", rom.get("build_label") or rom.get("compiler_guess") or ""),
+                ("compiler version", rom.get("compiler_version") or ""),
+                ("suggested flags", " ".join(rom.get("suggested_flags") or []))]
 
     def _overview(self, slug: str, proj, backfill: bool = False) -> dict:
         if (fork := self.fork_slug(slug)):
