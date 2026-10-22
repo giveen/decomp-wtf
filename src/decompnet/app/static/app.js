@@ -1220,12 +1220,12 @@ function setTab(tab) {
    move between them instead of making all nine tab stops of their own. */
 document.querySelectorAll("#ptabs [data-ptab]").forEach((a) => {
   const tab = a.dataset.ptab, pane = document.querySelector(`[data-pane="${tab}"]`);
-  a.id = `tab-${tab}`;
+  const tabId = a.id || (a.id = `tab-${tab}`);  // keep the ids the app already uses (summaryTab, dataTab, ...)
   a.tabIndex = -1;
   if (!pane) return;
   if (!pane.id) pane.id = `pane-${tab}`;
   pane.setAttribute("role", "tabpanel");
-  pane.setAttribute("aria-labelledby", `tab-${tab}`);
+  pane.setAttribute("aria-labelledby", tabId);
   a.setAttribute("aria-controls", pane.id);
 });
 $("ptabs").addEventListener("keydown", (e) => {
