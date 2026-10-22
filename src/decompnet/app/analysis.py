@@ -620,6 +620,22 @@ def feature_seed_text(seed: dict | None) -> str:
     return f"{kind} {value!r}" + (f" ({match})" if match != "exact" else "")
 
 
+_DRIVE_PATH = re.compile(r"^[A-Za-z]:")
+
+
+def safe_rel_path(path: str) -> str:
+    """A relative POSIX path that stays inside the folder it is joined to, or "" when it would climb out.
+
+    Archive entries carry whatever name they were stored with, `../..` and Windows drive letters included: they are
+    fine as work items (the archive is read by that exact name) but must never decide where a file is written.
+    """
+    text = _DRIVE_PATH.sub("", str(path or "").replace("\\", "/")).lstrip("/")
+    parts = [p for p in text.split("/") if p not in ("", ".")]
+    if not parts or ".." in parts or "\x00" in text:
+        return ""
+    return "/".join(parts)
+
+
 def safe_name(name: str, address: int | None = None) -> str:
     name = re.sub(r"\s+", " ", str(name or "")).strip()
     if not name:

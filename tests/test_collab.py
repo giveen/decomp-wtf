@@ -279,6 +279,70 @@ def test_a_big_room_layout_applies_without_scanning_every_function(tmp_path):
     assert net.symbols(pid).by_addr[1000 * 0x20].name == "renamed_1000"  # the cached table was rebuilt
 
 
+def _guest_with_demo(tmp_path, rom):
+    net = RomNetwork(tmp_path / "guest.db", tmp_path / "guest")
+    slug = net.import_rom(rom, confirmed=True, log=lambda *_: None)
+    return net, slug, net.project_row(slug)["id"]
+
+
+def test_two_room_boundaries_inside_one_guest_function_both_split(tmp_path, built):  # noqa: F811
+    """The host's split is finer than the guest's, so several of its functions can start inside one local function.
+    The first boundary used to split it; the second was dropped (the new tail was never looked up again)."""
+    net, slug, pid = _guest_with_demo(tmp_path, built)
+    victim = net.store.one("SELECT name,vram FROM functions WHERE project_id=? AND vram IS NOT NULL AND status='open' "
+                           "AND size>=8 ORDER BY vram LIMIT 1", pid)
+    v = victim["vram"]
+    net.apply_remote_layout(slug, [{"name": "room_first", "vram": v + 4, "size": 4},
+                                   {"name": "room_second", "vram": v + 8, "size": 4}], [])
+    names = {r["vram"]: r["name"] for r in net.store.all(
+        "SELECT name,vram FROM functions WHERE project_id=? AND vram IN (?,?,?)", pid, v, v + 4, v + 8)}
+    assert names == {v: victim["name"], v + 4: "room_first", v + 8: "room_second"}
+    sizes = [net.store.one("SELECT size FROM functions WHERE project_id=? AND vram=?", pid, x)["size"]
+             for x in (v, v + 4, v + 8)]
+    assert sizes[0] == 4 and sizes[1] == 4 and sizes[2] > 4
+    # the head's symbol covers only the head now (it used to keep covering the whole old function)
+    symbol_sizes = [net.store.one("SELECT size FROM symbols WHERE project_id=? AND address=?", pid, x)["size"]
+                    for x in (v, v + 4, v + 8)]
+    assert symbol_sizes == sizes
+
+
+def test_a_room_rename_that_collides_or_swaps_still_syncs(tmp_path, built):  # noqa: F811
+    """The room is authoritative for names, but a name it gives one address can already belong to another address
+    here (the splits differed) and two names can swap. That used to raise UNIQUE and fail every sync after it."""
+    net, slug, pid = _guest_with_demo(tmp_path, built)
+    a, b = net.store.all("SELECT name,size,vram FROM functions WHERE project_id=? AND vram IS NOT NULL "
+                         "AND status='open' ORDER BY vram LIMIT 2", pid)
+    net.apply_remote_layout(slug, [], [{"name": b["name"], "address": a["vram"], "size": a["size"], "kind": "func"},
+                                       {"name": a["name"], "address": b["vram"], "size": b["size"], "kind": "func"}])
+    moved = {r["vram"]: r["name"] for r in net.store.all(
+        "SELECT name,vram FROM functions WHERE project_id=? AND vram IN (?,?)", pid, a["vram"], b["vram"])}
+    assert moved == {a["vram"]: b["name"], b["vram"]: a["name"]}
+
+    net.apply_remote_layout(slug, [], [{"name": "clamp_s32", "address": b["vram"], "size": b["size"], "kind": "func"}])
+    net.apply_remote_layout(slug, [], [{"name": "clamp_s32", "address": a["vram"], "size": a["size"], "kind": "func"}])
+    assert net.store.one("SELECT name FROM functions WHERE project_id=? AND vram=?", pid, a["vram"])["name"] == "clamp_s32"
+    # the address that lost its name takes its own back, and still resolves in the symbol table
+    displaced = net.store.one("SELECT name FROM functions WHERE project_id=? AND vram=?", pid, b["vram"])["name"]
+    assert displaced == f"func_{b['vram']:08X}"
+    assert net.symbols(pid).name_at(b["vram"]) == (displaced, 0)
+    assert net.symbols(pid).name_at(a["vram"]) == ("clamp_s32", 0)
+
+    # a symbol with no function (an alias splat left behind) holding the name a displaced function would take back:
+    # it keeps it, and the function takes the next free name instead of the sync failing on it
+    other = net.store.one("SELECT name,size,vram FROM functions WHERE project_id=? AND vram IS NOT NULL AND status='open' "
+                         "AND vram NOT IN (?,?) ORDER BY vram LIMIT 1", pid, a["vram"], b["vram"])
+    net.apply_remote_layout(slug, [], [{"name": "checksum_save", "address": other["vram"], "size": other["size"],
+                                       "kind": "func"}])
+    with net.store.tx() as db:
+        db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
+                   (pid, f"func_{other['vram']:08X}", a["vram"] + 1, 1, "data"))
+    net.apply_remote_layout(slug, [], [{"name": "checksum_save", "address": a["vram"], "size": a["size"], "kind": "func"}])
+    assert net.store.one("SELECT name FROM functions WHERE project_id=? AND vram=?", pid, other["vram"])["name"] \
+        == f"func_{other['vram']:08X}_2"
+    assert net.store.one("SELECT name FROM symbols WHERE project_id=? AND address=?", pid, a["vram"] + 1)["name"] \
+        == f"func_{other['vram']:08X}"
+
+
 def test_a_syncing_room_is_connected_not_offline(tmp_path):
     """The first sync of a big room takes a while to apply; the host is up, so the page must not say offline."""
     net = RomNetwork(tmp_path / "room.db", tmp_path)

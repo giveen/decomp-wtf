@@ -293,21 +293,27 @@ class ForkProject:
         except FileNotFoundError:
             return False, f"{cmd[0]} isn't installed"
         out, seen, quiet = [], collections.Counter(), 0
-        for line in proc.stdout:
-            line = line.rstrip()
-            out.append(line)
-            if failed is not None and (m := _FAILED.match(line)):
-                failed.extend(t for t in (m.group(1) or m.group(2)).split() if t not in failed and not t.startswith("[code="))
-            seen[line] += 1
-            if seen[line] > 2 or _NOISE.match(line):  # the same line again, or CodeWarrior's linker chatter
-                quiet += 1
-            elif len(out) <= 400 or len(out) % 50 == 0:
-                log(line)
         try:
-            code = proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            return False, "timed out"
+            for line in proc.stdout:
+                line = line.rstrip()
+                out.append(line)
+                if failed is not None and (m := _FAILED.match(line)):
+                    failed.extend(t for t in (m.group(1) or m.group(2)).split()
+                                  if t not in failed and not t.startswith("[code="))
+                seen[line] += 1
+                if seen[line] > 2 or _NOISE.match(line):  # the same line again, or CodeWarrior's linker chatter
+                    quiet += 1
+                elif len(out) <= 400 or len(out) % 50 == 0:
+                    log(line)
+            try:
+                code = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()  # reap it: the build is over, its exit code is not needed
+                return False, "timed out"
+        finally:
+            if proc.stdout is not None:
+                proc.stdout.close()  # the pipe's file object, not left for the garbage collector
         if quiet:
             log(f"({quiet} repeated lines and linker warnings not shown)")
         if killed_for_memory(code):
