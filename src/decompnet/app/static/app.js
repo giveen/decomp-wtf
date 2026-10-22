@@ -34,13 +34,46 @@ async function api(path, { method = "GET", body, raw } = {}) {
   return data;
 }
 
-function toast(html, kind = "") {
+/* Toasts: at most three, each dismissable, and a run of matches collapses into the newest one ("+4 more matched")
+   instead of stacking a wall of cards over the corner. Hovering holds a toast long enough to read. */
+const TOAST_MAX = 3;
+let lastMatchToast = null;
+function armToast(t, ms) {
+  clearTimeout(t._fade); clearTimeout(t._gone);
+  t._fade = setTimeout(() => { t.style.opacity = "0"; t.style.transition = "opacity .4s"; }, ms);
+  t._gone = setTimeout(() => t.remove(), ms + 500);
+}
+function dismissToast(t) {
+  clearTimeout(t._fade); clearTimeout(t._gone);
+  t.style.opacity = "0"; t.style.transition = "opacity .25s";
+  setTimeout(() => t.remove(), 260);
+}
+function toast(html, kind = "", count = false) {
+  const box = $("toasts");
+  if (count && lastMatchToast?.isConnected && lastMatchToast.dataset.count === "1"
+      && lastMatchToast.dataset.slug === (S.slug || "")) {
+    const n = Number(lastMatchToast.dataset.more || 0) + 1;
+    lastMatchToast.dataset.more = String(n);
+    let more = lastMatchToast.querySelector(".toast-more");
+    if (!more) { more = document.createElement("span"); more.className = "toast-more"; lastMatchToast.append(more); }
+    more.textContent = `+${n} more matched`;
+    armToast(lastMatchToast, 4200);
+    return lastMatchToast;
+  }
   const t = document.createElement("div");
   t.className = "toast " + kind;
   t.innerHTML = html;
-  $("toasts").append(t);
-  setTimeout(() => { t.style.opacity = "0"; t.style.transition = "opacity .4s"; }, kind === "err" ? 7000 : 4200);
-  setTimeout(() => t.remove(), kind === "err" ? 7500 : 4700);
+  t.dataset.slug = S.slug || "";
+  t.dataset.count = count ? "1" : "0";
+  t.title = "Click to dismiss";
+  t.onclick = () => dismissToast(t);
+  t.onmouseenter = () => { clearTimeout(t._fade); clearTimeout(t._gone); };
+  t.onmouseleave = () => armToast(t, 2500);
+  armToast(t, kind === "err" ? 7000 : 4200);
+  box.append(t);
+  if (count) lastMatchToast = t;
+  while (box.children.length > TOAST_MAX) box.firstElementChild.remove();
+  return t;
 }
 
 async function followJob(id, logEl, onUpdate) {
@@ -62,17 +95,27 @@ function mapChanged() { baseDirty = true; }
 
 /* ------------------------------------------------------------------ theme */
 const THEME_KEY = "decomp-wtf-theme";
+const THEMES = ["", "light", "dark"];  // "" follows this computer (the stylesheet's prefers-color-scheme)
+const THEME_NAME = { "": "system", light: "light", dark: "dark" };
+const themeName = (t) => THEME_NAME[t] || "system";
 function applyTheme(t) {
   if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
   colors = null; baseDirty = true;
+  const i = Math.max(0, THEMES.indexOf(t)), next = THEMES[(i + 1) % THEMES.length];
+  const button = $("themeBtn");
+  button.title = `Theme: ${themeName(t)} (click for ${themeName(next)})`;
+  button.setAttribute("aria-label", button.title);
+  const seg = $("themeSeg");  // the Settings page shows the same three states
+  if (seg) seg.querySelectorAll("[data-theme]").forEach((b) => b.classList.toggle("on", (b.dataset.theme || "") === (t || "")));
   if (S.map.length) drawMap();
 }
 function setTheme(t) {
   try { if (t) localStorage.setItem(THEME_KEY, t); else localStorage.removeItem(THEME_KEY); } catch { /* storage off */ }
   applyTheme(t);
 }
-function savedTheme() { try { return localStorage.getItem(THEME_KEY) || ""; } catch { return ""; } }
-$("themeBtn").onclick = () => setTheme(getComputedStyle(document.documentElement).colorScheme.includes("dark") ? "light" : "dark");
+function savedTheme() { try { const t = localStorage.getItem(THEME_KEY) || ""; return THEMES.includes(t) ? t : ""; } catch { return ""; } }
+/* One button, three states: light -> dark -> follow the computer. The old one could never get back to "system". */
+$("themeBtn").onclick = () => setTheme(THEMES[(THEMES.indexOf(savedTheme()) + 1) % THEMES.length]);
 
 /* ------------------------------------------------------------------ state + routing */
 const S = {
@@ -95,14 +138,20 @@ async function loadState() { S.st = await api("/api/state"); $("navVersion").tex
 
 function route() {
   const h = location.hash;
-  const m = h.match(/^#\/p\/([\w-]+)(?:\/(\w+))?/);
-  closeAll();
+  const m = h.match(/^#\/p\/([\w-]+)(?:\/(\w+))?(?:\/([^/?#]+))?/);
+  closeAll(false);  // navigating: the new view decides what has focus, and the URL is already the target
   closeNav();
   hideLaunch();
   if (m) {
-    if (S.slug === m[1] && !$("project").hidden) { setTab(m[2] || "overview"); markNav(); return; }
+    const fn = m[3] ? decodeURIComponent(m[3]) : "";
+    if (S.slug === m[1] && !$("project").hidden) {
+      setTab(m[2] || "overview");
+      if (fn) openFn(fn);
+      markNav();
+      return;
+    }
     leaveProject();
-    openProject(m[1], m[2] || "overview");
+    openProject(m[1], m[2] || "overview", fn);
   } else {
     leaveProject();
     if (h === "#/catalog") showCatalog();
@@ -138,7 +187,8 @@ function markNav() {
   document.querySelectorAll(".nav-proj").forEach((a) => a.classList.toggle("on", a.dataset.slug === S.slug && route === "project"));
 }
 async function loadNav() {
-  try { S.projects = await api("/api/projects"); } catch (e) {
+  try { S.projects = await api("/api/projects"); connOk(); } catch (e) {
+    if (String(e.message).includes("Failed to fetch")) connLost();  // the app went away, wherever you are
     if (!S.projects?.length) $("navProjects").innerHTML = `<p class="nav-empty">Couldn't load your projects: ${esc(e.message)}</p>`;
     return;
   }
@@ -617,14 +667,14 @@ $("pathPick").onclick = (e) => {
     const intake = { notes: $("ppNotes").value.trim(), symbols: $("ppSymbols").value.trim(),
       types: $("ppTypes").value.trim(), refs: $("ppRefs").value.trim(),
       trace: $("ppTrace").value.trim(), libs: $("ppLibs").value.trim() };
-    $("dialog").hidden = true;
+    closeDialog();
     runImport(`confirmed=1&path=${encodeURIComponent(path)}${intakeQuery(intake)}`, undefined, "Opening your binary…");
   };
 };
 $("demoBtn").onclick = () => runImport("demo=1", undefined, "Opening Demo Quest 64…");
 
 /* ------------------------------------------------------------------ project */
-async function openProject(slug, tab = "overview") {
+async function openProject(slug, tab = "overview", fn = "") {
   show("project");
   S.slug = slug; S.e = 0; S.a = 0; S.seq = {}; S.scores = new Map(); S.flash = new Map(); S.sessions = []; S.claims = [];
   S.apFeed = null; S.stats = null; S.map = []; S.mapSig = null; geo = null;
@@ -689,6 +739,7 @@ async function openProject(slug, tab = "overview") {
   await renderFeatures(true);
   await renderSources(true);
   await poll(true);
+  if (fn) openFn(fn);  // a link to one function (#/p/slug/functions/name) opens on it
   S.timer = setInterval(() => poll(false), 1000);
   S.statsTimer = setInterval(loadStats, 8000);
   loadStats();
@@ -985,8 +1036,7 @@ function addFeatureDialog() {
         direction: body.querySelector("#featDir").value, name: body.querySelector("#featName").value.trim(),
       } });
       const result = await followJob(start.job, log);
-      $("dialog").hidden = true;
-      document.body.classList.remove("locked");
+      closeDialog();
       FS.data = null;
       await renderFeatures(true);
       await refreshMap(true);
@@ -1129,8 +1179,7 @@ function addAnalysisTask() {
     e.target.disabled = true;
     try {
       await api("/api/analysis/task", { method: "POST", body: { slug: S.slug, name, brief: body.querySelector("#taskBrief").value } });
-      $("dialog").hidden = true;
-      document.body.classList.remove("locked");
+      closeDialog();
       await refreshMap(true);
       toast("Task added.", "match");
     } catch (err) { toast(esc(err.message), "err"); e.target.disabled = false; }
@@ -1141,6 +1190,7 @@ function stopPolling() {
   if (S.timer) clearInterval(S.timer);
   if (S.statsTimer) clearInterval(S.statsTimer);
   S.timer = null; S.statsTimer = null;
+  connOk();
 }
 
 function setTab(tab) {
@@ -1148,7 +1198,12 @@ function setTab(tab) {
   if (S.ov && S.ov.kind !== "analysis" && tab === "summary") tab = "overview";
   if (!TABS.includes(tab)) tab = "overview";
   S.tab = tab;
-  document.querySelectorAll("#ptabs [data-ptab]").forEach((a) => { a.classList.toggle("on", a.dataset.ptab === tab); a.setAttribute("aria-selected", a.dataset.ptab === tab); });
+  document.querySelectorAll("#ptabs [data-ptab]").forEach((a) => {
+    const on = a.dataset.ptab === tab;
+    a.classList.toggle("on", on);
+    a.setAttribute("aria-selected", on);
+    a.tabIndex = on ? 0 : -1;  // one stop in the Tab order: the tab bar, then the arrows move between tabs
+  });
   if (S.ov && S.ov.kind === "fork" && !S.ov.ready) return;
   document.querySelectorAll("[data-pane]").forEach((p) => { p.hidden = p.dataset.pane !== tab; });
   if (tab === "overview") { if (S.map.length) layoutMap(); renderOverview(); renderContents(); renderFeatures(); renderSources(); }
@@ -1161,6 +1216,29 @@ function setTab(tab) {
   if (tab === "settings") renderProjectSettings();
   if (tab !== "team") clearInterval(teamTimer);
 }
+/* The tab bar as a real tab bar: panes are tied to their tab for screen readers, and the arrow keys (Home/End too)
+   move between them instead of making all nine tab stops of their own. */
+document.querySelectorAll("#ptabs [data-ptab]").forEach((a) => {
+  const tab = a.dataset.ptab, pane = document.querySelector(`[data-pane="${tab}"]`);
+  a.id = `tab-${tab}`;
+  a.tabIndex = -1;
+  if (!pane) return;
+  if (!pane.id) pane.id = `pane-${tab}`;
+  pane.setAttribute("role", "tabpanel");
+  pane.setAttribute("aria-labelledby", `tab-${tab}`);
+  a.setAttribute("aria-controls", pane.id);
+});
+$("ptabs").addEventListener("keydown", (e) => {
+  const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key], end = { Home: false, End: true }[e.key];
+  if (step === undefined && end === undefined) return;
+  const tabs = [...document.querySelectorAll("#ptabs [data-ptab]")].filter((a) => !a.hidden);
+  const at = tabs.indexOf(document.activeElement);
+  if (at < 0) return;
+  e.preventDefault();
+  const next = end === undefined ? tabs[(at + step + tabs.length) % tabs.length] : tabs[end ? tabs.length - 1 : 0];
+  next.focus();
+  next.click();
+});
 document.querySelectorAll("[data-goto]").forEach((a) => {
   a.onclick = (e) => {
     e.preventDefault();
@@ -1205,6 +1283,27 @@ function toastStopped(before, now) {
   }
 }
 
+/* When the local app goes away (a restart, an update installing) polling keeps retrying every second. Say it once,
+   where it is visible from every tab, instead of only in the Activity pane's tiny hint. */
+let connSince = 0, connTimer = null;
+function connLost() {
+  if (connTimer) return;
+  connSince = Date.now();
+  const tick = () => {
+    const s = Math.max(1, Math.round((Date.now() - connSince) / 1000));
+    $("connBanner").textContent = `Can't reach decomp.anything · retrying… ${s}s`;
+  };
+  tick();
+  $("connBanner").hidden = false;
+  connTimer = setInterval(tick, 1000);
+}
+function connOk() {
+  if (!connTimer) return;
+  clearInterval(connTimer);
+  connTimer = null;
+  $("connBanner").hidden = true;
+}
+
 let polling = false;
 async function poll(first) {
   if (polling || !S.slug) return;
@@ -1213,6 +1312,7 @@ async function poll(first) {
   try {
     const live = await api(`/api/live?slug=${slug}&e=${S.e}&a=${S.a}&s=${encodeURIComponent(JSON.stringify(S.seq))}`);
     if (slug !== S.slug) return;
+    connOk();
     S.ov = live.overview;
     let mapDirty = false;
     for (const ev of live.events) {
@@ -1220,7 +1320,7 @@ async function poll(first) {
       if (["match", "split", "rename"].includes(ev.kind)) mapDirty = true;
       if (ev.kind === "match" && !first) {
         S.flash.set(ev.detail, performance.now());
-        if (ev.agent !== AUTO && ev.agent !== "@" + AUTO) toast(`<code>${esc(ev.detail)}</code>&nbsp;matched by ${esc(ev.agent || "an agent")}`, "match");
+        if (ev.agent !== AUTO && ev.agent !== "@" + AUTO) toast(`<code>${esc(ev.detail)}</code>&nbsp;matched by ${esc(ev.agent || "an agent")}`, "match", true);
       }
       if (ev.kind === "autopilot" && !first) toast(`Autopilot: ${esc(ev.detail)}`, "match");
       if (ev.kind === "link" && !first) toast(`🔗 <code>${esc(ev.detail)}</code>&nbsp;is linked into the game`, "match");
@@ -1231,10 +1331,10 @@ async function poll(first) {
       S.scores.get(at.function).push({ score: at.score, t: at.created_at, insns: at.n_insns });
     }
     if (!first) applyAttempts(live.attempts);
-    addActivity(live.events, live.attempts, first);
     S.claims = live.claims;
     if (!first) toastStopped(S.sessions || [], live.sessions);
-    S.sessions = live.sessions;
+    S.sessions = live.sessions;  // before the feed draws: its lines name who did the work by model
+    addActivity(live.events, live.attempts, first);
     for (const s of live.sessions) {
       if (s.feed.length) S.seq[s.id] = s.feed[s.feed.length - 1].seq;
     }
@@ -1255,7 +1355,10 @@ async function poll(first) {
     }
     $("feedHint").textContent = "";
   } catch (e) {
-    if (String(e.message).includes("Failed to fetch")) $("feedHint").textContent = "app not reachable";
+    if (String(e.message).includes("Failed to fetch")) {
+      connLost();
+      $("feedHint").textContent = "app not reachable";
+    }
   } finally {
     polling = false;
   }
@@ -1346,7 +1449,8 @@ function renderHeader(ov) {
     pill.classList.toggle("off", room.role === "guest" && !room.connected);
     pill.innerHTML = room.role === "host" ? `<span class="dot ${online ? "on" : ""}"></span>Sharing · ${online} online`
       : /waiting for the host/i.test(room.error || "") ? `<span class="dot work"></span>Waiting to be let in`
-      : `<span class="dot ${room.connected ? "on" : "err"}"></span>${room.syncing ? "Syncing the room's work…" : room.connected ? `In a room as ${esc(room.member)}` : "Room offline"}`;
+      : `<span class="dot ${room.connected ? "on" : "err"}"></span>${room.syncing ? "Syncing the room's work…" : room.connected ? `In a room as ${esc(room.member)}`
+        : room.failures ? `Room offline · retry in ${Math.ceil(room.retry_in)}s` : "Room offline"}`;
     $("teamTabCount").textContent = members.length ? members.length : "";
   } else $("teamTabCount").textContent = "";
   $("agTabCount").textContent = w.n || "";
@@ -1616,12 +1720,20 @@ function renderGuest(box, room) {
   const people = members.map((m) => `<div class="line-item"><span class="dot ${m.online ? "on" : ""}"></span><div class="txt"><b>${esc(m.name)}${m.name === room.member ? " (you)" : ""}</b>
       <span>${m.agents && m.agents.length ? esc(m.agents.join(", ")) : "no agents yet"} · ${m.matched || 0} matched${m.working && m.working.length ? ` · on ${esc(m.working.slice(0, 3).join(", "))}` : ""}</span></div></div>`).join("");
   const syncing = !!room.syncing;
+  const last = room.last_sync == null ? "never"
+    : room.last_sync < 90 ? `${Math.max(0, Math.round(room.last_sync))}s ago`
+      : `${Math.round(room.last_sync / 60)} min ago`;
+  const skipped = (room.layout && room.layout.skipped) || {};
+  const missed = (skipped.no_owner || 0) + (skipped.matched || 0) + (skipped.unsplittable || 0);
+  const sample = (room.layout && room.layout.sample) || [];
+  const missedNote = missed ? `<div class="notice"><span>${missed} room function${missed === 1 ? "" : "s"} couldn't be applied here: the two splits differ${sample.length ? ` (${sample.map((s) => esc(s)).join(", ")}${missed > sample.length ? ", …" : ""})` : ""}. The room keeps them; this copy doesn't get those matches until its split matches the host's.</span></div>` : "";
   box.innerHTML = `<h2 class="pane-title">${waiting ? "Waiting for the host to let you in" : syncing ? "Syncing the room's work…" : room.connected ? "In a team room" : "The room is offline"}</h2>
     <p class="muted">${syncing ? `The host is sending the room's work: a big room's first sync takes a moment. Your agents start as soon as it lands.`
       : waiting ? `You asked to join as <b>${esc(room.member)}</b>. Your agents start working with the room as soon as the host lets you in.`
       : room.connected ? `You're <b>${esc(room.member)}</b>. Your agents claim functions through the room, so nobody does the same one twice; matches are checked and shared by the host.`
-      : `${esc(room.error || "Waiting for the host…")} Your agents wait and carry on when it's back.`}</p>
-    <dl class="facts"><div><dt>Host</dt><dd>${esc(room.host)}</dd></div><div><dt>Members</dt><dd>${members.length}</dd></div><div><dt>Online</dt><dd>${members.filter((m) => m.online).length}</dd></div></dl>
+      : `${esc(room.error || "Waiting for the host…")} ${room.failures ? `Retrying in ${Math.ceil(room.retry_in)}s;` : ""} your agents wait and carry on when it's back.`}</p>
+    <dl class="facts"><div><dt>Host</dt><dd>${esc(room.host)}</dd></div><div><dt>Last sync</dt><dd>${last}${room.sync_ms ? ` · ${room.sync_ms} ms` : ""}</dd></div><div><dt>Members</dt><dd>${members.length}</dd></div><div><dt>Online</dt><dd>${members.filter((m) => m.online).length}</dd></div></dl>
+    ${missedNote}
     ${people ? `<div class="setup-group"><h3>In the room</h3>${people}</div>` : ""}
     <div class="row"><button class="ghost" id="roomReconnect" type="button">${room.connected ? "The host shared a new link?" : "Reconnect with a new link"}</button><button class="ghost danger" id="roomLeave" type="button">Leave room</button></div>`;
   $("roomReconnect").onclick = openReconnect;
@@ -1728,7 +1840,7 @@ function openReconnect() {
     try {
       const { job } = await api("/api/collab/reconnect", { method: "POST", body: { slug: S.slug, link: $("rLink").value.trim() } });
       await followJob(job, $("rLog"));
-      $("dialog").hidden = true;
+      closeDialog();
       toast("Back in the room.", "match");
     } catch (e) { toast(esc(e.message), "err"); $("rGo").disabled = false; }
   };
@@ -1756,7 +1868,7 @@ function openJoin() {
       // the file streams from disk as it's sent: a disc image is never read into the page whole
       const { job } = await api(`/api/collab/join?${q}`, { method: "POST", raw: path ? new Blob([]) : file });
       const res = await followJob(job, $("jLog"));
-      $("dialog").hidden = true;
+      closeDialog();
       loadNav();
       location.hash = `#/p/${res.slug}`;
     } catch (e) { toast(esc(e.message), "err"); $("jGo").disabled = false; }
@@ -1903,7 +2015,7 @@ function openForkDialog(p) {
     try {
       const { job } = await api("/api/fork", { method: "POST", body: { repo: p.repo_url, name: p.name, platform: p.platform, version: p.version } });
       const r = await followJob(job, $("forkLog"));
-      $("dialog").hidden = true;
+      closeDialog();
       await loadState();
       loadNav();
       location.hash = `#/p/${r.slug}`;
@@ -2222,6 +2334,7 @@ function renderSessions(sessions) {
   });
 }
 $("stopAll").onclick = async () => {
+  if (!confirm("Stop every agent on this project? Their work so far is kept.")) return;
   await api("/api/agents/stop", { method: "POST", body: { slug: S.slug } }).catch((e) => toast(esc(e.message), "err"));
   toast("Stopping every agent on this project.");
   poll(false);
@@ -2408,8 +2521,16 @@ document.addEventListener("click", (e) => {
 
 /* ------------------------------------------------------------------ feeds */
 function fnLink(name) { return `<span class="fn" data-fn="${esc(name)}">${esc(name)}</span>`; }
+/* Who did it: the model that did it ("deepseek-chat"), not the session id the store keeps ("api-1"). A CLI session
+   with no model picked is named by its app instead, and the id stays a tooltip so two sessions stay apart. */
+function whoHtml(agent) {
+  if (!agent) return "";
+  const s = (S.sessions || []).find((x) => x.agent === agent);
+  const label = s ? s.model || s.label : "";
+  return label && label !== agent ? `<span class="who" title="${esc(agent)}">${esc(label)}</span>` : `<span class="who">${esc(agent)}</span>`;
+}
 function eventHtml(ev) {
-  const who = `<span class="who">${esc(ev.agent || "")}</span>`;
+  const who = whoHtml(ev.agent);
   const d = ev.detail || "";
   switch (ev.kind) {
     case "claim": return `${who} started ${fnLink(d)}`;
@@ -2431,10 +2552,10 @@ function eventHtml(ev) {
     default: return `${who} ${esc(ev.kind)} ${esc(d)}`;
   }
 }
-/* One line per agent and function, updated in place: "claude-1 · lerp · 4 compiles · best 87%" until it's matched. */
+/* One line per agent and function, updated in place: "claude-opus-4-1 · lerp · 4 compiles · best 87%" until it's matched. */
 const groups = new Map();
 function groupHtml(g) {
-  const who = `<span class="who">${esc(g.agent || "")}</span>`;
+  const who = whoHtml(g.agent);
   const p = pctOf(g.best, g.insns);
   if (g.matched) return `<span class="ok">✓</span> ${who} matched ${fnLink(g.fn)}${g.tries ? ` <span class="score">after ${plural(g.tries, "compile")}</span>` : ""}`;
   if (g.released) return `${who} set ${fnLink(g.fn)} aside, with notes for the next agent${g.tries ? ` <span class="score">${plural(g.tries, "compile")}${p != null ? ` · best ${pctText(p)}` : ""}</span>` : ""}`;
@@ -2442,13 +2563,44 @@ function groupHtml(g) {
   const last = g.lastScore === undefined ? "" : g.lastScore === null ? ` · <span class="bad">last one didn't compile</span>` : "";
   return `${who} working on ${fnLink(g.fn)} <span class="score">${plural(g.tries, "compile")}${p != null ? ` · best ${pctText(p)}` : ""}</span>${last}`;
 }
+/* Feeds put new lines at the top while agents work. Someone scrolled down reading an older entry shouldn't have the
+   list move under them: the line still goes in, the list keeps its place, and a pill counts what has arrived. */
+const FEED_EDGE = 24;
+const feedAway = (list) => list.scrollTop > FEED_EDGE;
+function feedSeen(list) {
+  const pill = $(list.id + "New");
+  if (pill) { pill.hidden = true; pill.dataset.n = "0"; }
+}
+function feedArrived(list, n = 1) {
+  const pill = $(list.id + "New");
+  if (!pill) return;
+  const total = Number(pill.dataset.n || 0) + n;
+  pill.dataset.n = String(total);
+  pill.textContent = `${total} new`;
+  pill.setAttribute("aria-label", `${plural(total, "new line")} above: jump to them`);
+  pill.hidden = false;
+}
+function prependFeed(list, el, first) {
+  const away = !first && feedAway(list);
+  const top = list.scrollTop, height = list.scrollHeight;
+  list.prepend(el);
+  if (!away) return;
+  list.scrollTop = top + (list.scrollHeight - height);
+  feedArrived(list);
+}
+for (const id of ["activity", "thoughts"]) {
+  const list = $(id), pill = $(id + "New");
+  if (!list || !pill) continue;
+  pill.onclick = () => { list.scrollTop = 0; feedSeen(list); };
+  list.addEventListener("scroll", () => { if (!feedAway(list)) feedSeen(list); }, { passive: true });
+}
 function addLine(t, html, first) {
   const list = $("activity");
   const li = document.createElement("li");
   if (!first) li.className = "fresh";
   li.innerHTML = `<time>${clock(t)}</time><span>${html}</span>`;
   list.querySelector(".placeholder")?.remove();
-  list.prepend(li);
+  prependFeed(list, li, first);
   return li;
 }
 function touchGroup(agent, fn, t, change, first) {
@@ -2459,7 +2611,8 @@ function touchGroup(agent, fn, t, change, first) {
   if (g.li && g.li.isConnected) {
     g.li.querySelector("time").textContent = clock(t);
     g.li.querySelector("span").innerHTML = groupHtml(g);
-    if (g.li !== $("activity").firstElementChild) $("activity").prepend(g.li);
+    const list = $("activity");
+    if (!feedAway(list) && g.li !== list.firstElementChild) list.prepend(g.li);
     if (!first) { g.li.classList.remove("fresh"); void g.li.offsetWidth; g.li.classList.add("fresh"); }
   } else g.li = addLine(t, groupHtml(g), first);
   if (g.matched || g.released) groups.delete(key);
@@ -2524,7 +2677,7 @@ function addThoughts(sessions, first) {
     if (it.type === "text") body.innerHTML = miniMarkdown(it.text.slice(0, 1600));
     else body.textContent = it.type === "think" ? it.text.slice(0, 1200) : it.text;
     li.append(time, src, body);
-    list.prepend(li);
+    prependFeed(list, li, first);
   }
   while (list.children.length > 400) list.lastChild.remove();
   if (!list.children.length) list.innerHTML = `<li class="placeholder"><time></time><span class="muted">Helper agents you start from decomp.anything think out loud here.</span></li>`;
@@ -2548,6 +2701,18 @@ function highlightC(text) {
     if (/^\s*(\/\*|\*|\/\/)/.test(line)) return `<span class="cm">${line}</span>`;
     return line.replace(kw, '<span class="kw">$1</span>').replace(/\b(0x[0-9A-Fa-f]+|\d+)\b/g, '<span class="num">$1</span>');
   }).join("\n");
+}
+
+/* The open function lives in the URL, so a refresh keeps it open and a teammate can be sent a link to it. */
+function setFnUrl(name) {
+  if (!S.slug || !S.ov || S.ov.kind === "analysis") return;
+  const url = `#/p/${S.slug}/${S.tab}/${encodeURIComponent(name)}`;
+  if (location.hash !== url) history.replaceState(null, "", url);
+}
+function resetFnUrl() {
+  if (!S.slug || !S.ov || S.ov.kind === "analysis") return;
+  const url = `#/p/${S.slug}/${S.tab}`;
+  if (location.hash !== url) history.replaceState(null, "", url);
 }
 
 async function openFn(name) {
@@ -2574,8 +2739,8 @@ async function openFn(name) {
   const again = S.fn === name && !$("drawer").hidden;
   if (!again) { giveBack(name); S.editDirty = false; $("tryMsg").hidden = true; }
   S.fn = name;
-  $("drawer").hidden = false;
-  document.body.classList.add("locked");
+  openModal("drawer", !again);
+  setFnUrl(name);
   if (!again) { S.ftab = null; S.which = "latest"; S.diffKey = null; $("diff").innerHTML = ""; $("diffSum").textContent = ""; }
   drawMap();
   document.querySelectorAll("#fnRows tr").forEach((tr) => tr.classList.toggle("sel", tr.dataset.fn === name));
@@ -2646,7 +2811,7 @@ async function refreshFn(first) {
     const kinds = { matched: lang ? `Matching ${lang}` : "Matching source", reconstructed: `Reconstructed ${lang || "code"} (unverified)`, best: "Best attempt so far", latest: S.ov.kind === "fork" ? "In the source now" : "Latest attempt", draft: "Machine draft (m2c)" };
     $("fnSrcKind").textContent = kinds[d.source_kind] || (lang ? `No ${lang} yet` : "No source yet");
     if (!S.editDirty || first) setEditor(d.source || "", d);
-    $("copySrc").onclick = () => navigator.clipboard.writeText($("fnEdit").value).then(() => toast("Copied."));
+    $("copySrc").onclick = () => copyText($("fnEdit").value);
     renderFnChart(d);
     $("diffWhich").hidden = d.status === "matched" || S.ov.kind === "fork" || d.scores.filter((x) => x.score != null).length < 2;
     const xr = [];
@@ -2700,7 +2865,7 @@ async function tryIt() {
     if (r.matched) {
       S.myClaim = null;
       msg.className = "try-msg ok"; msg.textContent = "Byte-identical. Saved as a match, credited to you.";
-      toast(`<code>${esc(name)}</code>&nbsp;matched by you`, "match");
+      toast(`<code>${esc(name)}</code>&nbsp;matched by you`, "match", true);
     } else {
       S.myClaim = name;
       msg.className = "try-msg" + (r.score == null ? " bad" : "");
@@ -2858,7 +3023,10 @@ function renderList() {
   rows = rows.slice().sort((a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : a.i - b.i) * L.dir; });
   L.rows = rows;
   const fork = S.ov && S.ov.kind === "fork";
-  $("fnRows").innerHTML = rows.slice(0, L.limit).map((f) => {
+  const shown = rows.slice(0, L.limit);
+  let focusAt = shown.findIndex((f) => f.name === S.fn);
+  if (focusAt < 0) focusAt = 0;  // one row is a tab stop; the arrows (and j/k) walk the rest
+  $("fnRows").innerHTML = shown.map((f, i) => {
     const st = fnState(f), p = pctOf(f.best, f.insns);
     const best = st === "matched" ? `<span class="ok">100%</span>` : p == null ? `<span class="dim">–</span>` : pctText(p);
     const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">${analysis ? "analyzed" : "matched"}</span>` : st === "recon" ? `<span class="st recon" title="reconstructed by an agent: unverified, not a match">reconstructed</span>` : st === "library" ? `<span class="st" title="library/CRT code: not the program's own">${esc(f.library || "library")}</span>` : st === "asm" ? `<span class="st" title="hand-written assembly: no C compiles to it">assembly</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
@@ -2867,7 +3035,7 @@ function renderList() {
       : fork ? esc(f.unit || "") : hex8(f.vram);
     const measure = analysis ? (f.size ? bytes(f.size) : "—") : f.insns.toLocaleString();
     const clickTitle = f.child ? "Open child project" : analysis && f.kind === "artifact-entry" ? "Show this file in Contents" : analysis && (f.kind === "recovered-source" || f.kind === "reconstruction") ? "Open the recovered source" : analysis ? "Open in the RE console" : "Open function";
-    return `<tr data-fn="${esc(f.name)}" class="${S.fn === f.name ? "sel" : ""}" tabindex="0" title="${esc(clickTitle)}"><td class="mono dim">${where}</td>
+    return `<tr data-fn="${esc(f.name)}" class="${S.fn === f.name ? "sel" : ""}" tabindex="${i === focusAt ? 0 : -1}" title="${esc(clickTitle)}"><td class="mono dim">${where}</td>
       <td class="mono name">${(S.ov && (S.ov.priority || []).includes(f.name)) ? `<span class="star" title="agents take it next">★</span>` : ""}${esc(f.name)}${f.child ? ` <span class="dim" title="child project">↗</span>` : ""}</td><td class="r mono">${measure}</td>
       ${analysis ? "" : `<td class="r mono">${best}</td><td class="r mono">${f.attempts || `<span class="dim">0</span>`}</td><td class="r mono">${f.hits || `<span class="dim">–</span>`}</td>`}<td>${status}</td></tr>`;
   }).join("") || `<tr class="none"><td colspan="${analysis ? 4 : 6}">No work item matches${q ? ` “${esc(L.q)}”` : ""}.</td></tr>`;
@@ -2882,7 +3050,24 @@ $("fnFilter").addEventListener("click", (e) => { const b = e.target.closest("[da
 $("fnSearch").addEventListener("input", () => { L.q = $("fnSearch").value; L.limit = 200; renderList(); });
 $("fnMore").onclick = () => { L.limit += 500; renderList(); };
 $("fnRows").addEventListener("click", (e) => { const tr = e.target.closest("tr[data-fn]"); if (tr) openFn(tr.dataset.fn); });
-$("fnRows").addEventListener("keydown", (e) => { const tr = e.target.closest("tr[data-fn]"); if (tr && e.key === "Enter") openFn(tr.dataset.fn); });
+$("fnRows").addEventListener("keydown", (e) => {
+  const tr = e.target.closest("tr[data-fn]");
+  if (!tr) return;
+  if (e.key === "Enter") { openFn(tr.dataset.fn); return; }
+  const rows = [...$("fnRows").querySelectorAll("tr[data-fn]")];
+  let k = rows.indexOf(tr);
+  if (e.key === "ArrowDown" || e.key === "j") k++;
+  else if (e.key === "ArrowUp" || e.key === "k") k--;
+  else if (e.key === "Home") k = 0;
+  else if (e.key === "End") k = rows.length - 1;
+  else return;
+  e.preventDefault();
+  const next = rows[Math.max(0, Math.min(rows.length - 1, k))];
+  if (!next) return;
+  rows.forEach((r) => { r.tabIndex = r === next ? 0 : -1; });
+  next.focus();
+  next.scrollIntoView({ block: "nearest" });
+});
 document.querySelectorAll(".fn-table th[data-sort]").forEach((th) => {
   th.onclick = () => {
     const k = th.dataset.sort === "vram" ? "i" : th.dataset.sort;
@@ -2910,19 +3095,56 @@ function renderProgress() {
 }
 
 /* ------------------------------------------------------------------ drawers, keys */
-function closeAll() {
+/* Drawers are this app's modals. While one is open the page behind is inert (no clicks, no tab stops, nothing read
+   out), the card takes focus so the dialog is announced, and closing gives focus back to what opened it. */
+let modalReturn = null;
+const modalOpen = () => !$("drawer").hidden || !$("dialog").hidden;
+function lockBehind(on) {
+  $("app").inert = on;
+  document.body.classList.toggle("locked", on);
+}
+function focusInto(card, firstControl) {
+  if (!firstControl) { card.focus({ preventScroll: true }); return; }  // the dialog itself: its name is read out
+  const shown = (el) => !el.hidden && !el.closest("[hidden]") && getComputedStyle(el).display !== "none";
+  const fields = [...card.querySelectorAll("input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled])")].filter(shown);
+  const buttons = [...card.querySelectorAll("button:not([disabled])")].filter(shown);
+  (fields[0] || buttons[0] || card).focus({ preventScroll: true });
+}
+function openModal(id, focus = true) {
+  if (!modalOpen()) modalReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  $(id).hidden = false;
+  lockBehind(true);
+  if (focus) focusInto($(id).querySelector(".drawer-card"), id === "dialog");
+}
+function closeModal(id, restore = true) {
+  $(id).hidden = true;
+  if (modalOpen()) return;
+  lockBehind(false);
+  const back = modalReturn;
+  modalReturn = null;
+  if (restore && back && back.isConnected) back.focus({ preventScroll: true });
+}
+function closeAll(restore = true) {
+  const wasOpen = modalOpen();
   if (!$("drawer").hidden) giveBack(null);
   for (const id of ["drawer", "dialog"]) $(id).hidden = true;
-  document.body.classList.remove("locked");
+  lockBehind(false);
   S.fn = null;
   if (S.map.length) drawMap();
+  const back = modalReturn;
+  modalReturn = null;
+  if (wasOpen && restore) {
+    resetFnUrl();
+    if (back && back.isConnected) back.focus({ preventScroll: true });
+  }
 }
 document.querySelectorAll(".drawer").forEach((d) => {
   d.addEventListener("click", (e) => {
     if (e.target !== d && !e.target.closest("[data-close]")) return;
-    if (d.id === "drawer") { giveBack(null); S.fn = null; drawMap(); }
-    d.hidden = true;
-    if ($("drawer").hidden && $("dialog").hidden) document.body.classList.remove("locked");
+    const wasFn = d.id === "drawer";
+    if (wasFn) { giveBack(null); S.fn = null; drawMap(); }
+    closeModal(d.id);
+    if (wasFn) resetFnUrl();
   });
 });
 document.addEventListener("keydown", (e) => {
@@ -2939,18 +3161,34 @@ document.addEventListener("keydown", (e) => {
 function cmdBox(cmd) {
   return `<div class="cmd"><code>${esc(cmd)}</code><button type="button" data-copy="${esc(cmd)}">Copy</button></div>`;
 }
+/* Copying can be refused (no permission, not a secure context): say so instead of a button that silently does nothing. */
+async function copyText(text, button) {
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error("no clipboard");
+    await navigator.clipboard.writeText(text);
+    if (button) {
+      const was = button.textContent;
+      button.textContent = "Copied";
+      setTimeout(() => { button.textContent = was; }, 1500);
+    }
+    return true;
+  } catch {
+    toast("Couldn't copy: select the text and press Ctrl+C.", "err");
+    return false;
+  }
+}
 function wireCopies(root) {
-  root.querySelectorAll("[data-copy]").forEach((b) => { b.onclick = () => navigator.clipboard.writeText(b.dataset.copy).then(() => { b.textContent = "Copied"; setTimeout(() => (b.textContent = "Copy"), 1500); }); });
+  root.querySelectorAll("[data-copy]").forEach((b) => { b.onclick = () => copyText(b.dataset.copy, b); });
 }
 
 function dialog(title, html) {
   $("dialogTitle").textContent = title;
   $("dialogBody").innerHTML = html;
-  $("dialog").hidden = false;
-  document.body.classList.add("locked");
+  openModal("dialog");
   wireCopies($("dialogBody"));
   return $("dialogBody");
 }
+function closeDialog() { closeModal("dialog"); }
 
 $("joinBtn").onclick = openJoin;
 $("askBtn").onclick = openConnect;
@@ -3340,8 +3578,7 @@ $("deleteBtn").onclick = () => {
   $("delGo").onclick = async () => {
     try {
       await api("/api/delete", { method: "POST", body: { slug: S.slug, files: $("delFiles").checked } });
-      $("dialog").hidden = true;
-      document.body.classList.remove("locked");
+      closeDialog();
       loadNav();
       location.hash = "#/";
     } catch (e) { toast(esc(e.message), "err"); }
@@ -3573,6 +3810,7 @@ $("quitBtn").onclick = async () => {
 };
 
 loadNav();
+applyTheme(savedTheme());  // the saved choice survives a reload (it used to apply only until the page was refreshed)
 route();
 setTimeout(() => checkUpdate(false, true), 4000);
 setInterval(() => checkUpdate(false, true), 10 * 60 * 1000);

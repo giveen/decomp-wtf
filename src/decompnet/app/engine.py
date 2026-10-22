@@ -2704,14 +2704,15 @@ class RomNetwork(Network):
                                  (proj["id"], old)).fetchone()
                 if row is None:
                     continue
-                db.execute("UPDATE functions SET name=? WHERE id=?", (new, row["id"]))
+                db.execute("UPDATE functions SET name=?, changed_at=? WHERE id=?", (new, now, row["id"]))
                 asm = (row["asm"] or "").replace(f"glabel {old}", f"glabel {new}").replace(f"endlabel {old}", f"endlabel {new}")
                 db.execute("UPDATE functions SET asm=? WHERE id=?", (asm, row["id"]))
                 word = re.compile(rf"\b{re.escape(old)}\b")
                 for col in ("matched_source", "best_source"):
                     if row[col]:
                         db.execute(f"UPDATE functions SET {col}=? WHERE id=?", (word.sub(new, row[col]), row["id"]))
-                db.execute("UPDATE symbols SET name=? WHERE project_id=? AND name=?", (new, proj["id"], old))
+                db.execute("UPDATE symbols SET name=?, changed_at=? WHERE project_id=? AND name=?",
+                           (new, now, proj["id"], old))
             for sym in info.symbols:
                 if not sym.name or not IDENT.match(sym.name):
                     continue
@@ -2720,12 +2721,12 @@ class RomNetwork(Network):
                 if row is not None:
                     if row["address"] != sym.address:
                         continue  # don't steal an existing name for another address
-                    db.execute("UPDATE symbols SET size=?, kind=?, preview=? WHERE project_id=? AND name=?",
-                               (sym.size, sym.kind, sym.preview or None, proj["id"], sym.name))
+                    db.execute("UPDATE symbols SET size=?, kind=?, preview=?, changed_at=? WHERE project_id=? AND name=?",
+                               (sym.size, sym.kind, sym.preview or None, now, proj["id"], sym.name))
                 else:
-                    db.execute("INSERT INTO symbols(project_id,name,address,size,kind,preview) "
-                               "VALUES(?,?,?,?,?,?)", (proj["id"], sym.name, sym.address, sym.size, sym.kind,
-                                                       sym.preview or None))
+                    db.execute("INSERT INTO symbols(project_id,name,address,size,kind,preview,changed_at) "
+                               "VALUES(?,?,?,?,?,?,?)", (proj["id"], sym.name, sym.address, sym.size, sym.kind,
+                                                         sym.preview or None, now))
                     added += 1
             self._event(db, proj["id"], None, "debug", f"{info.source}: {len(renames)} renamed, {added} new symbols")
         self._syms.pop(proj["id"], None)
@@ -3246,17 +3247,19 @@ class RomNetwork(Network):
         if old is not None:
             old.size = head.size
         th, tt = self._make_target(proj, head, syms), self._make_target(proj, tail, syms)
+        now = time.time()
         with self.store.tx() as db:
-            db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL "
-                       "WHERE id=?", (head.size, len(head.lines), th.code, json.dumps(th.to_json()),
-                                      self._asm_source(head), fn["id"]))
-            db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset) "
-                       "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (proj["id"], new_name, tail.size, len(tail.lines), tt.code,
-                                                        json.dumps(tt.to_json()), self._asm_source(tail), None,
-                                                        fn["unit"], addr, tail.rom))
-            db.execute("UPDATE symbols SET size=? WHERE project_id=? AND name=?", (head.size, proj["id"], fn["name"]))
-            db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
-                       (proj["id"], new_name, addr, tail.size, "func"))
+            db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
+                       "changed_at=? WHERE id=?", (head.size, len(head.lines), th.code, json.dumps(th.to_json()),
+                                                    self._asm_source(head), now, fn["id"]))
+            db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,"
+                       "changed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (proj["id"], new_name, tail.size, len(tail.lines), tt.code, json.dumps(tt.to_json()),
+                        self._asm_source(tail), None, fn["unit"], addr, tail.rom, now))
+            db.execute("UPDATE symbols SET size=?, changed_at=? WHERE project_id=? AND name=?",
+                       (head.size, now, proj["id"], fn["name"]))
+            db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,changed_at) "
+                       "VALUES(?,?,?,?,?,?)", (proj["id"], new_name, addr, tail.size, "func", now))
             self._event(db, proj["id"], agent.id, "split", f"{fn['name']} / {new_name}")
         self._xrefs.pop(proj["id"], None)
         return (f"✅ split: {fn['name']} is now {len(head.lines)} instructions; {new_name} at 0x{addr:08X} has "
@@ -3277,16 +3280,19 @@ class RomNetwork(Network):
         refs_head = [r for r in refs if r[0] < off]
         refs_tail = [[r[0] - off, r[1], r[2]] for r in refs if r[0] >= off]
         syms.add(Symbol(new_name, addr, len(tail), "func"))
+        now = time.time()
         with self.store.tx() as db:
-            db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL "
-                       "WHERE id=?", (len(head), max(1, len(head) // 2), head, json.dumps(refs_head), asm_head, fn["id"]))
-            db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset) "
-                       "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (proj["id"], new_name, len(tail), max(1, len(tail) // 2), tail,
-                                                        json.dumps(refs_tail), asm_tail, None, fn["unit"], addr,
-                                                        fn["rom_offset"] + off))
-            db.execute("UPDATE symbols SET size=? WHERE project_id=? AND name=?", (len(head), proj["id"], fn["name"]))
-            db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
-                       (proj["id"], new_name, addr, len(tail), "func"))
+            db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
+                       "changed_at=? WHERE id=?", (len(head), max(1, len(head) // 2), head, json.dumps(refs_head), asm_head,
+                                                    now, fn["id"]))
+            db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,"
+                       "changed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (proj["id"], new_name, len(tail), max(1, len(tail) // 2), tail, json.dumps(refs_tail), asm_tail,
+                        None, fn["unit"], addr, fn["rom_offset"] + off, now))
+            db.execute("UPDATE symbols SET size=?, changed_at=? WHERE project_id=? AND name=?",
+                       (len(head), now, proj["id"], fn["name"]))
+            db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,changed_at) "
+                       "VALUES(?,?,?,?,?,?)", (proj["id"], new_name, addr, len(tail), "func", now))
             self._event(db, proj["id"], agent.id, "split", f"{fn['name']} / {new_name}")
         self._xrefs.pop(proj["id"], None)
         self._ops.pop(proj["id"], None)
@@ -3308,14 +3314,16 @@ class RomNetwork(Network):
             end += 4
         code = rom[off:end]
         syms.add(Symbol(new_name, addr, len(code), "func"))
+        now = time.time()
         with self.store.tx() as db:
-            db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset) "
-                       "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (proj["id"], new_name, len(code), max(1, len(code) // 2), code,
-                                                        json.dumps(gba._refs(code, addr, literals, off)),
-                                                        f"\tthumb_func_start {new_name}\n@ found by an agent after {prev['name']}\n",
-                                                        None, prev["unit"], addr, off))
-            db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
-                       (proj["id"], new_name, addr, len(code), "func"))
+            db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,"
+                       "changed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (proj["id"], new_name, len(code), max(1, len(code) // 2), code,
+                        json.dumps(gba._refs(code, addr, literals, off)),
+                        f"\tthumb_func_start {new_name}\n@ found by an agent after {prev['name']}\n",
+                        None, prev["unit"], addr, off, now))
+            db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,changed_at) "
+                       "VALUES(?,?,?,?,?,?)", (proj["id"], new_name, addr, len(code), "func", now))
             self._event(db, proj["id"], agent.id, "split", f"{prev['name']} / {new_name}")
         self._xrefs.pop(proj["id"], None)
         self._ops.pop(proj["id"], None)
@@ -3371,12 +3379,15 @@ class RomNetwork(Network):
             listing = "\n".join(f"- {n}: {why}" for n, why in broken[:10])
             return f"❌ REJECTED: renaming breaks {len(broken)} matched function(s).\n{listing}"
         msg = message.strip() or f"rename {old} -> {new}"
+        now = time.time()
         with self.store.tx() as db:
-            if db.execute("UPDATE symbols SET name=? WHERE project_id=? AND name=?", (new, proj["id"], old)).rowcount == 0:
+            if db.execute("UPDATE symbols SET name=?, changed_at=? WHERE project_id=? AND name=?",
+                          (new, now, proj["id"], old)).rowcount == 0:
                 s = trial.by_name[new]
-                db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
-                           (proj["id"], new, s.address, s.size, s.kind))
-            db.execute("UPDATE functions SET name=? WHERE project_id=? AND (name=? OR vram=?)", (new, proj["id"], old, addr))
+                db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,changed_at) "
+                           "VALUES(?,?,?,?,?,?)", (proj["id"], new, s.address, s.size, s.kind, now))
+            db.execute("UPDATE functions SET name=?, changed_at=? WHERE project_id=? AND (name=? OR vram=?)",
+                       (new, now, proj["id"], old, addr))
             if self.cfg(proj).get("platform") in X86_PLATFORMS:  # its listing was generated once, with the old label
                 db.execute("UPDATE functions SET asm=replace(replace(asm, ?, ?), ?, ?) WHERE project_id=? AND vram=?",
                            (f"glabel {old}", f"glabel {new}", f"endlabel {old}", f"endlabel {new}", proj["id"], addr))
@@ -3701,14 +3712,25 @@ class RomNetwork(Network):
                        "VALUES(?,?,?,?,?,?,?)", (proj["id"], version, header, None, f"from the room (host v{host_version})",
                                                   time.time(), ""))
 
-    def apply_remote_layout(self, slug: str, functions: list[dict], symbols: list[dict]) -> None:
+    def apply_remote_layout(self, slug: str, functions: list[dict], symbols: list[dict]) -> dict:
         """Mirror the room's splits and names. The host already regression-tested them on the same ROM.
 
-        A big room sends every function and symbol on its first sync (and after a rename or split): tens of thousands
-        of each, most unchanged. The lookups below are indexed and the writes batched, so the first sync of a
-        70,000-function room lands in seconds instead of grinding through a scan per row."""
+        A big room sends every function and symbol on its first sync (and only what changed after it): tens of
+        thousands of rows, most unchanged. The lookups below are indexed and the writes batched, so the first sync
+        of a 70,000-function room lands in seconds instead of grinding through a scan per row.
+
+        Returns what happened, for the page: splits applied, names applied or displaced, and the boundaries that
+        couldn't be applied here because the two splits differ (that is work this member never gets)."""
         proj = self._project(slug)
         pid = proj["id"]
+        applied = displaced = 0
+        skipped = {"no_owner": 0, "matched": 0, "unsplittable": 0}
+        sample: list[str] = []
+
+        def skip(why: str, vram: int, name: str) -> None:
+            skipped[why] += 1
+            if len(sample) < 5:
+                sample.append(f"0x{vram:08X} {name}")
         local = {r["vram"]: {"id": r["id"], "name": r["name"], "size": r["size"], "status": r["status"],
                              "unit": r["unit"], "vram": r["vram"]}
                  for r in self.store.all("SELECT id,name,size,status,unit,vram FROM functions "
@@ -3721,16 +3743,20 @@ class RomNetwork(Network):
             i = bisect.bisect_right(starts, vram) - 1
             owner = local.get(starts[i]) if i >= 0 else None
             if owner is None or not (owner["vram"] < vram < owner["vram"] + owner["size"]):
-                continue  # no function of the guest's split contains this boundary: nothing to split
+                skip("no_owner", vram, f["name"])  # no function of the guest's split contains this boundary
+                continue
             if owner["status"] == "matched":
+                skip("matched", vram, f["name"])  # splitting it would throw the member's match away
                 continue
             row = self.store.one("SELECT * FROM functions WHERE id=?", owner["id"])
             if row is None:
+                skip("no_owner", vram, f["name"])
                 continue
             rf = self._parse_asm(row["name"], row["asm"], row["unit"])
             try:
                 head, tail = split.split_function(rf, vram, f["name"])
             except ValueError:
+                skip("unsplittable", vram, f["name"])
                 continue
             syms = self.symbols(pid)
             syms.add(Symbol(f["name"], vram, tail.size, "func"))
@@ -3754,6 +3780,7 @@ class RomNetwork(Network):
             local[vram] = {"id": tail_id, "name": f["name"], "size": tail.size, "status": "open",
                            "unit": owner["unit"], "vram": vram}
             bisect.insort(starts, vram)
+            applied += 1
         self._xrefs.pop(pid, None)
         syms = self.symbols(pid)
         changes: list[tuple[str, dict]] = []
@@ -3762,8 +3789,10 @@ class RomNetwork(Network):
             if off == 0 and current == sym["name"]:
                 continue
             changes.append((current if off == 0 else f"D_{int(sym['address']):08X}", sym))
+        summary = {"applied": applied, "renamed": len(changes), "displaced": displaced,
+                   "skipped": skipped, "sample": sample}
         if not changes:
-            return
+            return summary
 
         def free_name(db, vram: int, taken: set[str]) -> str:
             """An address-derived name no function or symbol here has (a displaced one takes it back)."""
@@ -3794,6 +3823,7 @@ class RomNetwork(Network):
                     db.execute("UPDATE functions SET name=? WHERE id=?", (fallback, row["id"]))
                     db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
                                (pid, fallback, int(row["vram"]), row["size"] or 0, "func"))
+                    displaced += 1
             for _old, sym in changes:
                 db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
                            (pid, sym["name"], int(sym["address"]), sym["size"], sym["kind"]))
@@ -3814,6 +3844,8 @@ class RomNetwork(Network):
                 with self.store.tx() as db:
                     db.executemany("UPDATE functions SET matched_source=?, best_source=? WHERE id=?", updates)
         self._syms.pop(pid, None)
+        summary["displaced"] = displaced
+        return summary
 
     @staticmethod
     def _sub_names(text: str | None, renamed: dict[str, str]) -> str | None:
@@ -4059,9 +4091,15 @@ class RomNetwork(Network):
     def _room_info(self, slug: str) -> dict | None:
         if slug in self.links:
             link = self.links[slug]
+            now = time.time()
             return {"role": "guest", "host": link.url, "member": link.member, "error": link.error,
                     "members": link.members, "syncing": link.syncing,
-                    "connected": link.syncing or time.time() - link.last_ok < 15}
+                    "connected": link.syncing or now - link.last_ok < 15,
+                    # how the sync is going: the page shows the last one and counts down to the next attempt
+                    "last_sync": (now - link.last_ok) if link.last_ok else None,
+                    "sync_ms": link.sync_ms, "failures": link.failures,
+                    "retry_in": max(0.0, link.next_try - now) if link.failures else 0.0,
+                    "layout": link.layout}
         if slug in self.rooms:
             return {"role": "host", "members": self.rooms[slug].members()}
         return None

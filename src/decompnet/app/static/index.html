@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="/assets/console.css?v=2">
 </head>
 <body>
-<div class="app">
+<div class="app" id="app">
 
 <!-- ================================================================ sidebar -->
 <aside class="nav" id="nav" aria-label="decomp.anything">
@@ -381,10 +381,12 @@
     <div class="cols activity-cols">
       <section class="panel feed-panel">
         <header class="panel-head"><h2>Activity</h2><span class="muted small" id="feedHint"></span></header>
+        <button class="feed-new" id="activityNew" type="button" aria-live="polite" hidden></button>
         <ol class="feed" id="activity"></ol>
       </section>
       <section class="panel feed-panel">
         <header class="panel-head"><h2>Agent output</h2><span class="muted small">what helper agents say and do</span></header>
+        <button class="feed-new" id="thoughtsNew" type="button" aria-live="polite" hidden></button>
         <ol class="feed thoughts" id="thoughts"></ol>
       </section>
     </div>
@@ -550,7 +552,7 @@
 
 <!-- function inspector -->
 <div class="drawer" id="drawer" hidden>
-  <div class="drawer-card" role="dialog" aria-modal="true" aria-labelledby="fnName">
+  <div class="drawer-card" role="dialog" aria-modal="true" aria-labelledby="fnName" tabindex="-1">
     <header class="drawer-head">
       <div class="dh-title">
         <p class="eyebrow" id="fnAddr"></p>
@@ -607,12 +609,13 @@
 
 <!-- generic dialog -->
 <div class="drawer" id="dialog" hidden>
-  <div class="drawer-card narrow" role="dialog" aria-modal="true" aria-labelledby="dialogTitle">
+  <div class="drawer-card narrow" role="dialog" aria-modal="true" aria-labelledby="dialogTitle" tabindex="-1">
     <header class="drawer-head"><h2 id="dialogTitle"></h2><button class="ghost icon" data-close type="button" aria-label="Close">✕</button></header>
     <div class="drawer-body" id="dialogBody"></div>
   </div>
 </div>
 
+<div class="conn" id="connBanner" role="status" aria-live="polite" hidden></div>
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <script src="/assets/app.js?v=2"></script>
 <script src="/assets/console.js?v=2"></script>

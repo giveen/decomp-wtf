@@ -63,6 +63,10 @@ def test_state_carries_work_never_rom_data(room):
     assert not re.search(r"/\* [0-9A-F]+ [0-9A-F]{8} [0-9A-F]{8} \*/", text)  # no disassembly lines
     assert st["functions"] and st["members"][0]["name"] == "alex"
     assert client.get(f"/collab/state?room={slug}", headers={"authorization": "Bearer dn_nope"}).status_code == 400
+    # a member that is up to date gets no layout at all; one whose cursor is unreadable gets the whole split
+    current = client.get(f"/collab/state?room={slug}&l=1e12", headers={"authorization": f"Bearer {tok}"}).json()
+    assert "functions" not in current and "symbols" not in current and current["l"] > 0
+    assert client.get(f"/collab/state?room={slug}&l=soon", headers={"authorization": f"Bearer {tok}"}).json()["functions"]
 
 
 def test_split_and_match_from_the_guest_reach_the_host(room):
@@ -279,10 +283,94 @@ def test_a_big_room_layout_applies_without_scanning_every_function(tmp_path):
     assert net.symbols(pid).by_addr[1000 * 0x20].name == "renamed_1000"  # the cached table was rebuilt
 
 
-def _guest_with_demo(tmp_path, rom):
-    net = RomNetwork(tmp_path / "guest.db", tmp_path / "guest")
+def _guest_with_demo(tmp_path, rom, name: str = "guest"):
+    net = RomNetwork(tmp_path / f"{name}.db", tmp_path / name)
     slug = net.import_rom(rom, confirmed=True, log=lambda *_: None)
     return net, slug, net.project_row(slug)["id"]
+
+
+def test_a_room_sends_only_the_layout_that_changed(built, tmp_path):  # noqa: F811
+    """A member's first sync carries the whole split; after that a rename sends the one row it changed, not every
+    function and symbol of the room (17 MB for one new name in a 70,000-function room)."""
+    host, slug, pid = _guest_with_demo(tmp_path, built, "host")
+    room = collab.Room(host, slug)
+    member = host.local_agent("alex")[0]
+    first = room.state(0, 0, 0, member)
+    total = host.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=?", pid)["n"]
+    assert len(first["functions"]) == total and first["symbols"] and first["l"] > 0
+
+    fn = host.store.one("SELECT name,vram FROM functions WHERE project_id=? AND vram IS NOT NULL AND status='open' "
+                        "ORDER BY vram LIMIT 1", pid)
+    agent, _ = host.local_agent("codex-1")
+    assert host.rename_symbol(agent, slug, fn["name"], "renamed_by_the_room").startswith("✅")
+
+    later = room.state(first["e"], first["a"], 0, member, first["l"])
+    # the one function and the one name that changed, not all of them
+    assert [(f["name"], f["vram"]) for f in later["functions"]] == [("renamed_by_the_room", fn["vram"])]
+    assert [s["name"] for s in later["symbols"]] == ["renamed_by_the_room"]
+    assert later["l"] > first["l"]
+
+    # a member that hasn't synced before (or came from a build without cursors) still gets everything
+    again = room.state(later["e"], later["a"], 0, member, 0.0)
+    assert len(again["functions"]) == total
+
+    # and the delta is enough for a guest to apply: the rename lands without re-sending the split
+    guest, gslug, gpid = _guest_with_demo(tmp_path, built)
+    guest.apply_remote_layout(gslug, first["functions"], first["symbols"])
+    guest.apply_remote_layout(gslug, later.get("functions") or [], later["symbols"])
+    assert guest.store.one("SELECT name FROM functions WHERE project_id=? AND vram=?", gpid, fn["vram"])["name"] \
+        == "renamed_by_the_room"
+
+
+def test_the_guest_is_told_which_room_boundaries_it_cannot_apply(tmp_path, built):  # noqa: F811
+    """Boundaries inside a matched function, or outside anything this split has, can't be applied here. The page
+    says how many and which (they used to disappear without a trace)."""
+    net, slug, pid = _guest_with_demo(tmp_path, built)
+    victim = net.store.one("SELECT id,vram FROM functions WHERE project_id=? AND vram IS NOT NULL AND status='open' "
+                           "ORDER BY vram LIMIT 1", pid)
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET status='matched' WHERE id=?", (victim["id"],))
+    report = net.apply_remote_layout(slug, [{"name": "inside_matched", "vram": victim["vram"] + 4, "size": 4},
+                                            {"name": "outside_everything", "vram": 0x10, "size": 4}], [])
+    assert report["applied"] == 0
+    assert report["skipped"] == {"no_owner": 1, "matched": 1, "unsplittable": 0}
+    assert len(report["sample"]) == 2 and report["sample"][0].startswith("0x")
+
+
+def test_a_failing_room_backs_off_and_counts_down(tmp_path, built):  # noqa: F811
+    """A room that keeps failing is retried less often, and the page can say why and when (it used to retry every
+    2 s forever, so a permanent failure looked like staying online)."""
+    net, slug, _ = _guest_with_demo(tmp_path, built)
+    link = collab.Link(net, slug, "https://room.trycloudflare.com", "room", "dn_test", "alex")
+    net.links[slug] = link
+
+    def failing(method, path, data=None):
+        link.error = "can't reach the host (ConnectError)"
+        raise NetworkError(link.error)
+
+    link._req = failing
+    assert [link._tick(2.0) for _ in range(4)] == [4.0, 8.0, 16.0, 32.0]
+    info = net.overview(slug)["room"]
+    assert info["failures"] == 4 and info["retry_in"] > 0 and "ConnectError" in info["error"]
+    assert info["last_sync"] is None
+
+    link._req = lambda method, path, data=None: {}
+    assert link._tick(2.0) == 2.0
+    info = net.overview(slug)["room"]
+    assert info["failures"] == 0 and info["retry_in"] == 0 and info["last_sync"] is not None
+    assert info["sync_ms"] >= 0
+
+
+def test_a_restarted_app_resumes_from_the_cursor_it_saved(tmp_path, built):  # noqa: F811
+    """The member's cursor is kept with the project, so restarting the app syncs what it missed instead of asking
+    the host for the whole room again."""
+    net, slug, _ = _guest_with_demo(tmp_path, built)
+    link = collab.Link(net, slug, "https://room.trycloudflare.com", "room", "dn_test", "alex")
+    link._req = lambda method, path, data=None: {}
+    link.cursor = {"e": 12, "a": 3, "v": 1, "l": 1700000000.5}
+    link._tick(2.0)
+    restored = collab.Link(net, slug, "https://room.trycloudflare.com", "room", "dn_test", "alex")
+    assert restored.cursor == link.cursor
 
 
 def test_two_room_boundaries_inside_one_guest_function_both_split(tmp_path, built):  # noqa: F811

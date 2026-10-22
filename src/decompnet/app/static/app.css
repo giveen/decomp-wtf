@@ -441,7 +441,12 @@ a.ghost, a.primary { text-decoration: none; }
 
 /* ------------------------------------------------------------------ activity */
 .activity-cols { margin-top: 0; }
-.feed-panel { min-height: 320px; }
+.feed-panel { min-height: 320px; position: relative; }
+/* What arrived while you were reading further down: new lines wait above, out of the way until asked for. */
+.feed-new { position: absolute; top: 48px; left: 50%; transform: translateX(-50%); z-index: 3; padding: 4px 11px;
+  border-radius: 999px; background: var(--match); color: var(--btn-ink); font-size: 12px; font-weight: 600;
+  box-shadow: 0 4px 12px -4px rgba(0, 0, 0, .35); }
+.feed-new:hover { background: var(--match-ink); }
 .feed { flex: 1; overflow: auto; max-height: calc(100vh - 260px); padding: 8px 0; font-size: 13.5px; overscroll-behavior: contain; }
 .feed li { display: grid; grid-template-columns: 58px 1fr; gap: 10px; padding: 6px 16px; align-items: baseline; }
 .feed li.fresh { animation: fresh 1.2s ease-out; }
@@ -533,6 +538,7 @@ a.ghost, a.primary { text-decoration: none; }
 @keyframes fade { from { opacity: 0; } }
 .drawer-card { width: min(1040px, 100vw); height: 100vh; height: 100dvh; max-height: 100dvh; background: var(--bg); border-left: 1px solid var(--line); display: flex; flex-direction: column; animation: slide .22s cubic-bezier(.2, .8, .2, 1); min-height: 0; }
 .drawer-card.narrow { width: min(580px, 100vw); }
+.drawer-card:focus-visible { outline: none; }  /* the container takes focus to announce the dialog, not to ring it */
 @keyframes slide { from { transform: translateX(24px); opacity: .6; } }
 .drawer-head { flex: none; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 20px 24px; border-bottom: 1px solid var(--line-soft); }
 .drawer-head h2 { font-size: 20px; letter-spacing: -.02em; margin-top: 6px; overflow-wrap: anywhere; }
@@ -616,11 +622,17 @@ a.ghost, a.primary { text-decoration: none; }
 .try-msg.bad { color: var(--miss); }
 
 .toasts { position: fixed; right: 18px; bottom: 18px; z-index: 60; display: grid; gap: 8px; }
-.toast { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-radius: 11px; background: var(--ink); color: var(--bg); font-size: 13.5px; box-shadow: var(--shadow); animation: toast .3s cubic-bezier(.2, .9, .3, 1.2); max-width: 420px; }
+.toast { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-radius: 11px; background: var(--ink); color: var(--bg); font-size: 13.5px; box-shadow: var(--shadow); animation: toast .3s cubic-bezier(.2, .9, .3, 1.2); max-width: 420px; cursor: pointer; }
+.toast-more { opacity: .75; font-size: 12.5px; white-space: nowrap; }
 .toast.match::before { content: ""; width: 9px; height: 9px; border-radius: 2px; background: var(--match); flex: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--match) 30%, transparent); }
 .toast.err { background: var(--miss); color: #fff; }
 .toast code { font-size: 12.5px; }
 @keyframes toast { from { transform: translateY(12px) scale(.98); opacity: 0; } }
+
+/* The local app went away (a restart, an update): the GUI says so everywhere, not only in a pane you may not be on. */
+.conn { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 70; padding: 7px 14px; border-radius: 999px;
+  background: var(--work-bg); color: var(--ink); border: 1px solid color-mix(in srgb, var(--work) 45%, transparent);
+  font-size: 12.5px; box-shadow: var(--shadow); white-space: nowrap; }
 
 /* ------------------------------------------------------------------ narrower screens */
 @media (max-width: 1280px) {
