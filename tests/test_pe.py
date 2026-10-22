@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import capstone
 import pytest
 
 from decompnet import coffobj
@@ -155,7 +156,124 @@ def test_32_bit_functions_and_absolute_globals(tmp_path):
         agent, "bump", "int g_counter;\nint bump(int n) { g_counter += n; return g_counter; }", slug)
 
 
+def test_walk_follows_branches_inside_one_function():
+    """A 32-bit function's forward branch is another block, not the next function: walking its control flow
+    reaches both rets (the old next-start splitter cut it at the branch target)."""
+    code = bytes.fromhex("55 8b ec 74 03 31 c0 c3 b8 01 00 00 00 c3")
+    md = pe._md("x86")
+    md.detail = True
+    md.skipdata = True
+    assert pe._walk(code, 0x1000, 0x1000, {0x1000}, md) == 0x100E
+
+
+def test_walk_stops_at_a_tail_called_function():
+    code = bytes.fromhex("55 8b ec e9 08 00 00 00") + b"\xcc" * 0x18
+    md = pe._md("x86")
+    md.detail = True
+    md.skipdata = True
+    assert pe._walk(code, 0x1000, 0x1000, {0x1000, 0x1010}, md) == 0x1008
+
+
+def test_alignment_fill_is_not_part_of_a_function():
+    """A block that fell through into the next function's alignment fill must not keep it: GCC pads with
+    `lea esi, [esi]` (even through the CS prefix) and nop, and neither compiles from C."""
+    body = bytes.fromhex("8b 44 24 04 03 44 24 08 c3")
+    assert pe._trim_padding(body + bytes.fromhex("8d b6 00 00 00 00 90"), "x86") == body
+    assert pe._trim_padding(body + bytes.fromhex("2e 8d b4 26 00 00 00 00 66 90"), "x86") == body
+    # A real `lea` (with a displacement or a different register) stays.
+    rest = body + bytes.fromhex("8d 44 24 10 c3")
+    assert pe._trim_padding(rest, "x86") == rest
+
+
+@pytest.mark.skipif(CC32 is None, reason="needs i686-w64-mingw32-gcc")
+def test_32_bit_branches_loops_and_function_pointers_are_whole_functions(tmp_path):
+    """A function with if/else, a loop and a tail call is one function; one only reached through a
+    function pointer is still found, and no fragment of another function is listed as its own."""
+    src = tmp_path / "branches.c"
+    src.write_text("int g_counter;\n"
+                   "__attribute__((noinline)) int add(int a, int b) { return a + b; }\n"
+                   "__attribute__((noinline)) int pick(int x) { if (x > 10) return add(x, 1); else return add(x, -1); }\n"
+                   "__attribute__((noinline)) int loop(int n) { int s = 0; for (int i = 0; i < n; i++) s += pick(i); return s; }\n"
+                   "__attribute__((noinline)) int tail(int n) { return add(n, 3); }\n"
+                   "__attribute__((noinline)) int only_ptr(int x) { return x * 7 + 1; }\n"
+                   "int (*fn)(int) = only_ptr;\n"
+                   "void _start(void) { g_counter = loop(tail(2)) + fn(1); }\n")
+    exe = tmp_path / "branches.exe"
+    flags = [f for f in FLAGS if f not in ("-fno-pic", "-fno-pie")]
+    subprocess.run([CC32, *flags, "-nostdlib", "-Wl,--entry,_start", "-Wl,--subsystem,console", "-o", str(exe),
+                    str(src)], check=True)
+    image = pe.read(exe.read_bytes(), exe.name)
+    names = {f.name: f for f in image.functions}
+    assert {"add", "pick", "loop", "tail", "only_ptr"} <= set(names)
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    for f in image.functions:
+        ins = list(md.disasm(f.code, f.vram))
+        assert ins and ins[-1].mnemonic in ("ret", "jmp", "int3", "hlt", "ud2"), (f.name, len(f.code), ins[-1])
+        assert len(f.code) > 3, f.name  # no epilogue slice became a function
+    rows = sorted((f.vram, f.vram + len(f.code)) for f in image.functions)
+    assert all(rows[i][1] <= rows[i + 1][0] for i in range(len(rows) - 1)), rows
+    assert len(image.functions) <= 8
+
+
 CXX32 = shutil.which("i686-w64-mingw32-g++")
+
+
+@pytest.mark.skipif(CC32 is None, reason="needs i686-w64-mingw32-gcc")
+def test_repair_boundaries_merges_an_old_split_and_keeps_the_match(tmp_path):
+    """An import that cut `add` after its first instruction left a fragment. Repair folds the bytes back,
+    and the restored whole function still matches the C."""
+    src = tmp_path / "add.c"
+    src.write_text("int add(int a, int b) { return a + b; }\n"
+                   "void _start(void) { add(1, 2); }\n")
+    exe = tmp_path / "add.exe"
+    flags = [f for f in FLAGS if f not in ("-fno-pic", "-fno-pie")]
+    subprocess.run([CC32, *flags, "-nostdlib", "-Wl,--entry,_start", "-Wl,--subsystem,console", "-o", str(exe),
+                    str(src)], check=True)
+    net = RomNetwork(tmp_path / "repair.db", tmp_path)
+    slug = net.import_rom(exe.read_bytes(), toolchain="mingw-x86", confirmed=True, name=exe.name, log=lambda *_: None)
+    proj = net.store.one("SELECT * FROM projects WHERE slug=?", slug)
+    add = net.store.one("SELECT * FROM functions WHERE project_id=? AND name='add'", proj["id"])
+    assert len(add["target"]) == 9
+    # What the old splitter did: stop at a branch target (here, the second instruction).
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET size=4, n_insns=1, target=?, asm='' WHERE id=?",
+                   (add["target"][:4], add["id"]))
+        db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,unit,vram,rom_offset) "
+                   "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   (proj["id"], f"sub_{add['vram'] + 4:08X}", 5, 2, add["target"][4:], "[]", "", add["unit"],
+                    add["vram"] + 4, (add["rom_offset"] or 0) + 4))
+    result = net.repair_boundaries(slug)
+    assert result["merged"] == 1
+    fixed = net.store.one("SELECT * FROM functions WHERE project_id=? AND name='add'", proj["id"])
+    assert fixed["target"] == add["target"] and fixed["n_insns"] == 3
+    assert not net.store.one("SELECT 1 FROM functions WHERE project_id=? AND name LIKE 'sub_%'", proj["id"])
+    agent, _ = net.local_agent("repair-tester")
+    assert "MATCH" in net.compile_and_diff(agent, "add", "int add(int a, int b) { return a + b; }", slug)
+
+
+@pytest.mark.skipif(CC32 is None, reason="needs i686-w64-mingw32-gcc")
+def test_retired_functions_leave_the_queue_and_the_count(tmp_path):
+    src = tmp_path / "retire.c"
+    src.write_text("int add(int a, int b) { return a + b; }\n"
+                   "void _start(void) { add(1, 2); }\n")
+    exe = tmp_path / "retire.exe"
+    flags = [f for f in FLAGS if f not in ("-fno-pic", "-fno-pie")]
+    subprocess.run([CC32, *flags, "-nostdlib", "-Wl,--entry,_start", "-Wl,--subsystem,console", "-o", str(exe),
+                    str(src)], check=True)
+    net = RomNetwork(tmp_path / "retire.db", tmp_path)
+    slug = net.import_rom(exe.read_bytes(), toolchain="mingw-x86", confirmed=True, name=exe.name, log=lambda *_: None)
+    before = net.overview(slug)["functions"]
+    agent, _ = net.local_agent("retire-tester")
+    assert "retired" in net.retire_function(agent, slug, "add", "this is only a test, and the instructions say so")
+    assert net.store.one("SELECT status FROM functions WHERE project_id=(SELECT id FROM projects WHERE slug=?) "
+                         "AND name='add'", slug)["status"] == "unmatchable"
+    assert net.overview(slug)["functions"] == before - 1
+    assert "RETIRED" in net.get_function("add", slug, agent)
+    from decompnet.network import NetworkError
+
+    other, _ = net.local_agent("other-agent")
+    with pytest.raises(NetworkError, match="retired"):
+        net.claim(other, slug, "add")
 
 
 @pytest.mark.skipif(CXX32 is None, reason="needs i686-w64-mingw32-g++")
@@ -208,6 +326,20 @@ def test_cxx_programs_use_cpp_toolchain_and_language(tmp_path):
     agent, _ = net.local_agent("cxx-tester")
     text = net.compile_and_diff(agent, target, "namespace demo { int add(int a, int b) { return a + b; } }", slug)
     assert "MATCH" in text, text
+
+
+def test_compiler_preview_says_what_still_matches(built):
+    exe, _obj = built
+    net = RomNetwork(exe.parent / "preview.db", exe.parent)
+    slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game.exe", log=lambda *_: None)
+    agent, _ = net.local_agent("preview-tester")
+    assert "MATCH" in net.compile_and_diff(agent, "add", "int add(int a, int b) { return a + b; }", slug)
+    assert "MATCH" in net.compile_and_diff(
+        agent, "bump", "int g_counter;\nint bump(int n) { g_counter += n; return g_counter; }", slug)
+    current = net.overview(slug)["compiler"]["toolchain"]
+    r = net.preview_compiler(slug, current)
+    assert r["checked"] >= 2 and r["kept"] == r["checked"] and r["broke"] == 0 and r["failed"] == 0
+    assert r["installed"] and r["toolchain"] == current
 
 
 def test_library_functions_are_marked_and_never_claimed(built):

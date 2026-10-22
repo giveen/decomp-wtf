@@ -264,6 +264,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "rename_symbol": lambda net, agent, slug, old, new, message="": net.rename_symbol(agent, slug, old, new, message),
     "split_function": lambda net, agent, slug, function, at, new_name="":
         net.split_function(agent, slug, function, at, new_name),
+    "merge_function": lambda net, agent, slug, function, into="": net.merge_function(agent, slug, function, into),
+    "retire_function": lambda net, agent, slug, function, reason: net.retire_function(agent, slug, function, reason),
     "inspect_binary": lambda net, agent, slug, function, what="": net.inspect_binary(slug, function, what),
     "search_binary": lambda net, agent, slug, query: net.search_binary(slug, query),
     "read_data": lambda net, agent, slug, what, length=64: (net.forks.read_data(agent, slug, what, length)
@@ -290,8 +292,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "list_hot": lambda net, agent, slug, limit=40: _hot_text(net.hot_functions(slug, limit)),
 }
 
-ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "import_debug_info",
-            "export_debug_info", "compare_version", "write_source"}
+ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "merge_function", "retire_function",
+            "import_debug_info", "export_debug_info", "compare_version", "write_source"}
 FORK_ONLY = {"edit_file", "file_status", "split_file"}
 ANALYSIS_ONLY = {"complete_function", "rea_tool", "read_artifact_entry"}
 ANALYSIS_TOOLS = {"project_info", "claim_function", "get_function", "release_function", "complete_function",
@@ -471,6 +473,20 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         """Split a function the disassembler merged with the next one (e.g. after a function that never
         returns). `at` is the address where the second function starts."""
         return await run(ctx, "split_function", function=function, at=at, new_name=new_name)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def merge_function(ctx: Context, function: str, into: str = "") -> str:
+        """Put a piece of a function back where it belongs (PC programs). A 32-bit function can be split
+        into fragments by an old import: if `function` has no prologue or ret and `into` is the function it
+        is a slice of, merge it, then decompile `into` whole. Don't merge matched functions."""
+        return await run(ctx, "merge_function", function=function, into=into)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def retire_function(ctx: Context, function: str, reason: str) -> str:
+        """Take a function no C can reproduce out of the queue for good: give the evidence (the target's
+        MSVC-only instruction, the call into the middle of another function, ...). It won't be claimed again.
+        Use release_function when someone else might still match it."""
+        return await run(ctx, "retire_function", function=function, reason=reason)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def inspect_binary(ctx: Context, function: str, what: str = "") -> str:

@@ -676,6 +676,62 @@ arch = "x86"
 flags = ["/O2", "/GS-"]
 cmd = ["clang-cl", "--target=i686-pc-windows-msvc", "/c", "{flags}", "/TP", "/I{include}", "/Fo{obj}", "--", "{src}"]
 
+# Microsoft's own compiler, when it is installed. A game built with VC6/VC8/... matches byte for byte only
+# with the same cl.exe; clang-cl is the free near-relative (see clang-cl-*). Put the cl.exe that targets
+# the game's architecture on PATH (the x86 one for a 32-bit game) or point the project's [compiler] cmd at it.
+
+[msvc-x86]
+name = "Microsoft Visual C++ (cl.exe, 32-bit target)"
+kind = "compiler"
+license = "proprietary"
+source = "system cl.exe (Visual Studio)"
+description = "The compiler many Windows games were built with. Finds the x86-targeting cl.exe on PATH."
+system = true
+download = "https://visualstudio.microsoft.com/vs/older-downloads/"
+platform = "Windows"
+arch = "x86"
+flags = ["/O2", "/GS-", "/Gy"]
+cmd = ["cl", "/nologo", "/c", "{flags}", "/I{include}", "/Fo{obj}", "/TC", "{src}"]
+
+[msvcxx-x86]
+name = "Microsoft Visual C++ (cl.exe, 32-bit target, C++)"
+kind = "compiler"
+license = "proprietary"
+source = "system cl.exe (Visual Studio)"
+description = "The C++ compiler many Windows games were built with. Finds the x86-targeting cl.exe on PATH."
+system = true
+download = "https://visualstudio.microsoft.com/vs/older-downloads/"
+platform = "Windows"
+arch = "x86"
+flags = ["/O2", "/GS-", "/Gy"]
+cmd = ["cl", "/nologo", "/c", "{flags}", "/I{include}", "/Fo{obj}", "/TP", "{src}"]
+
+[msvc-x86_64]
+name = "Microsoft Visual C++ (cl.exe, 64-bit target)"
+kind = "compiler"
+license = "proprietary"
+source = "system cl.exe (Visual Studio)"
+description = "The compiler many 64-bit Windows games were built with. Finds cl.exe on PATH."
+system = true
+download = "https://visualstudio.microsoft.com/"
+platform = "Windows"
+arch = "x86_64"
+flags = ["/O2", "/GS-", "/Gy"]
+cmd = ["cl", "/nologo", "/c", "{flags}", "/I{include}", "/Fo{obj}", "/TC", "{src}"]
+
+[msvcxx-x86_64]
+name = "Microsoft Visual C++ (cl.exe, 64-bit target, C++)"
+kind = "compiler"
+license = "proprietary"
+source = "system cl.exe (Visual Studio)"
+description = "The C++ compiler many 64-bit Windows games were built with. Finds cl.exe on PATH."
+system = true
+download = "https://visualstudio.microsoft.com/"
+platform = "Windows"
+arch = "x86_64"
+flags = ["/O2", "/GS-", "/Gy"]
+cmd = ["cl", "/nologo", "/c", "{flags}", "/I{include}", "/Fo{obj}", "/TP", "{src}"]
+
 # ---------------------------------------------------------------- Linux programs
 # The GCC and Clang already on the machine. A program matches byte for byte only with the compiler version
 # and flags that built it (.comment usually says which: the import shows it); a project can point its

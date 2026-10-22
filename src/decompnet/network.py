@@ -274,6 +274,9 @@ class Network:
                     raise NetworkError(f"{fn['name']} is hand-written assembly: no C compiles to it, so it's left out")
                 if fn["status"] == "library":
                     raise NetworkError(f"{fn['name']} is library/CRT code: it isn't the program's own code, so it's left out")
+                if fn["status"] == "unmatchable":
+                    why = json.loads(fn["meta"] or "{}").get("unmatchable", "")
+                    raise NetworkError(f"{fn['name']} was retired as unmatchable ({why}); claim another function")
                 other = db.execute("SELECT agent_id, expires_at FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
                 if other is not None:
                     raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(other['agent_id'])} "
@@ -324,6 +327,9 @@ class Network:
             who = "you" if agent and claim["agent_id"] == agent.id else self._agent_name(claim["agent_id"])
             lines.append(f"claimed by {who}, lease expires in {int(claim['expires_at'] - time.time()) // 60} min "
                          f"(each compile_and_diff renews it)")
+        if fn["status"] == "unmatchable":
+            why = json.loads(fn["meta"] or "{}").get("unmatchable", "")
+            lines.append(f"RETIRED as unmatchable: {why}")
         if fn["status"] == "matched":
             lines += [f"MATCHED by {self._agent_name(fn['matched_agent_id'])} {_ago(fn['matched_at'])}:",
                       "```c", fn["matched_source"].strip(), "```"]

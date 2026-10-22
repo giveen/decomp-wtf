@@ -48,7 +48,7 @@ PLATFORM_STATUS = {"gc": "recommended", "wii": "recommended", "n64": "recommende
 # PC programs: split from the executable itself (pe.py, elfexe.py) and judged by the x86 matcher.
 X86_PLATFORMS = ("windows", "linux")
 # C++ drivers: the source is compiled as C++ (see toolchains.toml), and the UI and agent prompt say C++.
-CXX_TOOLCHAINS = ("gxx-", "clangxx-", "mingwxx-", "clang-clxx-")
+CXX_TOOLCHAINS = ("gxx-", "clangxx-", "mingwxx-", "clang-clxx-", "msvcxx-")
 # What imported APIs and strings usually mean. Hints, not proof: the report says which functions use them.
 SUBSYSTEM_HINTS = (
     ("render", ("d3d", "dxgi", "opengl", "vulkan", "glbind", "glclear", "glgen", "gltex", "glvertex",
@@ -76,7 +76,7 @@ def source_ext(toolchain: str) -> str:
 
 def cxx_toolchain(toolchain: str) -> str:
     """The C++ driver for a C toolchain on the same target, when there is one."""
-    for c, cpp in (("mingw-", "mingwxx-"), ("clang-cl-", "clang-clxx-"),
+    for c, cpp in (("mingw-", "mingwxx-"), ("clang-cl-", "clang-clxx-"), ("msvc-", "msvcxx-"),
                    ("gcc-linux-", "gxx-linux-"), ("clang-linux-", "clangxx-linux-")):
         if toolchain.startswith(c):
             return cpp + toolchain[len(c):]
@@ -117,6 +117,10 @@ COMPILERS = {
     "clang-cl-x86": "Windows games (32-bit x86), with LLVM's MSVC-compatible clang-cl",
     "clang-clxx-x86_64": "Windows C++ games (x86-64), with LLVM's MSVC-compatible clang-cl",
     "clang-clxx-x86": "Windows C++ games (32-bit x86), with LLVM's MSVC-compatible clang-cl",
+    "msvc-x86_64": "Windows games (x86-64), with the cl.exe on this machine",
+    "msvc-x86": "Windows games (32-bit x86), with the cl.exe on this machine",
+    "msvcxx-x86_64": "Windows C++ games (x86-64), with the cl.exe on this machine",
+    "msvcxx-x86": "Windows C++ games (32-bit x86), with the cl.exe on this machine",
     "gcc-2.7.2-kmc": "many third-party N64 games",
     "ido-7.1": "most later first-party N64 games",
     "ido-5.3": "early N64 games (1996-97)",
@@ -131,6 +135,8 @@ SHORT_NAMES = {"gcc-2.7.2-kmc": "KMC GCC 2.7.2", "ido-7.1": "IDO 7.1", "ido-5.3"
                "mingwxx-x86_64": "MinGW-w64 G++ (x86-64)", "mingwxx-x86": "MinGW-w64 G++ (x86)",
                "clang-cl-x86_64": "clang-cl (x86-64)", "clang-cl-x86": "clang-cl (x86)",
                "clang-clxx-x86_64": "clang-cl (x86-64, C++)", "clang-clxx-x86": "clang-cl (x86, C++)",
+               "msvc-x86_64": "MSVC cl (x86-64)", "msvc-x86": "MSVC cl (x86)",
+               "msvcxx-x86_64": "MSVC cl (x86-64, C++)", "msvcxx-x86": "MSVC cl (x86, C++)",
                "llvm-tools": "LLVM tools", "upx": "UPX", "rizin": "Rizin", "detect-it-easy": "Detect It Easy",
                **{k: short for k, (short, _use) in LINUX_COMPILERS.items()}}
 # CodeWarrior versions in the `mwcc` pack (GameCube, Wii) and the `mwccarm` pack (DS), for games started from scratch.
@@ -177,7 +183,8 @@ BATCH_INSNS = 48
 PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": ["gcc-2.7.2-psx", "gcc-2.8.1-psx"],
                       "ps2": ["ee-gcc-2.96"], "gba": ["agbcc"],
                       "windows": ["mingw-x86_64", "mingw-x86", "mingwxx-x86_64", "mingwxx-x86",
-                                  "clang-cl-x86_64", "clang-cl-x86", "clang-clxx-x86_64", "clang-clxx-x86"],
+                                  "clang-cl-x86_64", "clang-cl-x86", "clang-clxx-x86_64", "clang-clxx-x86",
+                                  "msvc-x86_64", "msvc-x86", "msvcxx-x86_64", "msvcxx-x86"],
                       "linux": list(LINUX_COMPILERS)}
 
 
@@ -987,7 +994,7 @@ class RomNetwork(Network):
         agg = self.store.one(
             "SELECT COUNT(*) AS total, COALESCE(SUM(status='matched'), 0) AS matched, "
             "COALESCE(SUM(status='reconstructed'), 0) AS reconstructed FROM functions "
-            "WHERE project_id=? AND status!='library'", project_id)
+            "WHERE project_id=? AND status NOT IN ('library', 'unmatchable')", project_id)
         total, matched = agg["total"] or 0, agg["matched"] or 0
         return {"files": agg["reconstructed"], "recovered": matched, "reconstructed": agg["reconstructed"],
                 "pending": max(0, total - matched - agg["reconstructed"]), "total": total, "matches": matched}
@@ -2067,7 +2074,7 @@ class RomNetwork(Network):
         tc = toolchains.get(toolchain)
         base_flags = flags or (_linux_flags(tc.flags, info.get("pie", False)) if linux else tc.flags)
         suggestion = buildinfo.infer_flags(
-            picked.data, compiler="MSVC" if toolchain.startswith("clang-cl") else "GNU", cxx=cxx,
+            picked.data, compiler="MSVC" if toolchain.startswith(("clang-cl", "msvc")) else "GNU", cxx=cxx,
             base_flags=base_flags, symbols=image.symbols, section_names=[s.name for s in image.sections])
         info["suggested_flags"] = suggestion["flags"]
         info["flag_evidence"] = suggestion["evidence"]
@@ -3265,6 +3272,139 @@ class RomNetwork(Network):
         return (f"✅ split: {fn['name']} is now {len(head.lines)} instructions; {new_name} at 0x{addr:08X} has "
                 f"{len(tail.lines)}. Continue with {fn['name']} (get_function shows its new assembly).")
 
+    def _last_mnemonic(self, proj, fn) -> str:
+        md = pe._md(self.cfg(proj).get("arch", "x86"))
+        md.detail = True
+        md.skipdata = True
+        last = ""
+        for ins in md.disasm(fn["target"], 0):
+            if ins.id:
+                last = ins.mnemonic
+        return last
+
+    def _merge_rows(self, agent: Agent, proj, prev, frag) -> int:
+        """Make `frag` (the contiguous piece right after `prev`) part of `prev`. Returns the new byte size."""
+        cfg = self.cfg(proj)
+        code = bytes(prev["target"]) + bytes(frag["target"])
+        lo = min(s["vram"] for s in cfg["segments"])
+        hi = max(s["vram"] + s["rom_end"] - s["rom_start"] for s in cfg["segments"])
+        md = pe._md(cfg.get("arch", "x86"))
+        md.detail = True
+        md.skipdata = True
+        lines, count, refs = pe._decode(code, prev["vram"], cfg.get("arch", "x86"), lo, hi, False, md)
+        asm = "\n".join([f"glabel {prev['name']}", *lines, f"endlabel {prev['name']}"])
+        now = time.time()
+        with self.store.tx() as db:
+            # The fragment's notes are about the same bytes: keep them on the function that now owns them.
+            db.execute("UPDATE notes SET function_id=? WHERE function_id=?", (prev["id"], frag["id"]))
+            db.execute("DELETE FROM attempts WHERE function_id=?", (frag["id"],))
+            db.execute("DELETE FROM claims WHERE function_id=?", (frag["id"],))
+            db.execute("DELETE FROM functions WHERE id=?", (frag["id"],))
+            db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
+                       "best_source=NULL, best_agent_id=NULL, changed_at=? WHERE id=?",
+                       (len(code), count, code, json.dumps([[r[0], r[1], r[2], r[3]] for r in refs]), asm, now,
+                        prev["id"]))
+            db.execute("UPDATE symbols SET size=?, changed_at=? WHERE project_id=? AND address=?",
+                       (len(code), now, proj["id"], prev["vram"]))
+            db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,changed_at) "
+                       "VALUES(?,?,?,?,?,?)", (proj["id"], prev["name"], prev["vram"], len(code), "func", now))
+            db.execute("DELETE FROM symbols WHERE project_id=? AND name=?", (proj["id"], frag["name"]))
+            self._event(db, proj["id"], agent.id, "merge", f"{frag['name']} → {prev['name']}")
+        self._xrefs.pop(proj["id"], None)
+        self._ops.pop(proj["id"], None)
+        return len(code)
+
+    def merge_function(self, agent: Agent, project: str | None, function: str, into: str = "") -> str:
+        """Put a fragment back into the function it belongs to (the reverse of split_function)."""
+        self._rom_only(project, "merge_function")
+        proj = self._project(project)
+        if self.cfg(proj).get("platform") not in X86_PLATFORMS:
+            raise NetworkError("merge_function is for PC programs: their 32-bit function boundaries are found by "
+                               "following the code, and an old import could have cut one into pieces")
+        fn = self._function(function, project)
+        prev = self._function(into, project) if into else self.store.one(
+            "SELECT * FROM functions WHERE project_id=? AND unit=? AND vram<? ORDER BY vram DESC LIMIT 1",
+            (proj["id"], fn["unit"], fn["vram"]))
+        if prev is None:
+            raise NetworkError(f"there is no function before {fn['name']} to merge it into")
+        if prev["id"] == fn["id"]:
+            raise NetworkError("a function can't be merged into itself")
+        if prev["unit"] != fn["unit"] or (prev["vram"] or 0) + (prev["size"] or 0) != fn["vram"]:
+            raise NetworkError(f"{fn['name']} doesn't directly follow {prev['name']} in the same section: "
+                               f"pass into= the function it is a piece of")
+        for row in (prev, fn):
+            if row["status"] == "matched":
+                raise NetworkError(f"{row['name']} is matched; merging would move a verified boundary")
+            if row["status"] != "open":
+                raise NetworkError(f"{row['name']} is {row['status']}, not open")
+        held = self.store.one("SELECT agent_id FROM claims WHERE function_id=?", fn["id"])
+        if held is not None and held["agent_id"] != agent.id:
+            raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(held['agent_id'])}")
+        size = self._merge_rows(agent, proj, prev, fn)
+        return (f"✅ merged: {fn['name']} is now part of {prev['name']} ({len(bytes(prev['target']))} + "
+                f"{len(bytes(fn['target']))} = {size} bytes, {prev['n_insns'] or 0} + {fn['n_insns'] or 0} "
+                f"instructions). Claim {prev['name']} to decompile the whole thing.")
+
+    def retire_function(self, agent: Agent, project: str | None, function: str, reason: str) -> str:
+        """Take a function that no C can match out of the queue for good (with the evidence why)."""
+        self._rom_only(project, "retire_function")
+        fn = self._function(function, project)
+        if fn["status"] == "matched":
+            raise NetworkError(f"{fn['name']} is matched; there is nothing to retire")
+        if fn["status"] == "unmatchable":
+            return f"{fn['name']} is already retired."
+        reason = (reason or "").strip()
+        if len(reason) < 10:
+            raise NetworkError("say why in a sentence (what you tried, and what in the target can't be produced): "
+                               "the next agent reads it instead of trying again")
+        held = self.store.one("SELECT agent_id FROM claims WHERE function_id=?", fn["id"])
+        if held is not None and held["agent_id"] != agent.id:
+            raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(held['agent_id'])}")
+        meta = json.loads(fn["meta"] or "{}")
+        meta["unmatchable"] = reason
+        with self.store.tx() as db:
+            db.execute("UPDATE functions SET status='unmatchable', meta=?, changed_at=? WHERE id=?",
+                       (json.dumps(meta), time.time(), fn["id"]))
+            db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
+            db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                       (fn["project_id"], fn["id"], agent.id, f"retired as unmatchable: {reason}", time.time()))
+            self._event(db, fn["project_id"], agent.id, "retire", fn["name"])
+        return (f"✅ {fn['name']} is retired as unmatchable and won't come back to the queue. The reason is in its "
+                f"notes. Claim the next function.")
+
+    def repair_boundaries(self, slug: str) -> dict:
+        """Merge the fragments an older 32-bit split left behind: a function that doesn't end in a terminator has
+        its next contiguous open, automatically named function folded back into it. Matched code is never touched."""
+        proj = self._project(slug)
+        if self.fork_slug(slug):
+            raise NetworkError("a fork builds from its own source: its functions come from the project")
+        if self.cfg(proj).get("platform") not in X86_PLATFORMS:
+            raise NetworkError("boundary repair is for PC programs (32-bit PE images imported before the splitter "
+                               "followed branches)")
+        agent, _ = self.local_agent("boundaries")
+        merged = 0
+        while merged < 4096:
+            rows = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='open' "
+                                  "ORDER BY unit, vram", proj["id"])
+            pair = None
+            for i in range(len(rows) - 1):
+                prev, frag = rows[i], rows[i + 1]
+                if prev["unit"] != frag["unit"] or (prev["vram"] or 0) + (prev["size"] or 0) != frag["vram"]:
+                    continue
+                if not AUTO_NAME.match(frag["name"]):  # a real symbol is not a fragment
+                    continue
+                last = self._last_mnemonic(proj, prev)
+                if last and last not in pe.TERMINATORS and not last.startswith("j"):
+                    pair = (prev, frag)
+                    break
+            if pair is None:
+                break
+            self._merge_rows(agent, proj, *pair)
+            merged += 1
+        open_ = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='open'",
+                               proj["id"])["n"]
+        return {"merged": merged, "open": open_}
+
     def _split_gba(self, agent: Agent, proj, fn, addr: int, new_name: str, syms: SymbolTable) -> str:
         """Cut a GBA function's bytes and assembly in two at `addr` (Thumb: a halfword boundary)."""
         off = addr - fn["vram"]
@@ -3961,7 +4101,7 @@ class RomNetwork(Network):
         if cfg.get("arch") != image.arch:
             cfg["arch"] = image.arch
             changed = True
-        want_style = "msvc" if tc_id.startswith("clang-cl") else "gnu"
+        want_style = "msvc" if tc_id.startswith(("clang-cl", "msvc")) else "gnu"
         if not rom.get("suggested_flags") or rom.get("flag_style") != want_style:
             try:
                 tc = toolchains.get(tc_id)
@@ -3995,13 +4135,15 @@ class RomNetwork(Network):
             "SELECT COUNT(*) AS total, SUM(status='matched') AS matched, SUM(size) AS bytes, "
             "SUM(CASE WHEN status='matched' THEN size ELSE 0 END) AS matched_bytes, SUM(attempts) AS attempts, "
             "SUM(hits>0) AS traced, SUM(hits) AS hits, COALESCE(SUM(status='reconstructed'), 0) AS reconstructed "
-            "FROM functions WHERE project_id=? AND status!='library'", proj["id"])
+            "FROM functions WHERE project_id=? AND status NOT IN ('library', 'unmatchable')", proj["id"])
         lib = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='library'",
                              proj["id"])["n"]
+        retired = self.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='unmatchable'",
+                                 proj["id"])["n"]
         rom = cfg["rom"]
         detected = None
         if cfg.get("platform") in X86_PLATFORMS:
-            want_style = "msvc" if cfg["compiler"]["toolchain"].startswith("clang-cl") else "gnu"
+            want_style = "msvc" if cfg["compiler"]["toolchain"].startswith(("clang-cl", "msvc")) else "gnu"
             try:
                 tool_arch = toolchains.get(cfg["compiler"]["toolchain"]).arch
             except toolchains.ToolchainError:
@@ -4033,6 +4175,7 @@ class RomNetwork(Network):
             "source_language": source_language(tc.id), "source_ext": source_ext(tc.id),
             "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
             "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0, "library": lib,
+            "unmatchable": retired,
             "traced": agg["traced"] or 0, "hits": agg["hits"] or 0,
             "data": self.store.one("SELECT COUNT(*) AS n FROM symbols WHERE project_id=? AND kind!='func'",
                                     proj["id"])["n"],
@@ -4206,7 +4349,7 @@ class RomNetwork(Network):
         for r in rows:
             meta = json.loads(r["meta"] or "{}")
             status = "library" if r["status"] == "library" else (
-                r["status"] if r["status"] in ("matched", "asm") else
+                r["status"] if r["status"] in ("matched", "asm", "unmatchable") else
                 "working" if (r["agent"] or key(r) in remote) else "open")
             out.append({"name": r["name"], "vram": r["vram"], "size": r["size"], "insns": r["n_insns"],
                         "unit": r["unit"], "kind": meta.get("kind") or "", "path": meta.get("path") or "",
@@ -4224,12 +4367,14 @@ class RomNetwork(Network):
         proj = self._project(slug)
         f = self.store.one("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS hi, COALESCE(SUM(attempts), 0) AS at, "
                            "COALESCE(SUM(status='matched'), 0) AS m, COALESCE(SUM(best_score), 0) AS bs, "
-                           "COALESCE(MAX(matched_at), 0) AS ma FROM functions WHERE project_id=?", proj["id"])
+                           "COALESCE(SUM(status='unmatchable'), 0) AS u, COALESCE(MAX(matched_at), 0) AS ma "
+                           "FROM functions WHERE project_id=?", proj["id"])
         c = self.store.one("SELECT COUNT(*) AS n, COALESCE(SUM(c.function_id * 31 + c.agent_id), 0) AS k FROM claims c "
                            "JOIN functions f ON f.id=c.function_id WHERE f.project_id=?", proj["id"])
         link = self.links.get(slug)
         remote = sorted(str(x.get("vram") or x.get("name")) + x.get("agent", "") for x in (link.claims if link else []))
-        return f"{f['n']}.{f['hi']}.{f['at']}.{f['m']}.{f['bs']}.{f['ma']}.{c['n']}.{c['k']}.{hash(tuple(remote)) & 0xFFFFFF}"
+        return (f"{f['n']}.{f['hi']}.{f['at']}.{f['m']}.{f['bs']}.{f['u']}.{f['ma']}.{c['n']}.{c['k']}."
+                f"{hash(tuple(remote)) & 0xFFFFFF}")
 
     # ------------------------------------------------------------------ what agents spend, and steering them
 
@@ -4605,6 +4750,55 @@ class RomNetwork(Network):
                     claims.append(dict(row) | {"agent": "@" + c["agent"], "claimed_at": None})
         return {"events": [dict(e) for e in reversed(events)], "attempts": [dict(t) for t in reversed(attempts)],
                 "claims": claims, "overview": self.overview(slug)}
+
+    def preview_compiler(self, slug: str, toolchain: str, flags: list[str] | None = None) -> dict:
+        """What a different compiler would do to the functions already matched: how many still compile to the
+        same bytes, without changing the project. Switching compilers can be the right move (MSVC code vs GCC),
+        and this is the evidence for it, rather than finding out after the old matches stop matching."""
+        proj = self._project(slug)
+        if self.fork_slug(slug):
+            raise NetworkError("a fork builds with the project's own compilers and flags")
+        if self.is_analysis(proj):
+            raise NetworkError("an analysis project doesn't compile")
+        cfg = self.cfg(proj)
+        toolchain = arch_toolchain(toolchain, cfg.get("arch") or "")
+        try:
+            tc = toolchains.get(toolchain)
+        except toolchains.ToolchainError as e:
+            raise NetworkError(str(e)) from None
+        cand = {"toolchain": tc.id, "flags": list(flags or tc.flags), "timeout": 20}
+        preview_cfg = json.loads(proj["config"])
+        preview_cfg["compiler"] = cand
+        fake = dict(proj)
+        fake["config"] = json.dumps(preview_cfg)
+        rows = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched' "
+                              "AND matched_source IS NOT NULL ORDER BY n_insns", proj["id"])
+        installed = toolchains.installed(tc.id) is not None
+        if rows and not installed:
+            return {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name), "flags": cand["flags"],
+                    "installed": False, "total": len(rows), "checked": 0, "kept": 0, "broke": 0, "failed": 0,
+                    "sampled": False, "broke_names": [], "failed_names": []}
+        step = max(1, len(rows) // 300)
+        sample = rows[::step]
+        kept, broke, failed = [], [], []
+        for fn in sample:
+            ctx = self._context(proj["id"], fn["unit"])
+            result = self._compile(fake, ctx["header"], fn["matched_source"])
+            if not result.ok:
+                failed.append(fn["name"])
+                continue
+            candidate, verdict, _ = self._evaluate(fn, fake, result.obj)
+            if candidate is None:
+                failed.append(fn["name"])
+                continue
+            d = scoring.diff(self._target_obj(fn, fake), candidate)
+            if verdict is not None:
+                d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
+            (kept if d.bytes_match else broke).append(fn["name"])
+        return {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name), "flags": cand["flags"],
+                "installed": installed, "total": len(rows), "checked": len(sample),
+                "kept": len(kept), "broke": len(broke), "failed": len(failed), "sampled": step > 1,
+                "broke_names": broke[:8], "failed_names": failed[:5]}
 
     def set_compiler(self, slug: str, toolchain: str, flags: list[str] | None = None) -> None:
         proj = self._project(slug)

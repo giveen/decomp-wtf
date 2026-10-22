@@ -432,8 +432,17 @@
           <p class="muted small">Every function is built with this compiler and these flags. If almost nothing matches, the game was probably built with another compiler or flags.</p>
           <label class="field"><span>Compiler</span><select id="setTc"></select></label>
           <label class="field"><span>Flags</span><input id="setFlags" class="mono"></label>
-          <div class="row"><button class="primary small-btn" id="setTcSave" type="button">Save</button><button class="ghost small-btn" id="setTcReset" type="button">Default flags</button></div>
+          <div class="row"><button class="primary small-btn" id="setTcSave" type="button">Save</button><button class="ghost small-btn" id="setTcCheck" type="button">Check matches</button><button class="ghost small-btn" id="setTcReset" type="button">Default flags</button></div>
           <p class="muted small" id="flagHint"></p>
+          <p class="muted small" id="tcCheck"></p>
+        </div>
+      </section>
+      <section class="panel" id="boundaryPanel">
+        <header class="panel-head"><h2>Function boundaries</h2></header>
+        <div class="pad">
+          <p class="muted small">32-bit programs have no function table. An older import could cut a function into fragments at its own branch targets; merge those pieces back into the function they belong to. Matched functions are never changed.</p>
+          <div class="row"><button class="primary small-btn" id="boundaryFix" type="button">Merge false boundaries</button></div>
+          <p class="muted small" id="boundaryMsg"></p>
         </div>
       </section>
       <section class="panel" id="debugPanel">

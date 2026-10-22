@@ -31,6 +31,11 @@ MACHINES = {0x014C: "x86", 0x8664: "x86_64", 0x01C4: "arm", 0xAA64: "arm64"}
 EXECUTABLE = 0x20000000
 CODE = 0x00000020
 SMALL = 64 * 1024 * 1024
+# How much code in one section is walked to find where each function ends. Beyond this, a 32-bit image
+# keeps the old next-start boundaries rather than decoding millions of instructions in memory.
+WALK_LIMIT = 16 * 1024 * 1024
+TERMINATORS = {"ret", "retf", "int3", "hlt", "ud2"}
+PADDING = {0x00, 0x90, 0xCC}  # alignment fill: zero, nop, int3 (MSVC)
 
 
 class PeError(ValueError):
@@ -323,6 +328,90 @@ def _decode(code: bytes, vram: int, arch: str, image_lo: int, image_hi: int, abs
     return lines, count, refs
 
 
+def _padding_insn(ins: capstone.CsInsn) -> bool:
+    """A no-op compilers emit to align the next function: nop, int3, `xchg ax, ax`, `lea esi, [esi]`.
+
+    32-bit code has no table saying where a function ends, so walking a block can fall through into the
+    fill that follows it; those instructions are not part of the function.
+    """
+    if not ins.id or ins.mnemonic in ("nop", "int3"):
+        return True
+    ops = ins.operands
+    if ins.mnemonic == "xchg" and len(ops) == 2 and ops[0].type == capstone.x86.X86_OP_REG \
+            and ops[1].type == capstone.x86.X86_OP_REG:
+        return ops[0].reg == ops[1].reg
+    if ins.mnemonic == "lea" and len(ops) == 2 and ops[0].type == capstone.x86.X86_OP_REG \
+            and ops[1].type == capstone.x86.X86_OP_MEM:
+        mem = ops[1].mem
+        return mem.base == ops[0].reg and not mem.index and not mem.disp
+    return False
+
+
+def _trim_padding(code: bytes, arch: str) -> bytes:
+    """The code up to the end of its last real instruction, without the alignment fill a block fell
+    through into (`lea esi, [esi]`, `nop`); trim_code only knows single padding bytes."""
+    md = _md(arch)
+    md.detail = True
+    md.skipdata = True
+    last = 0
+    for ins in md.disasm(code, 0):
+        if not _padding_insn(ins):
+            last = ins.address + ins.size
+    return code[:last]
+
+
+def _walk(code: bytes, base: int, start: int, stops: set[int], md: capstone.Cs) -> int:
+    """End address of the function at `start`, by following its blocks within one section.
+
+    Direct jumps to another known start are tail calls; every other direct jump is another block of
+    this function (32-bit code has no unwind table saying where a function ends). Indirect jumps end
+    the reachable code here (a jump table's blocks are found from the table's own targets).
+    """
+    lo, hi = base, base + len(code)
+    cache: dict[int, capstone.CsInsn | None] = {}
+
+    def at(addr: int):
+        if addr not in cache:
+            off = addr - lo
+            # An x86 instruction is at most 15 bytes; never decode into the next function's bytes.
+            ins = next(md.disasm(code[off:off + 16], addr), None) if 0 <= off < len(code) else None
+            cache[addr] = ins if ins is not None and addr + ins.size <= hi else None
+        return cache[addr]
+
+    seen: set[int] = set()
+    stack = [start]
+    end = start
+    while stack:
+        addr = stack.pop()
+        while lo <= addr < hi and addr not in seen:
+            if addr != start and addr in stops:  # the next function starts here: never walk into it
+                break
+            ins = at(addr)
+            if ins is None:
+                break
+            seen.add(addr)
+            nxt = addr + ins.size
+            end = max(end, nxt)
+            if not ins.id or ins.mnemonic in TERMINATORS:  # data (skipdata) or the end of a block
+                break
+            ops = ins.operands
+            target = ops[0].imm if ops and ops[0].type == capstone.x86.X86_OP_IMM else None
+            if ins.mnemonic == "jmp":
+                if target is None or not lo <= target < hi:
+                    break
+                if target != start and (target in stops or target in seen):
+                    break
+                addr = target
+                continue
+            if ins.mnemonic.startswith("j") and target is not None:
+                if lo <= target < hi and target != start and target not in stops:
+                    stack.append(target)
+                addr = nxt
+                continue
+            addr = nxt
+    return min(end, hi)
+
+
 def read(data: bytes, name: str = "") -> PeImage:
     """Find the functions, symbols and target bytes of a Windows executable."""
     if not is_pe(data):
@@ -377,6 +466,10 @@ def build(data: bytes, arch: str, image_base: int, sections: list[PeSection], sy
     pdata = ranges
 
     # Function starts: exception directory, symbols, exports, entry, then direct call targets.
+    # A jump target is deliberately *not* a start: in 32-bit code it is usually another block of the
+    # function it jumps from, and making it one cut that function in two (half the "functions" in a
+    # stripped 32-bit program were such fragments). Where a function ends is found by following its
+    # blocks below; jumps to another known start are tail calls.
     starts: dict[int, str] = {}
     for begin, _end in pdata:
         starts.setdefault(begin, "")
@@ -392,48 +485,104 @@ def build(data: bytes, arch: str, image_base: int, sections: list[PeSection], sy
         for sec in exec_sections:
             body = sec.data(data)
             for ins in md.disasm(body, image_base + sec.va):
-                if ((ins.id and ins.group(capstone.CS_GRP_CALL)) or ins.id == capstone.x86.X86_INS_JMP) \
-                        and ins.operands and ins.operands[0].type == capstone.x86.X86_OP_IMM:
+                if ins.id and ins.group(capstone.CS_GRP_CALL) and ins.operands \
+                        and ins.operands[0].type == capstone.x86.X86_OP_IMM:
                     target = ins.operands[0].imm
                     if image_base + sec.va <= target < image_base + sec.va + len(body):
                         starts.setdefault(target, "")
-    # Entry points inside an already known function are not separate functions.
     named = {s.address: s.name for s in symbols if s.kind == "func"}
-    ordered = sorted(starts)
-    exec_end = image_base + max((s.va + s.raw_size for s in exec_sections), default=0x1000)
-    bounds: dict[int, tuple[int, bool]] = {}
-    for i, start in enumerate(ordered):
-        end = ordered[i + 1] if i + 1 < len(ordered) else exec_end
-        bounds[start] = (end, False)
-    for begin, end in pdata:
-        if begin in bounds:
-            bounds[begin] = (end, True)
+    exact_sizes = {s.address: s.size for s in symbols if s.kind == "func" and s.size}
+    pdata_ends = dict(pdata)
+
+    def section_of(addr: int) -> PeSection | None:
+        return next((s for s in exec_sections if image_base + s.va <= addr < image_base + s.va + s.raw_size), None)
+
+    # Ranges are discovered in priority order, and a start inside one already found is an internal
+    # entry point (a thunk, a shared cold block), not a function.
+    covered: list[tuple[int, int]] = []
+    covered_starts: list[int] = []
+
+    def covered_at(addr: int) -> bool:
+        i = bisect.bisect_right(covered_starts, addr) - 1
+        return i >= 0 and addr < covered[i][1]
+
+    def add_range(lo: int, hi: int) -> None:
+        i = bisect.bisect_right(covered_starts, lo)
+        covered_starts.insert(i, lo)
+        covered.insert(i, (lo, hi))
+
+    roots = dict(starts)
+    stops = set(roots)
+    priority = lambda a: (0 if a in pdata_ends else 1 if named.get(a) or a == entry else 2)  # noqa: E731
+    found: list[tuple[int, int, bool]] = []
+    for start in sorted(roots, key=lambda a: (priority(a), a)):
+        sec = section_of(start)
+        if sec is None or covered_at(start):
+            continue
+        sec_end = image_base + sec.va + sec.raw_size
+        exact = False
+        if start in pdata_ends:
+            end, exact = pdata_ends[start], True
+        elif start in exact_sizes:
+            end, exact = start + exact_sizes[start], True
+        elif sec.raw_size > WALK_LIMIT:
+            # Too much code to walk: fall back to the next known start (the old, coarse boundary).
+            nxt = min((r for r in roots if r > start and section_of(r) is sec), default=sec_end)
+            end = nxt
+        else:
+            end = _walk(sec.data(data), image_base + sec.va, start, stops, md)
+        # A cold block laid out after another function must not swallow it: stop at the next range
+        # already claimed (ranges are added in address order only within each pass, so check them all).
+        nxt_covered = bisect.bisect_right(covered_starts, start)
+        end = min(end, sec_end, covered_starts[nxt_covered] if nxt_covered < len(covered_starts) else end)
+        if end <= start:
+            continue
+        add_range(start, end)
+        found.append((start, end, exact))
+
+    # Code no root reaches (a function only named by a vtable, or called indirectly) is still a
+    # function: walk every non-padding gap left in a code section, one aligned block at a time.
+    for sec in exec_sections:
+        if sec.raw_size > WALK_LIMIT or pdata:
+            continue
+        base = image_base + sec.va
+        body = sec.data(data)
+        lo = base
+        cursor = base
+        edges = [r for r in covered if base <= r[0] < lo + len(body)]
+        for rlo, rhi in [*edges, (base + len(body), base + len(body))]:
+            gap_lo, gap_hi = cursor, min(rlo, base + len(body))
+            while gap_hi - gap_lo >= 4:
+                at = gap_lo
+                while at < gap_hi and body[at - base] in PADDING:
+                    at += 1
+                if at >= gap_hi:
+                    break
+                start = at
+                if (start - base) % 16 and start != base and body[start - base - 1] not in PADDING:
+                    break  # mid-padding junk, not an aligned function after fill
+                end = _walk(body, base, start, stops | {start}, md)
+                if end <= start:
+                    break
+                stops.add(start)
+                add_range(start, end)
+                found.append((start, end, False))
+                gap_lo = end
+            cursor = max(cursor, rhi)
 
     functions: list[PeFunction] = []
-    seen: set[int] = set()
-    covered_until = 0
-    for start in ordered:
-        if start in seen:
-            continue
-        sec = next((s for s in exec_sections if image_base + s.va <= start < image_base + s.va + s.raw_size), None)
+    for start, end, exact in sorted(found):
+        sec = section_of(start)
         if sec is None:
             continue
-        end, exact = bounds[start]
         sec_end = image_base + sec.va + sec.raw_size
         code = data[sec.raw + start - (image_base + sec.va):sec.raw + min(end, sec_end) - (image_base + sec.va)]
-        if not exact:
-            code = trim_code(code, arch)
+        code = _trim_padding(trim_code(code, arch), arch)
         if not code:
             continue
-        # A start inside a function found earlier (a call into the middle of a thunk, a jump-table case)
-        # is not a function: keep the earlier, larger target.
-        if start < covered_until:  # starts are sorted: this is inside a function already kept
-            continue
-        fname = named.get(start) or starts.get(start) or f"sub_{start:08X}"
-        seen.add(start)
+        fname = named.get(start) or roots.get(start) or f"sub_{start:08X}"
         lines, count, refs = _decode(code, start, arch, image_lo, image_hi, absolute, md)
         asm = "\n".join([f"glabel {fname}", *lines, f"endlabel {fname}"])
-        covered_until = max(covered_until, start + len(code))
         functions.append(PeFunction(fname, start, sec.raw + start - (image_base + sec.va), sec.name, code, asm, count,
                                     refs, exact))
     functions.sort(key=lambda f: f.vram)
