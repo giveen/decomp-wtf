@@ -4518,9 +4518,12 @@ class RomNetwork(Network):
                 ids = self.forks.autopilot_prepare(fork)
                 try_one, workers = self.forks.autopilot_one, min(workers, 2)  # each try builds a file: fewer at once
             else:
+                proj = self._project(slug)
+                if self.cfg(proj).get("platform") in X86_PLATFORMS:  # nothing to draft them from (yet)
+                    raise NetworkError("there's no machine-draft decompiler for x86 projects yet: the autopilot matches "
+                                       "identical code only")
                 if not seeds.available():
                     raise NetworkError("autopilot's drafts need m2c, the draft decompiler: install it in Setup")
-                proj = self._project(slug)
                 tc = self.cfg(proj)["compiler"]["toolchain"]
                 if not seeds.M2C_TARGETS.get(tc):
                     raise NetworkError("m2c can't read this project's code (no draft decompiler for it yet)")
@@ -4530,8 +4533,9 @@ class RomNetwork(Network):
             no_drafts = ""
         except NetworkError as e:
             ids, try_one, no_drafts = [], None, str(e)
-        state = {"state": "running", "total": len(ids), "tried": 0, "matched": 0, "near": 0, "twins": 0,
-                 "phase": "twins", "no_drafts": no_drafts, "started_at": time.time(), "stop": threading.Event()}
+        state = {"state": "running", "total": len(ids), "done": 0, "tried": 0, "matched": 0, "near": 0, "far": 0,
+                 "failed": 0, "skipped": 0, "cached": 0, "twins": 0, "reasons": [], "phase": "twins",
+                 "no_drafts": no_drafts, "started_at": time.time(), "stop": threading.Event()}
         self.autopilots[slug] = state
         threading.Thread(target=self._autopilot_run, args=(slug, ids, state, workers, try_one),
                          daemon=True, name=f"autopilot-{slug}").start()
@@ -4565,16 +4569,27 @@ class RomNetwork(Network):
         ids = [fid for fid in ids if (r := self.store.one("SELECT status FROM functions WHERE id=?", fid)) and r["status"] == "open"]
         state["total"] = len(ids)
 
+        counts = threading.Lock()  # workers count into one state: a lost increment is a wrong panel
+
         def one(fid: int) -> None:
             if state["stop"].is_set():
                 return
             try:
-                outcome = try_one(agent, proj, fid)
-            except Exception:  # noqa: BLE001 one odd function must not stop the rest
-                outcome = "fail"
-            state["tried"] += 1
-            if outcome in ("match", "near"):
-                state[{"match": "matched", "near": "near"}[outcome]] += 1
+                res = try_one(agent, proj, fid)
+            except Exception as e:  # noqa: BLE001 one odd function must not stop the rest
+                res = {"outcome": "fail", "why": f"#{fid}: {str(e)[:120]}"}
+            outcome, why = (res, "") if isinstance(res, str) else (res.get("outcome") or "fail", res.get("why") or "")
+            with counts:
+                state["done"] += 1
+                if outcome in ("match", "near", "far", "cached", "skip"):
+                    state[{"match": "matched", "skip": "skipped"}.get(outcome, outcome)] += 1
+                else:
+                    outcome = "fail"  # (anything unexpected counts as one, never as a draft tried)
+                    state["failed"] += 1
+                if outcome == "fail" and why and len(state["reasons"]) < 8:
+                    state["reasons"].append(why)
+                if outcome not in ("skip", "cached"):  # a draft was actually made and judged
+                    state["tried"] += 1
 
         try:
             with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -4584,14 +4599,15 @@ class RomNetwork(Network):
             state["finished_at"] = time.time()
             with self.store.tx() as db:
                 cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
-                cfg["autopilot"] = {k: state.get(k) for k in ("total", "tried", "matched", "near", "twins", "started_at",
-                                                              "finished_at")}
+                cfg["autopilot"] = {k: state.get(k) for k in ("total", "done", "tried", "matched", "near", "far",
+                                                              "failed", "skipped", "cached", "twins", "reasons",
+                                                              "no_drafts", "started_at", "finished_at")}
                 db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
             drafts = state["matched"] - state.get("twins", 0)
             if drafts:  # (twins announce their own)
                 with self.store.tx() as db:
                     self._event(db, proj["id"], agent.id, "autopilot",
-                                f"{drafts} of {state['tried']} functions matched from machine drafts")
+                                f"{drafts} of {state['tried']} machine drafts matched")
 
     def on_match(self, proj, function_id: int, agent: Agent | None = None) -> None:
         """Its twins get its code, at once. (Not for the full twins pass's own matches while it runs: it tries
@@ -4628,40 +4644,70 @@ class RomNetwork(Network):
             with self.store.tx() as db:
                 db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fn["id"], agent.id))
 
-    def _autopilot_one(self, agent, proj, fid: int) -> str:
-        """match | near | far | fail | skip, for one function's draft."""
+    def _compiler_key(self, proj) -> str:
+        """What a draft is built with. Switching the compiler or its flags can change the verdict, so a draft tried
+        before that is tried again (see draft_tries)."""
+        compiler = self.cfg(proj).get("compiler") or {}
+        return f"{compiler.get('toolchain') or ''} {' '.join(compiler.get('flags') or [])}".strip()
+
+    def _autopilot_one(self, agent, proj, fid: int) -> dict:
+        """One function's m2c draft through the judge: {"outcome": match | near | far | fail | skip | cached,
+        "why": a short reason for the panel}. A draft is made and compiled again only when what it's made against
+        changed (the context version, or the compiler and flags): "Run again" then costs what actually improved,
+        not every open function's draft a second time."""
+        if self.cfg(proj).get("platform") in X86_PLATFORMS:
+            return {"outcome": "skip", "why": "no machine-draft decompiler for x86"}
+        fn = self.store.one("SELECT * FROM functions WHERE id=?", fid)
+        if fn is None or fn["status"] != "open":
+            return {"outcome": "skip", "why": "no longer open"}
+        compiler = self._compiler_key(proj)
+        ctx = self._context(proj["id"], fn["unit"])
+        done = self.store.one("SELECT outcome, why FROM draft_tries WHERE function_id=? AND context_version=? "
+                              "AND compiler=?", fid, ctx["version"], compiler)
+        if done is not None:  # nothing it depends on changed since: the same draft gives the same verdict
+            return {"outcome": "cached", "why": done["why"] or done["outcome"]}
         now = time.time()
         with self.store.tx() as db:
             self._expire_claims(db)
             fn = db.execute("SELECT * FROM functions WHERE id=?", (fid,)).fetchone()
             if fn is None or fn["status"] != "open" or db.execute("SELECT 1 FROM claims WHERE function_id=?", (fid,)).fetchone():
-                return "skip"
+                return {"outcome": "skip", "why": "claimed by an agent"}
             db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fid, agent.id, now, now + 300))
-        if self.cfg(proj).get("platform") in X86_PLATFORMS:
-            return "skip"  # m2c has no x86 target; a draft comes from REA (inspect_binary) instead
+        outcome, why = "fail", f"{fn['name']}: the draft went wrong"
         try:
             self._seed_for(fn, proj)  # the readable draft, for the agents that come after
-            ctx = self._context(proj["id"], fn["unit"])
             data_asm = "\n".join(self._jtbl_asm(proj, fn)) if "jtbl_" in (fn["asm"] or "") else None
             draft = seeds.generate_from_asm(self._asm_text(fn, proj), fn["name"], self.cfg(proj)["compiler"]["toolchain"],
                                             ctx["header"], data_asm, valid=True)
             if not draft:
-                return "fail"
-            source = f"/* machine draft (m2c), tried by autopilot */\n{seeds.M2C_MACROS}\n{draft}\n"
-            result = self._compile(proj, ctx["header"], source)
-            if not result.ok:
-                return "fail"
-            cand, verdict, _ = self._evaluate(fn, proj, result.obj)
-            if cand is None:
-                return "fail"
-            d = scoring.diff(self._target_obj(fn, proj), cand)
-            if verdict is not None:
-                d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
-            self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match)
-            return "match" if d.bytes_match else "near" if d.percent >= 90 else "far"
+                why = f"{fn['name']}: m2c made no draft"
+            else:
+                source = f"/* machine draft (m2c), tried by autopilot */\n{seeds.M2C_MACROS}\n{draft}\n"
+                result = self._compile(proj, ctx["header"], source)
+                if not result.ok:
+                    why = f"{fn['name']}: the draft didn't compile"
+                else:
+                    cand, verdict, _ = self._evaluate(fn, proj, result.obj)
+                    if cand is None:
+                        why = f"{fn['name']}: the object it built has no {fn['name']}"
+                    else:
+                        d = scoring.diff(self._target_obj(fn, proj), cand)
+                        if verdict is not None:
+                            d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
+                        self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match)
+                        outcome = "match" if d.bytes_match else "near" if d.percent >= 90 else "far"
+                        why = "" if d.bytes_match else f"{fn['name']}: {d.percent:.0f}% there"
+        except Exception as e:  # noqa: BLE001 one odd function is reported, not left to stop the run
+            outcome, why = "fail", f"{fn['name']}: {str(e)[:120]}"
         finally:
             with self.store.tx() as db:
                 db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fid, agent.id))
+        if outcome == "fail":
+            logging.getLogger("decomp.wtf").info("autopilot: %s", why)
+        with self.store.tx() as db:  # what was tried, so the next run can leave an unchanged draft alone
+            db.execute("INSERT OR REPLACE INTO draft_tries(function_id,project_id,context_version,compiler,outcome,why,at) "
+                       "VALUES(?,?,?,?,?,?,?)", (fid, proj["id"], ctx["version"], compiler, outcome, why, time.time()))
+        return {"outcome": outcome, "why": why}
 
     def function_diff(self, slug: str, name: str, which: str = "latest") -> dict:
         """The target next to an attempt, instruction by instruction, for the GUI: the matched C, else the latest

@@ -152,13 +152,49 @@ def test_autopilot_matches_machine_drafts_for_free(net):
             break
         time.sleep(0.1)
     st = net.autopilot_status("demo-quest-64")
-    assert st["state"] == "done" and st["tried"] == st["total"] and st["matched"] > 0
+    assert st["state"] == "done" and st["done"] == st["total"] and st["matched"] > 0
+    assert st["tried"] == st["done"] - st["cached"] - st["skipped"]  # only what was made and judged
     ov = net.overview("demo-quest-64")
     assert ov["matched"] == before + st["matched"] and ov["autopilot"]["matched"] == st["matched"]
+    assert ov["autopilot"]["done"] == st["done"] and "reasons" in ov["autopilot"]
     by = net.store.one("SELECT COUNT(*) AS n FROM functions f JOIN agents a ON a.id=f.matched_agent_id "
                        "WHERE a.name='autopilot'")["n"]
     assert by == st["matched"]
     assert not net.store.one("SELECT 1 FROM claims c JOIN agents a ON a.id=c.agent_id WHERE a.name='autopilot'")
+
+
+def test_autopilot_leaves_unchanged_drafts_alone(net, monkeypatch):
+    """Running it again used to re-draft and recompile every open function, even though neither the headers nor the
+    compiler had changed since the same draft got the same verdict. A context edit is what makes them worth it."""
+    import time
+
+    from decompnet import seeds
+
+    def run() -> dict:
+        net.start_autopilot("demo-quest-64")
+        for _ in range(900):
+            st = net.autopilot_status("demo-quest-64")
+            if st["state"] != "running":
+                return st
+            time.sleep(0.1)
+        raise AssertionError("autopilot didn't finish")
+
+    first = run()
+    assert first["done"] == first["total"] and first["tried"] + first["cached"] + first["skipped"] == first["done"]
+    drafts = []
+    make = seeds.generate_from_asm
+    monkeypatch.setattr(seeds, "generate_from_asm", lambda *a, **k: drafts.append(a) or make(*a, **k))
+    second = run()
+    assert second["done"] == second["total"] and second["tried"] == 0 and second["cached"] == second["done"]
+    assert drafts == [], "a draft nothing changed for was made again"
+    proj = net.project_row("demo-quest-64")
+    with net.store.tx() as db:  # a header edit (a new context version) is what makes drafts worth trying again
+        version = db.execute("SELECT MAX(version) AS v FROM context_versions WHERE project_id=?", (proj["id"],)).fetchone()["v"]
+        db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
+                   "SELECT project_id, ?, header, NULL, 'test edit', ?, '' FROM context_versions "
+                   "WHERE project_id=? AND unit='' ORDER BY version DESC LIMIT 1", (version + 1, time.time(), proj["id"]))
+    third = run()
+    assert third["tried"] > 0 and drafts, "a new context version left the drafts untried"
 
 
 def test_steering_priority_instructions_spend(net):

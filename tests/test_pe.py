@@ -100,6 +100,25 @@ def test_import_and_match_through_the_engine(built):
     assert "bytes differ" in text or "different" in text
 
 
+def test_autopilot_says_x86_has_no_drafts(built):
+    """m2c has no x86 target: autopilot still tries identical code, but it must say so rather than count every
+    function as a draft it tried (and never made) as progress."""
+    import time
+
+    exe, _obj = built
+    net = RomNetwork(exe.parent / "auto.db", exe.parent)
+    slug = net.import_rom(exe.read_bytes(), confirmed=True, name="game.exe", log=lambda *_: None)
+    net.start_autopilot(slug)
+    st = net.autopilot_status(slug)
+    for _ in range(300):
+        st = net.autopilot_status(slug)
+        if st["state"] != "running":
+            break
+        time.sleep(0.1)
+    assert st["state"] == "done" and st["total"] == 0 and st["tried"] == 0 and st["done"] == 0
+    assert "x86" in st["no_drafts"]
+
+
 def test_the_same_program_is_not_parsed_twice(built, monkeypatch):
     exe, _obj = built
     net = RomNetwork(exe.parent / "same.db", exe.parent)

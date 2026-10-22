@@ -3294,6 +3294,9 @@ function renderAutopilot(ov) {
   if (box.hidden) return;
   const running = ap && ap.state === "running";
   const twinsRunning = tw && tw.state === "running";
+  const done = ap ? (ap.done ?? ap.tried ?? 0) : 0;
+  const failed = (ap && ap.failed) || 0, cached = (ap && ap.cached) || 0;
+  const reasons = (ap && ap.reasons) || [];
   box.classList.toggle("on", !!(running || twinsRunning));
   $("apBar").hidden = !running || ap.phase === "twins";
   const perm = pm && (pm.tried || pm.state === "running")
@@ -3305,8 +3308,13 @@ function renderAutopilot(ov) {
     $("apBtn").textContent = "Stop";
   } else if (running) {
     $("apTitle").textContent = `Autopilot: trying each function's machine draft · ${ap.matched.toLocaleString()} matched for free`;
-    $("apSub").textContent = `${ap.tried.toLocaleString()} of ${ap.total.toLocaleString()} tried${ap.near ? ` · ${ap.near} more are 90%+ there` : ""}${ap.twins ? ` · ${ap.twins.toLocaleString()} from identical code` : ""}. Agents work alongside it.${perm}`;
-    $("apBar").firstElementChild.style.width = `${(100 * ap.tried) / Math.max(1, ap.total)}%`;
+    const bits = [`${done.toLocaleString()} of ${ap.total.toLocaleString()} done`];
+    if (failed) bits.push(`${failed.toLocaleString()} didn't build`);
+    if (cached) bits.push(`${cached.toLocaleString()} unchanged since the last run`);
+    if (ap.near) bits.push(`${ap.near} more are 90%+ there`);
+    if (ap.twins) bits.push(`${ap.twins.toLocaleString()} from identical code`);
+    $("apSub").textContent = `${bits.join(" · ")}. Agents work alongside it.${perm}`;
+    $("apBar").firstElementChild.style.width = `${(100 * done) / Math.max(1, ap.total)}%`;
     $("apBtn").textContent = "Stop";
   } else if (ap || tw) {
     const total = (ap ? ap.matched : 0) + (ap ? 0 : twinsDone);
@@ -3316,7 +3324,11 @@ function renderAutopilot(ov) {
     if (twinsDone) parts.push(`${twinsDone.toLocaleString()} from identical code`);
     if (tw && tw.asm) parts.push(`${tw.asm.toLocaleString()} copies of assembly set aside (not for agents)`);
     if (ap && ap.tried) parts.push(`${ap.tried.toLocaleString()} machine drafts tried${ap.near ? `, ${ap.near} more 90%+ there` : ""}`);
-    $("apSub").textContent = (parts.length ? parts.join(" · ") + ". " : "") + (ap && ap.no_drafts ? "" : "Run it again after agents add types and names: drafts get better.") + perm;
+    if (failed) parts.push(`${failed.toLocaleString()} didn't build`);
+    if (cached) parts.push(`${cached.toLocaleString()} unchanged, not tried again`);
+    $("apSub").textContent = (parts.length ? parts.join(" · ") + ". " : "")
+      + (reasons.length ? `Why not: ${reasons.slice(0, 3).join("; ")}. ` : "")
+      + (ap && ap.no_drafts ? `${ap.no_drafts}.` : "Run it again after agents add types and names: drafts get better.") + perm;
     $("apBtn").textContent = "Run again";
   } else {
     $("apTitle").textContent = "Free matches first";
