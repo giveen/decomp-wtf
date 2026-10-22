@@ -1024,10 +1024,14 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 argv = ["bash", "-lc", cmd]
             proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                                     errors="replace", env=env)
-            for line in proc.stdout:
-                log(line.rstrip())
-            if proc.wait() != 0:
-                raise RuntimeError(f"the installer exited with code {proc.returncode}")
+            try:
+                for line in proc.stdout:
+                    log(line.rstrip())
+                if proc.wait() != 0:
+                    raise RuntimeError(f"the installer exited with code {proc.returncode}")
+            finally:
+                if proc.stdout is not None:
+                    proc.stdout.close()  # the pipe's file object, not left for the garbage collector
             agents._versions.pop(kind.id, None)
             return {"kind": kind.id}
         return JSONResponse({"job": jobs.start("agent-install", work)})

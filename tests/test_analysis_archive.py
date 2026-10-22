@@ -152,6 +152,58 @@ def test_import_analysis_maps_archive_files_to_work_items(tmp_path, monkeypatch)
     assert Path(report["path"]).exists()
 
 
+def test_safe_rel_path_keeps_writes_inside_the_project():
+    assert analysis.safe_rel_path("dir/a.c") == "dir/a.c"
+    assert analysis.safe_rel_path("/etc/passwd") == "etc/passwd"
+    assert analysis.safe_rel_path("C:\\Windows\\a.c") == "Windows/a.c"
+    assert analysis.safe_rel_path("../escape.c") == ""
+    assert analysis.safe_rel_path("dir/../../escape.c") == ""
+    assert analysis.safe_rel_path(".") == "" and analysis.safe_rel_path("") == ""
+
+
+def test_an_archive_entry_named_dotdot_never_writes_outside_the_project(tmp_path, monkeypatch):
+    """Archive entries carry whatever name they were stored with. One called '../escape.c' is still a work item (the
+    archive is read by that name) but must not decide where its recovered source file lands."""
+    from decompnet import rea
+    from decompnet.app.engine import RomNetwork
+
+    archive = tmp_path / "parent.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("../escape.c", "int escaped(void) { return 1; }\n")
+    inv = {
+        "inspection_id": "ai_escape",
+        "nodes": [{"artifact_id": "root", "format": "zip", "size": archive.stat().st_size},
+                  {"artifact_id": "entry", "format": "file", "size": 34}],
+        "occurrences": [
+            {"occurrence_id": "root-occ", "artifact_id": "root", "parent_occurrence_id": None,
+             "logical_path": ".", "entry_kind": "file", "artifact_format": "zip",
+             "declared_size": archive.stat().st_size},
+            {"occurrence_id": "entry-occ", "artifact_id": "entry", "parent_occurrence_id": "root-occ",
+             "logical_path": "../escape.c", "entry_kind": "file", "artifact_format": "file", "declared_size": 34},
+        ],
+    }
+
+    class FakeClient:
+        def call(self, tool, arguments=None, timeout=None, *, any_tool=False):
+            if tool == "inspect_artifact":
+                return {"substeps": [{"evidence": {"normalized_result": inv}}]}
+            if tool in ("binary_overview", "list_segments", "list_procedures"):
+                return {}
+            raise AssertionError(tool)
+
+    monkeypatch.setattr(rea, "open_analysis", lambda target, provider="": (
+        FakeClient(), {"result": {"path": target["path"], "format": "zip", "kind": "archive"}}))
+    home = tmp_path / "home"
+    net = RomNetwork(tmp_path / "decomp.db", home)
+    net.workspace.mkdir(parents=True)
+    slug = net.import_analysis(archive, confirmed=True, log=lambda *_: None)
+    assert not (home / "escape.c").exists() and not (tmp_path / "escape.c").exists()
+    assert [r["name"] for r in net.store.all("SELECT name FROM functions WHERE project_id=?",
+                                               net.project_row(slug)["id"])] == ["../escape.c"]
+    assert "escaped" in net.store.one("SELECT matched_source FROM functions WHERE project_id=?",
+                                       net.project_row(slug)["id"])["matched_source"]
+
+
 def test_analyze_archive_entry_extracts_once_and_links_a_child(tmp_path, monkeypatch):
     from decompnet import rea
     from decompnet.app.engine import RomNetwork

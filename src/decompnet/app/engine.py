@@ -530,7 +530,11 @@ class RomNetwork(Network):
                 code, path = item.get("code"), str(item.get("path") or "")
                 if not code or not path:
                     continue
-                out = folder / path
+                rel = analysis.safe_rel_path(path)
+                if not rel:  # an archive entry called '../x': it stays a work item, nothing is written outside
+                    log(f"not writing recovered/{path}: that path climbs out of the project")
+                    continue
+                out = folder / rel
                 try:
                     out.parent.mkdir(parents=True, exist_ok=True)
                     out.write_text(code, encoding="utf-8")
@@ -3732,16 +3736,22 @@ class RomNetwork(Network):
             syms.add(Symbol(f["name"], vram, tail.size, "func"))
             th, tt = self._make_target(proj, head, syms), self._make_target(proj, tail, syms)
             with self.store.tx() as db:
-                db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL WHERE id=?",
-                           (head.size, len(head.lines), th.code, json.dumps(th.to_json()), self._asm_source(head), owner["id"]))
-                db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset) "
-                           "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (pid, f["name"], tail.size, len(tail.lines), tt.code,
-                                                            json.dumps(tt.to_json()), self._asm_source(tail), None,
-                                                            owner["unit"], vram, tail.rom))
+                db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL "
+                           "WHERE id=?", (head.size, len(head.lines), th.code, json.dumps(th.to_json()),
+                                          self._asm_source(head), owner["id"]))
+                # the head's name now covers only the head (its old best attempt was for the whole function)
+                db.execute("UPDATE symbols SET size=? WHERE project_id=? AND name=?", (head.size, pid, owner["name"]))
+                # the new function's id, so a later boundary that falls inside this tail splits it in turn (the
+                # host's split is finer than the guest's here: several of its functions can sit in this one)
+                tail_id = db.execute(
+                    "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (pid, f["name"], tail.size, len(tail.lines), tt.code,
+                                                      json.dumps(tt.to_json()), self._asm_source(tail), None,
+                                                      owner["unit"], vram, tail.rom)).lastrowid
                 db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
                            (pid, f["name"], vram, tail.size, "func"))
             owner["size"] = head.size
-            local[vram] = {"id": None, "name": f["name"], "size": tail.size, "status": "open",
+            local[vram] = {"id": tail_id, "name": f["name"], "size": tail.size, "status": "open",
                            "unit": owner["unit"], "vram": vram}
             bisect.insort(starts, vram)
         self._xrefs.pop(pid, None)
@@ -3754,9 +3764,37 @@ class RomNetwork(Network):
             changes.append((current if off == 0 else f"D_{int(sym['address']):08X}", sym))
         if not changes:
             return
+
+        def free_name(db, vram: int, taken: set[str]) -> str:
+            """An address-derived name no function or symbol here has (a displaced one takes it back)."""
+            base, name, n = f"func_{vram:08X}", f"func_{vram:08X}", 1
+            while name in taken or db.execute("SELECT 1 FROM functions WHERE project_id=? AND name=?",
+                                              (pid, name)).fetchone() is not None or db.execute(
+                    "SELECT 1 FROM symbols WHERE project_id=? AND name=?", (pid, name)).fetchone() is not None:
+                n += 1
+                name = f"{base}_{n}"
+            return name
+
+        # The room's names can collide with this project's: a function here may already carry a name the room gives
+        # another address (the two splits differed, or a name was guessed locally), and two names can swap. Free
+        # every name this sync writes first, then write them all, so neither a UNIQUE constraint nor a swap loses a
+        # row. A displaced function goes back to its address's name, which is what the room's copy of it will say.
+        claimed = {sym["name"] for _old, sym in changes}
         with self.store.tx() as db:
-            for old, sym in changes:
-                db.execute("DELETE FROM symbols WHERE project_id=? AND (name=? OR name=?)", (pid, old, sym["name"]))
+            # step out of the way first: a function this sync renames may be holding another of the room's names
+            for _old, sym in changes:
+                db.execute("UPDATE functions SET name=char(1) || id WHERE project_id=? AND vram=?",
+                           (pid, int(sym["address"])))
+            for old in {old for old, _sym in changes} | claimed:
+                db.execute("DELETE FROM symbols WHERE project_id=? AND name=?", (pid, old))
+            for name in claimed:
+                held = db.execute("SELECT id,vram,size FROM functions WHERE project_id=? AND name=?", (pid, name)).fetchall()
+                for row in held:
+                    fallback = free_name(db, int(row["vram"]), claimed)
+                    db.execute("UPDATE functions SET name=? WHERE id=?", (fallback, row["id"]))
+                    db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
+                               (pid, fallback, int(row["vram"]), row["size"] or 0, "func"))
+            for _old, sym in changes:
                 db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
                            (pid, sym["name"], int(sym["address"]), sym["size"], sym["kind"]))
                 db.execute("UPDATE functions SET name=? WHERE project_id=? AND vram=?", (sym["name"], pid, int(sym["address"])))
