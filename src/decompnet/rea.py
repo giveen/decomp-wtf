@@ -48,7 +48,10 @@ ANALYSIS_ALLOWED = (ALLOWED - {"open_binary", "close_binary"}) | {
     "inspect_android_method", "inspect_managed_artifact", "inspect_managed_members", "inspect_managed_native_boundaries",
     "analyze_javascript_application", "inspect_analysis_view", "inspect_firmware_regions", "inspect_artifact",
     "inspect_pe_resources", "inspect_macho", "inspect_plist", "inspect_signature", "inspect_binary_layout",
-    "inspect_native_data_type", "inspect_native_instruction", "inspect_address_context",
+    "inspect_native_data_type", "inspect_native_instruction", "inspect_address_context", "inspect_native_api",
+    # native graph work: caller/callee graphs, literal and def-use traces, several functions decompiled in one
+    # call, and masked byte search. All read the open target and write nothing.
+    "batch_decompile", "get_call_graph", "trace_call_path", "trace_feature", "trace_native_values", "search_bytes",
     # a static trace through the application graph the project was opened with; it opens nothing and runs nothing
     "trace_application_feature",
 }

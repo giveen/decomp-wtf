@@ -14,7 +14,9 @@ open a child yourself: read the claimed entry within its limits.
 
 1. `claim_function()` gives you the next work item. For a procedure you get REA's dossier: signature, pseudocode,
    assembly, callers and referenced strings/names. For an archive file you get its path, size, type and the
-   `read_artifact_entry` hint; for the `survey` item you get the target overview and memory map.
+   `read_artifact_entry` hint. The `survey` item gets the target overview, memory map and pseudocode for a few
+   starting functions (entry points, then the largest). A native task whose brief names addresses gets those
+   functions decompiled in one batch, so you can start from code instead of searching for it.
 2. Read the dossier before calling more tools. It often answers the question on its own.
 3. Go deeper with `rea_tool(tool, arguments)`. Useful tools:
    - `search_strings {"pattern": "..."}` and `search_procedures {"pattern": "..."}`: find things by name or text.
@@ -23,6 +25,17 @@ open a child yourself: read the claimed entry within its limits.
    - `procedure_callers` / `procedure_callees {"procedure": "..."}`: the local call graph.
    - `list_segments {}` and `read_bytes {"address": "0x...", "length": 64}`: memory layout and raw bytes.
    - `inspect_native_api {"procedure": "..."}`: imported Windows/Linux APIs and their arguments.
+   - `trace_feature {"query": "..."}`: every string and procedure matching a literal, with their xrefs.
+   - `trace_call_path {"start": "0x401000", "goal": "0x402000"}`: the shortest direct-call path; omit `goal`
+     for everything reachable from `start`.
+   - `get_call_graph {"address": "0x401000", "direction": "forward"}`: the whole callee (`forward`) or caller
+     (`backward`) graph around one function.
+   - `trace_native_values {"procedure": "0x401000"}`: bounded def-use, constants and call bindings in a function.
+   - `batch_decompile {"addresses": ["0x401000", "0x401080"]}`: pseudocode for several procedures in one call.
+   - `search_bytes {"pattern": "48 8b ?? 05"}`: masked byte search in initialized memory (Ghidra only).
+
+   The trace and graph tools are for native targets. A JavaScript or Electron project uses **Trace a feature**
+   in the project instead, which walks the application graph.
 4. Write while you work: `add_note(text, function)` for anything the next agent should know.
 5. Finish with `complete_function(function, summary)`. The summary is required: what the item does, its inputs and
    outputs, what it calls, the data it touches, and anything surprising. It is saved on the item and in the project's
