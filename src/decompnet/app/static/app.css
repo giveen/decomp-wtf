@@ -560,6 +560,13 @@ a.ghost, a.primary { text-decoration: none; }
 .xref:empty { display: none; }
 .xref b { font-weight: 500; color: var(--muted); margin-right: 6px; }
 .xref .fn { font-family: var(--mono); font-size: 12.5px; cursor: pointer; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; margin-right: 8px; overflow-wrap: anywhere; }
+.prefill { display: grid; gap: 8px; }
+.prefill:empty { display: none; }
+.prefill details { border: 1px solid var(--line-soft); border-radius: 10px; overflow: hidden; }
+.prefill summary { padding: 8px 12px; cursor: pointer; font-size: 12.5px; color: var(--ink-2); }
+.prefill summary:hover { color: var(--ink); }
+.prefill .code { border: 0; border-top: 1px solid var(--line-soft); border-radius: 0; max-height: 40vh; }
+.prefill .err { padding: 8px 12px; border: 1px solid var(--line-soft); border-radius: 10px; font-size: 12.5px; color: var(--muted); }
 .note { padding: 10px 12px; border-left: 2px solid var(--line); font-size: 13.5px; color: var(--ink-2); }
 .note small { display: block; color: var(--muted); font-size: 12px; margin-bottom: 2px; }
 .note-box { display: grid; gap: 8px; }

@@ -68,10 +68,12 @@ Repeat for up to {count} work items, then stop:
 1. claim_function() gives you the next work item: a procedure, a file inside an archive, or a task. Procedure
    items include REA's dossier: pseudocode, assembly, callers and referenced strings/names. Archive entries show
    their path, hash and a bounded preview; read more with read_artifact_entry(entry, offset, length). If it is
-   the survey item, you get the target overview and memory map.
+   the survey item, you get the target overview, memory map and a batch of starting functions' pseudocode; a task
+   whose brief names addresses gets those functions decompiled too.
 2. Go deeper with rea_tool(tool, arguments): search_strings, search_procedures, analyze_function, xrefs,
-   procedure_callers/callees, list_segments, read_bytes, inspect_native_api, inspect_artifact. search_facts
-   searches the project's work items by name, string or address. Search first when you need context.
+   procedure_callers/callees, list_segments, read_bytes, inspect_native_api, inspect_artifact. Native targets also
+   get batch_decompile, get_call_graph, trace_call_path, trace_feature, trace_native_values and search_bytes.
+   search_facts searches the project's work items by name, string or address. Search first when you need context.
 3. Write findings with add_note(text, function) while you work, and finish the item with
    complete_function(function, summary): what it does, inputs/outputs, calls, data and anything surprising.
 4. release_function(function, notes) if it needs someone else; notes are required.
@@ -409,7 +411,8 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
     @mcp.tool(meta=ALWAYS_LOAD)
     async def rea_tool(ctx: Context, tool: str, arguments: str = "{}") -> str:
         """Analysis projects: run one read-only REA tool on the target (search_strings, search_procedures,
-        analyze_function, xrefs, procedure_callers, procedure_callees, list_segments, read_bytes, inspect_native_api).
+        analyze_function, xrefs, procedure_callers, procedure_callees, list_segments, read_bytes, inspect_native_api,
+        batch_decompile, get_call_graph, trace_call_path, trace_feature, trace_native_values, search_bytes).
         `arguments` is a JSON object; the answer comes back as text."""
         try:
             args = json.loads(arguments or "{}")

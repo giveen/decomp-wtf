@@ -157,6 +157,81 @@ def dossier(value: Any) -> str:
     return text if len(text) <= 20000 else text[:20000] + f"\n… ({len(text) - 20000} more characters; use rea_tool for a narrower view)"
 
 
+def batch_view(value: Any, limit: int = 4, max_code: int = 6000) -> dict:
+    """batch_decompile's answer as functions a brief or the project page can show.
+
+    A success carries its pseudocode, a failure the reason, and `more` counts the results this view left out.
+    """
+    items = value.get("items") if isinstance(value, dict) else None
+    if not isinstance(items, list):
+        return {"items": [], "more": 0}
+    out: list[dict] = []
+    for item in items[:limit]:
+        if not isinstance(item, dict):
+            continue
+        proc = item.get("procedure") if isinstance(item.get("procedure"), dict) else {}
+        address = str(proc.get("address") or item.get("address") or "")
+        name = str(proc.get("name") or "")
+        label = name or address or "function"
+        if item.get("status") != "ok":
+            err = item.get("error") or {}
+            message = str(err.get("message") if isinstance(err, dict) else err or "").strip()
+            out.append({"name": label, "address": address, "error": message})
+            continue
+        code = str(item.get("pseudocode") or "").strip()
+        if not code:
+            continue
+        if len(code) > max_code:
+            code = code[:max_code] + "\n… (truncated)"
+        out.append({"name": label, "address": address, "code": code})
+    return {"items": out, "more": max(0, len(items) - limit)}
+
+
+def batch_text(items: Any, more: int = 0, budget: int = 20000) -> str:
+    """Normalized batch items (batch_view) as the pseudocode blocks a claim brief shows."""
+    rows = [row for row in items if isinstance(row, dict)] if isinstance(items, list) else []
+    if not rows:
+        return "REA decompiled nothing for these functions."
+    out: list[str] = []
+    used = 0
+    noted = False
+    for index, item in enumerate(rows):
+        label = str(item.get("name") or item.get("address") or "function")
+        address = str(item.get("address") or "")
+        if item.get("error") is not None:
+            message = str(item.get("error") or "").strip()
+            out.append(f"### {label}" + (f" ({address})" if address and address != label else "")
+                       + ": REA couldn't decompile it" + (f": {message}" if message else ""))
+            continue
+        code = str(item.get("code") or "").strip()
+        if not code:
+            continue
+        block = [f"### {label}" + (f" at {address}" if address and address != label else ""), "```c", code, "```"]
+        size = sum(len(line) for line in block)
+        if out and used + size > budget:
+            remaining = more + len(rows) - index
+            if remaining:
+                out.append(f"({remaining} more functions came with this batch; ask REA with batch_decompile "
+                           "for them.)")
+            noted = True
+            break
+        out += block
+        used += size
+    if more and not noted:
+        out.append(f"({more} more functions came with this batch; ask REA with batch_decompile for them.)")
+    return "\n".join(out) if out else "REA decompiled nothing for these functions."
+
+
+def batch_dossier(value: Any, limit: int = 4, budget: int = 20000) -> str:
+    """Several functions from batch_decompile as pseudocode blocks: a survey's or task's starting point.
+
+    Per-item failures stay visible (REA decompiles what it can and reports the rest), and the whole answer is
+    bounded so a claim brief stays readable.
+    """
+    view = batch_view(value, limit)
+    return batch_text(view["items"], view["more"], budget)
+
+
 def summarize(rows: Any, limit: int = 30) -> str:
     if not isinstance(rows, list):
         return str(rows)[:1000]

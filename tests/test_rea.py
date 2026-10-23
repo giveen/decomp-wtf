@@ -3,6 +3,7 @@ every result wrapped in an evidence record (the answer is its normalized_result)
 
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -10,8 +11,42 @@ import pytest
 from starlette.testclient import TestClient
 
 from decompnet import rea
+from decompnet.app import analysis
 from decompnet.app.console import Console, ConsoleError
 from decompnet.network import NetworkError
+
+
+class SlowBatch:
+    """A REA client whose batch_decompile blocks until the test lets it go, so two requests can overlap."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.calls = 0
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def call(self, tool, arguments=None, **kwargs):
+        if tool == "batch_decompile":
+            self.calls += 1
+            self.started.set()
+            assert self.release.wait(10)
+        return self.inner.call(tool, arguments, **kwargs)
+
+
+class CountingClient:
+    """A REA client that records which tools the engine asks for."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.tools: list[str] = []
+
+    def call(self, tool, arguments=None, **kwargs):
+        self.tools.append(tool)
+        return self.inner.call(tool, arguments, **kwargs)
+
+    def count(self, tool: str) -> int:
+        return self.tools.count(tool)
+
 
 FAKE = r"""
 import json, sys
@@ -81,6 +116,14 @@ for line in sys.stdin:
             result = wrap(name, [{"address": "0x1010", "value": "helper"}])
         elif name in ("procedure_callers", "procedure_callees", "procedure_references"):
             result = wrap(name, [{"address": "0x1020", "name": "caller"}])
+        elif name == "batch_decompile":
+            items = [{"address": address, "procedure": {"status": "resolved", "address": address, "name": None},
+                      "status": "ok", "pseudocode": f"int sub_{address}(void) {{ return 7; }}"}
+                     for address in args["addresses"]]
+            result = wrap(name, {"items": items, "total": len(items), "succeeded": len(items), "failed": 0})
+        elif name in ("get_call_graph", "trace_call_path", "trace_feature", "trace_native_values",
+                      "search_bytes", "inspect_native_api"):
+            result = wrap(name, {"tool": name, "arguments": args})
         elif name == "install_adb_package":
             result = wrap(name, {"installed": True})
         else:
@@ -266,6 +309,266 @@ def test_analysis_project_has_work_items_claims_and_findings(monkeypatch, fake, 
         with pytest.raises(NetworkError, match="isn't available to agents"):
             net.analysis_tool(slug, "open_binary", {})
         assert net.stats(slug)["agents"]
+    finally:
+        client.close()
+
+
+def test_analysis_agents_get_native_graph_batch_and_byte_search(monkeypatch, fake, tmp_path):
+    """The native tracing, batch and byte-search tools are on the analysis allowlist and reach the open target."""
+    from decompnet.app.engine import RomNetwork
+
+    client = rea.Client(fake)
+    binary = tmp_path / "program.bin"
+    binary.write_bytes(b"\x7fELF" + b"\0" * 64)
+    opened = client.call("open_binary", {"path": str(binary)})
+    monkeypatch.setattr(rea, "open_analysis", lambda target, provider="": (client, opened))
+    try:
+        net = RomNetwork(tmp_path / "analysis.sqlite", tmp_path / "home")
+        slug = net.import_analysis(binary, confirmed=True, log=lambda *_: None)
+        calls = (("batch_decompile", {"addresses": ["0x1000", "0x1020"]}),
+                 ("get_call_graph", {"address": "0x1000", "direction": "forward"}),
+                 ("trace_call_path", {"start": "0x1000", "goal": "0x1020"}),
+                 ("trace_feature", {"query": "hello"}),
+                 ("trace_native_values", {"procedure": "0x1000"}),
+                 ("search_bytes", {"pattern": "90 90"}),
+                 ("inspect_native_api", {"procedure": "0x1000"}))
+        for name, arguments in calls:
+            assert name in rea.ANALYSIS_ALLOWED
+            assert net.analysis_tool(slug, name, arguments).strip()
+    finally:
+        client.close()
+
+
+def test_batch_dossier_keeps_pseudocode_and_says_what_failed():
+    value = {"items": [
+        {"address": "0x1000", "procedure": {"status": "resolved", "address": "0x1000", "name": "main"},
+         "status": "ok", "pseudocode": "int main(void) { return 0; }"},
+        {"address": "0x1020", "procedure": {"status": "unknown", "error": {"message": "no function there"}},
+         "status": "error", "error": {"message": "no function there"}},
+    ], "total": 2, "succeeded": 1, "failed": 1}
+    text = analysis.batch_dossier(value)
+    assert "### main at 0x1000" in text and "int main(void) { return 0; }" in text
+    assert "### 0x1020: REA couldn't decompile it: no function there" in text
+
+
+def test_survey_and_task_briefs_start_from_a_batch_decompile(monkeypatch, fake, tmp_path):
+    """A work item with no address of its own gets pseudocode up front, not only a queue entry."""
+    from decompnet.app.engine import RomNetwork
+
+    client = rea.Client(fake)
+    binary = tmp_path / "program.elf"
+    binary.write_bytes(b"\x7fELF" + b"\0" * 64)
+    opened = client.call("open_binary", {"path": str(binary)})
+    monkeypatch.setattr(rea, "open_analysis", lambda target, provider="": (client, opened))
+    try:
+        net = RomNetwork(tmp_path / "analysis.sqlite", tmp_path / "home")
+        agent = net.authenticate(net.register_agent("analyst"))
+        slug = net.import_analysis(binary, confirmed=True, log=lambda *_: None)
+        assert net.analysis_cfg(slug)[1]["target"]["tool"] == "open_binary"
+        task = net.add_analysis_task(None, slug, "Map startup", "start at 0x1000 and 0x1020")
+        assert net.function_detail(slug, task)["prefill"] is None  # nothing cached yet: viewing does not decompile
+        text = net.claim(agent, slug, task)
+        assert "Functions named in the task" in text
+        assert "int sub_0x1000" in text and "int sub_0x1020" in text
+        detail = net.function_detail(slug, task)
+        assert detail["prefill"]["heading"] == "Functions named in the task"
+        assert detail["prefill"]["items"][0]["code"].startswith("int sub_0x1000")
+        assert net.function_detail(slug, "main")["prefill"] is None  # a procedure has its own dossier
+        net.complete_analysis(agent, slug, task, "startup decompiled from 0x1000 and 0x1020")
+
+        # The survey item is what an importer makes when no procedure inventory exists; it gets the target's
+        # entry points and largest functions instead of a brief full of addresses, asking REA again when the
+        # import stored no procedures either.
+        proj = net.project_row(slug)
+        with net.store.tx() as db:
+            db.execute("DELETE FROM functions WHERE project_id=? AND vram>0", (proj["id"],))
+            db.execute("INSERT INTO functions(project_id,name,size,n_insns,unit,vram,meta,status) VALUES(?,?,?,?,?,?,?,?)",
+                       (proj["id"], "survey", 0, 0, "", 0, json.dumps({"kind": "survey", "address": 0}), "open"))
+        survey = net.claim(agent, slug, "survey")
+        assert "Starting functions" in survey and "int sub_0x1000" in survey
+        assert net.function_detail(slug, "survey")["prefill"]["items"][0]["code"].startswith("int sub_")
+    finally:
+        client.close()
+
+
+def test_batch_prefill_is_cached_per_project(monkeypatch, fake, tmp_path):
+    """Viewing the same survey or task again reuses its batch; another project decompiles its own."""
+    from decompnet.app.engine import RomNetwork
+
+    client = rea.Client(fake)
+    proxy = CountingClient(client)
+
+    def open_target(target, provider=""):
+        return client, client.call("open_binary", {"path": target["path"]})
+
+    monkeypatch.setattr(rea, "open_analysis", open_target)
+    monkeypatch.setattr(rea, "analysis_client", lambda target, provider="": proxy)
+    try:
+        net = RomNetwork(tmp_path / "cache.sqlite", tmp_path / "home")
+        agent = net.authenticate(net.register_agent("analyst"))
+        first = tmp_path / "one.elf"
+        first.write_bytes(b"\x7fELF" + b"\0" * 64)
+        slug = net.import_analysis(first, confirmed=True, log=lambda *_: None)
+        task = net.add_analysis_task(None, slug, "Map startup", "start at 0x1000")
+        assert net.function_detail(slug, task)["prefill"] is None
+        assert proxy.count("batch_decompile") == 0
+        assert "int sub_0x1000" in net.claim(agent, slug, task)
+        assert proxy.count("batch_decompile") == 1
+        assert "int sub_0x1000" in net.get_function(task, slug)
+        assert proxy.count("batch_decompile") == 1  # a re-view is served from the project's cache
+        stored = json.loads(net.store.one("SELECT config FROM projects WHERE slug=?", slug)["config"])
+        assert stored["prefill"]
+        net.complete_analysis(agent, slug, task, "startup decompiled from 0x1000")
+
+        restarted = RomNetwork(tmp_path / "cache.sqlite", tmp_path / "home")
+        assert "int sub_0x1000" in restarted.get_function(task, slug)
+        assert restarted.function_detail(slug, task)["prefill"]["items"][0]["code"].startswith("int sub_0x1000")
+        assert proxy.count("batch_decompile") == 1  # the batch is stored with the project, not only in memory
+
+        second = tmp_path / "two.elf"
+        second.write_bytes(b"\x7fELF" + b"\0" * 64)
+        other = net.import_analysis(second, confirmed=True, log=lambda *_: None)
+        task2 = net.add_analysis_task(None, other, "Map startup", "start at 0x1000")
+        assert "int sub_0x1000" in net.claim(agent, other, task2)
+        assert proxy.count("batch_decompile") == 2  # another project's cache entry is separate
+    finally:
+        client.close()
+
+
+def test_on_demand_prefill_builds_for_the_page(monkeypatch, fake, tmp_path):
+    """The drawer's button builds the batch through the API job and the page then shows it."""
+    from decompnet.app.engine import RomNetwork
+    from decompnet.app.server import build
+
+    client = rea.Client(fake)
+
+    def open_target(target, provider=""):
+        return client, client.call("open_binary", {"path": target["path"]})
+
+    monkeypatch.setattr(rea, "open_analysis", open_target)
+    home = tmp_path / "home"
+    (home / ".decomp").mkdir(parents=True)
+    net = RomNetwork(home / ".decomp" / "decomp.db", home)
+    mcp, _manager, security = build(net, home / ".decomp", 6495, "s3cret")
+    http = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"),
+                      base_url="http://127.0.0.1:6495")
+    http.cookies.set("decomp_live", "s3cret")
+    try:
+        binary = tmp_path / "program.elf"
+        binary.write_bytes(b"\x7fELF" + b"\0" * 64)
+        slug = net.import_analysis(binary, confirmed=True, log=lambda *_: None)
+        task = net.add_analysis_task(None, slug, "Map startup", "start at 0x1000")
+        assert http.get(f"/api/function?slug={slug}&name={task}").json()["prefillable"] is True
+        started = http.post("/api/analysis/prefill", json={"slug": slug, "name": task},
+                            headers={"X-Decomp": "1"}).json()
+        for _ in range(100):
+            job = http.get(f"/api/job?id={started['job']}").json()
+            if job["state"] != "running":
+                break
+            time.sleep(0.05)
+        assert job["state"] == "done", job
+        assert job["result"]["prefill"]["items"][0]["code"].startswith("int sub_0x1000")
+        # the job's log is the drawer's progress: it names the item, the batch and what REA returned
+        assert any("decompiling starting functions" in line for line in job["log"]), job["log"]
+        assert any("0x1000" in line for line in job["log"]), job["log"]
+        assert any("decompiled 1 starting function" in line for line in job["log"]), job["log"]
+        detail = http.get(f"/api/function?slug={slug}&name={task}").json()
+        assert detail["prefill"]["items"][0]["code"].startswith("int sub_0x1000")
+        with pytest.raises(NetworkError, match="survey item and tasks"):
+            net.analysis_prefill(slug, "main")
+    finally:
+        client.close()
+
+
+def test_an_import_prefills_the_survey_in_the_background(monkeypatch, fake, tmp_path):
+    """A native import that leaves a survey item builds its starting functions on its own, before the page opens."""
+    from decompnet.app.engine import RomNetwork
+    from decompnet.app.server import build
+
+    client = rea.Client(fake)
+
+    def open_target(target, provider=""):
+        return client, client.call("open_binary", {"path": target["path"]})
+
+    monkeypatch.setattr(rea, "open_analysis", open_target)
+    # the import sees no procedure inventory (so it makes the survey item); the prefill's later look does
+    real_procedures, calls = analysis.procedures, []
+
+    def no_inventory(value, segments):
+        calls.append(1)
+        return [] if len(calls) == 1 else real_procedures(value, segments)
+
+    monkeypatch.setattr(analysis, "procedures", no_inventory)
+    home = tmp_path / "home"
+    (home / ".decomp").mkdir(parents=True)
+    net = RomNetwork(home / ".decomp" / "decomp.db", home)
+    mcp, _manager, security = build(net, home / ".decomp", 6496, "s3cret")
+    http = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"),
+                      base_url="http://127.0.0.1:6496")
+    http.cookies.set("decomp_live", "s3cret")
+    try:
+        binary = tmp_path / "mystery.dat"
+        binary.write_bytes(b"not a rom" + b"\0" * 64)
+        started = http.post(f"/api/import?confirmed=1&path={binary}", headers={"X-Decomp": "1"}).json()
+        for _ in range(200):
+            job = http.get(f"/api/job?id={started['job']}").json()
+            if job["state"] != "running":
+                break
+            time.sleep(0.05)
+        assert job["state"] == "done", job
+        slug = job["result"]["slug"]
+        detail = {}
+        for _ in range(200):  # the prefill is its own background job: wait for it to land in the project
+            detail = http.get(f"/api/function?slug={slug}&name=survey").json()
+            if detail.get("prefill"):
+                break
+            time.sleep(0.05)
+        assert detail["prefill"]["items"][0]["code"].startswith("int sub_0x1000"), detail
+    finally:
+        client.close()
+
+
+def test_prefill_requests_for_the_same_batch_share_one_decompile(monkeypatch, fake, tmp_path):
+    """The import's background job and a drawer click wait for each other instead of decompiling the batch twice."""
+    from decompnet.app.engine import RomNetwork
+
+    client = rea.Client(fake)
+    slow = SlowBatch(client)
+
+    def open_target(target, provider=""):
+        return client, client.call("open_binary", {"path": target["path"]})
+
+    monkeypatch.setattr(rea, "open_analysis", open_target)
+    monkeypatch.setattr(rea, "analysis_client", lambda target, provider="": slow)
+    try:
+        net = RomNetwork(tmp_path / "decomp.db", tmp_path / "home")
+        binary = tmp_path / "program.elf"
+        binary.write_bytes(b"\x7fELF" + b"\0" * 64)
+        slug = net.import_analysis(binary, confirmed=True, log=lambda *_: None)
+        task = net.add_analysis_task(None, slug, "Map startup", "start at 0x1000")
+        out, waiting = {}, threading.Event()
+
+        def run(tag, log):
+            out[tag] = net.analysis_prefill(slug, task, log=log)
+
+        first = threading.Thread(target=run, args=("auto", lambda *_: None))
+        first.start()
+        assert slow.started.wait(10)
+
+        def click_log(line):
+            if "waiting for another request" in line:
+                waiting.set()
+
+        second = threading.Thread(target=run, args=("click", click_log))
+        second.start()
+        assert waiting.wait(10)  # the click waited for the running batch instead of starting its own
+        assert slow.calls == 1
+        slow.release.set()
+        first.join(10)
+        second.join(10)
+        assert slow.calls == 1
+        assert out["auto"]["items"][0]["code"].startswith("int sub_0x1000")
+        assert out["click"]["items"] == out["auto"]["items"]
     finally:
         client.close()
 

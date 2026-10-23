@@ -2779,6 +2779,55 @@ $("fnConsole").onclick = () => {
   location.hash = `#/console?path=${encodeURIComponent(path)}&fn=0x${d.vram.toString(16)}`;
 };
 
+function renderPrefill(d) {
+  const box = $("fnPrefill");
+  // a live refresh mid-job would wipe the progress log out of the drawer: keep the running one on screen
+  if (prefillBusy && box.querySelector("#prefillLog")) return;
+  const pf = d.prefill;
+  const items = pf && Array.isArray(pf.items) ? pf.items : [];
+  if (!items.length) {
+    if (!d.prefillable) { box.innerHTML = ""; return; }
+    box.innerHTML = `<p class="col-title">Starting functions</p>
+      <p class="muted small">No starting functions cached yet. REA can decompile a starting batch for this item now.</p>
+      <div class="row"><button class="ghost small-btn" id="prefillGo" type="button">Decompile starting functions</button></div>
+      <pre class="joblog" id="prefillLog" hidden></pre>`;
+    $("prefillGo").onclick = () => runPrefill(d.name);
+    return;
+  }
+  const label = (it) => (it.name && it.name !== it.address
+    ? `${esc(it.name)} <span class="muted">${esc(it.address || "")}</span>`
+    : esc(it.address || it.name || "function"));
+  box.innerHTML = `<p class="col-title">${esc(pf.heading || "Starting functions")}</p>`
+    + (pf.note ? `<p class="muted small">${esc(pf.note)}</p>` : "")
+    + items.map((it, i) => (it.error != null
+      ? `<div class="err">${label(it)}: ${esc(it.error || "REA couldn't decompile it")}</div>`
+      : `<details${i === 0 ? " open" : ""}><summary class="mono">${label(it)}</summary><pre class="code c">${highlightC(it.code || "")}</pre></details>`)).join("")
+    + (pf.more ? `<p class="muted small">${pf.more} more function${pf.more === 1 ? "" : "s"} were decompiled; ask an agent or the RE console for them.</p>` : "");
+}
+
+let prefillBusy = false;
+
+async function runPrefill(name) {
+  const btn = $("prefillGo"), log = $("prefillLog");
+  prefillBusy = true;
+  if (btn) { btn.disabled = true; btn.textContent = "Decompiling…"; }
+  if (log) { log.hidden = false; log.textContent = "Starting…"; }
+  try {
+    const started = await api("/api/analysis/prefill", { method: "POST", body: { slug: S.slug, name } });
+    const res = await followJob(started.job, log);
+    prefillBusy = false;
+    if (S.fn !== name) return;
+    S.fnDetail = { ...S.fnDetail, prefill: res.prefill };
+    renderPrefill(S.fnDetail);
+    toast("Starting functions decompiled.", "match");
+  } catch (e) {
+    prefillBusy = false;
+    if (log) log.textContent += `\n✕ ${e.message}`;
+    if (btn) { btn.disabled = false; btn.textContent = "Decompile starting functions"; }
+    toast(esc(e.message), "err");
+  }
+}
+
 let fnBusy = false;
 async function refreshFn(first) {
   if (fnBusy || !S.fn) return;
@@ -2821,6 +2870,7 @@ async function refreshFn(first) {
     if (d.called_by.length) xr.push(`<div><b>called by</b>${d.called_by.map(fnLink).join("")}</div>`);
     $("fnXref").innerHTML = xr.join("");
     $("fnXref").querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn.split("+")[0]); });
+    renderPrefill(d);
     $("fnNotes").innerHTML = d.notes.length ? `<p class="col-title">Notes from agents</p>` + d.notes.map((n) => `<div class="note"><small>${esc(n.agent)} · ${clock(n.created_at)}</small>${esc(n.text)}</div>`).join("") : "";
     const tab = S.ftab || (d.status === "matched" || !d.scores.length ? "code" : "diff");
     showFnTab(tab);

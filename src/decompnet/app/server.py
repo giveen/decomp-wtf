@@ -576,7 +576,11 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                     log(f"intake report skipped: {e}")
                 settings.data["last_project"] = slug
                 settings.save()
-                if not net.is_analysis(net.project_row(slug)):
+                if net.is_analysis(net.project_row(slug)):
+                    # a native import with no procedure inventory opens on a survey item: decompile its starting
+                    # batch now, in its own job, so the project page has code by the time the user gets there
+                    jobs.start("prefill", lambda log: net.prefill_survey(slug, log=log))
+                else:
                     autopilot(slug)
                 return {"slug": slug}
             finally:
@@ -755,6 +759,15 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             raise ValueError("name the task first")
         return {"name": net.add_analysis_task(None, slug, name, str(data.get("brief", ""))[:4000])}
 
+    def p_analysis_prefill(slug, request, data):
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise ValueError("name the work item first")
+
+        def work(log):
+            return {"prefill": net.analysis_prefill(slug, name, log=log)}
+        return {"job": jobs.start("prefill", work)}
+
     def p_add_feature(slug, request, data):
         value = str(data.get("value", "")).strip()
         if not value:
@@ -834,6 +847,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]),
         "/api/analysis/task": (p_add_task, ["POST"]),
+        "/api/analysis/prefill": (p_analysis_prefill, ["POST"]),
         "/api/analysis/features": (lambda s, r, d: net.features(s), ["GET"]),
         "/api/analysis/feature": (p_feature, ["GET"]),
         "/api/analysis/feature/add": (p_add_feature, ["POST"]),
